@@ -1,0 +1,9 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+state/*.json
+state/*.yaml
+state/*.lock
+logs/*
+!.gitkeep

@@ -1,0 +1,228 @@
+server:
+  host: "127.0.0.1"
+  port: 8320
+  router_key_env: "SMART_ROUTER_KEY"
+
+upstreams:
+  proxypal:
+    base_url: "http://127.0.0.1:8317"
+    auth:
+      mode: "bearer"
+      token_env: "PROXYPAL_API_KEY"
+  xkiro:
+    base_url: "https://api.xkiro.com"
+    auth:
+      mode: "bearer"
+      token_env: "XKIRO_API_KEY"
+  aibox:
+    base_url: "https://api.ai-box.vn"
+    auth:
+      mode: "bearer"
+      token_env: "AIBOX_API_KEY"
+
+http:
+  connect_timeout_seconds: 10
+  read_timeout_seconds: 300
+  write_timeout_seconds: 60
+  pool_timeout_seconds: 10
+  catalog_timeout_seconds: 20
+
+routes:
+  # Main/Default: uu tien model mien phi manh, fallback aibox qwen3.6-flash
+  claude-router-main:
+    strategy: priority
+    candidates:
+      - upstream: proxypal
+        model: gpt-5.5
+      - upstream: proxypal
+        model: gemini-3.6-flash
+      - upstream: proxypal
+        model: gpt-5.6-luna
+      - upstream: proxypal
+        model: gemini-3.5-flash
+    fallback:
+      - upstream: xkiro
+        model: deepseek/deepseek-v4-flash
+      - upstream: aibox
+        model: qwen3.6-flash
+
+  # Fast/Haiku: round-robin nghieng ve model lite/re nhat
+  claude-router-fast:
+    strategy: smooth_weighted_rr
+    candidates:
+      - upstream: proxypal
+        model: gemini-3.5-flash-lite
+        weight: 4
+      - upstream: proxypal
+        model: gpt-5.4-mini
+        weight: 3
+      - upstream: proxypal
+        model: gemini-3.1-flash-lite-preview
+        weight: 2
+      - upstream: proxypal
+        model: gemini-3.6-flash
+        weight: 1
+    fallback:
+      - upstream: xkiro
+        model: mistralai/ministral-3b
+      - upstream: aibox
+        model: qwen3.7-flash
+
+  # Engineering/Sonnet: uu tien model ky thuat, fallback aibox deepseek-v4-pro-0813
+  claude-router-engineering:
+    strategy: smooth_weighted_rr
+    candidates:
+      - upstream: proxypal
+        model: gpt-5.6-terra
+        weight: 4
+      - upstream: proxypal
+        model: gemini-3-pro-preview
+        weight: 3
+      - upstream: proxypal
+        model: gpt-5.6-sol
+        weight: 1
+    fallback:
+      - upstream: xkiro
+        model: deepseek/deepseek-v4-pro
+      - upstream: aibox
+        model: deepseek-v4-flash-0731
+
+  # Critical/Opus: chi dung model manh nhat, fallback aibox qwen3.7-plus
+  claude-router-critical:
+    strategy: priority
+    candidates:
+      - upstream: proxypal
+        model: gpt-5.6-sol
+      - upstream: proxypal
+        model: gemini-3.1-pro-preview
+      - upstream: proxypal
+        model: gpt-5.5
+    fallback:
+      - upstream: xkiro
+        model: deepseek/deepseek-v4-pro
+      - upstream: aibox
+        model: qwen3.7-plus
+
+  # Review: codex-auto-review chuyen dung, fallback aibox qwen3.8-max
+  claude-router-review:
+    strategy: priority
+    candidates:
+      - upstream: proxypal
+        model: codex-auto-review
+      - upstream: proxypal
+        model: gpt-5.6-sol
+      - upstream: proxypal
+        model: gemini-3.1-pro-preview
+    fallback:
+      - upstream: xkiro
+        model: mistralai/codestral-2508
+      - upstream: aibox
+        model: qwen3.8-max
+
+  # ANTHROPIC_MODEL / default tier - qwen3.6-flash rẻ hơn deepseek-v4-flash 33%
+  claude-router-aibox-main:
+    strategy: priority
+    generated: true
+    candidates:
+      - upstream: aibox
+        model: qwen3.6-flash
+
+  claude-router-aibox-cheap:
+    strategy: priority
+    generated: true
+    candidates: 
+      - upstream: aibox
+        model: qwen3.7-flash
+
+  claude-router-aibox-engineering:
+    strategy: priority
+    generated: true
+    candidates: 
+      - upstream: aibox
+        model: "deepseek-v4-flash-0731"
+
+  claude-router-aibox-review:
+    strategy: priority
+    generated: true
+    candidates: 
+      - upstream: aibox
+        model: "qwen3.8-max"
+
+aibox_catalog_sync:
+  enabled: true
+  interval_seconds: 21600
+  docs_url: "https://api.ai-box.vn/docs"
+  pricing_url: "https://api.ai-box.vn/pricing"
+  pricing_api_url: "https://api.ai-box.vn/api/pricing"
+  quota_per_usd: 500000.0
+  models_url: "https://api.ai-box.vn/v1/models"
+  state_file: "state/aibox-catalog.json"
+  previous_state_file: "state/aibox-catalog.previous.json"
+  generated_routes_file: "state/aibox-routes.generated.yaml"
+  lock_file: "state/aibox-sync.lock"
+  require_runtime_model: true
+  require_public_catalog_confirmation: true
+  keep_last_known_good: true
+
+aibox_auto_promotion:
+  cheap:
+    enabled: true
+    allowed_families:
+      - deepseek
+      - qwen
+    preferred_markers:
+      - flash
+      - lite
+    max_input_price_per_million: 0.05
+    max_output_price_per_million: 0.10
+    max_candidates: 3
+  engineering:
+    enabled: true
+    allowed_families:
+      - glm
+      - deepseek
+      - qwen
+      - kimi
+    preferred_markers:
+      - pro
+      - max
+      - code
+    max_input_price_per_million: 0.20
+    max_output_price_per_million: 0.60
+    max_candidates: 3
+  critical_review:
+    enabled: false
+    discover_candidates: true
+    manual_preference:
+      - qwen3.8-max
+  global_deny_patterns:
+    - "*image*"
+    - "*embedding*"
+    - "*audio*"
+    - "*tts*"
+    - "*rerank*"
+    - "*preview-broken*"
+
+# Claude Code environment mapping - aibox cost-optimized models
+claude_code_env:
+  ANTHROPIC_MODEL: "qwen3.6-flash"
+  ANTHROPIC_CUSTOM_MODEL_OPTION: "qwen3.6-flash"
+  ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "Qwen 3.6 Flash - Main"
+  ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Model chinh can bang chat luong va chi phi (re hon deepseek-v4-flash 33%)"
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: "qwen3.7-flash"
+  ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME: "Qwen 3.7 Flash - Cheap"
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-flash-0731"
+  ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "deepseek-v4-flash-0731 - Engineering"
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "qwen3.8-max"
+  ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "Qwen 3.8 Max - Critical Review"
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS: "200000"
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS: "16384"
+  CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "2"
+  CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION: "8"
+  CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1"
+  CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: "4"
+
+logging:
+  level: "INFO"
+  file: "logs/router.log"
+  access_log: false
