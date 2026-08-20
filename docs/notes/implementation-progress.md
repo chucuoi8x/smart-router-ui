@@ -547,3 +547,28 @@ Verification:
 Outcome:
 - Remote branch advanced from `044b87a` to `45c679a`.
 - Request, attempt, and usage event ledger persistence scaffolding is now available on the remote feature branch.
+
+### Step 23 - Quota resource domain and in-memory reservation
+
+Changed:
+- Added `tests/unit/test_quota_reservations.py` with RED tests for quota resource snapshots, hard-limit rejection, release behavior, and concurrent reservation safety.
+- Added `apps/gateway/quota/__init__.py` package marker.
+- Added `apps/gateway/quota/reservations.py` with `QuotaResource`, `ReservationResult`, and `InMemoryQuotaReservations`.
+
+Implementation notes:
+- This is an in-memory Resource Plane domain slice only; it is not wired into live `router.py`, Redis, DB persistence, or usage-ledger accounting yet.
+- `InMemoryQuotaReservations.reserve()` uses a process-local `threading.Lock` so concurrent reservations in this process cannot oversubscribe a hard limit.
+- Reservation IDs are idempotent: repeating the same reservation ID returns the original result instead of consuming additional capacity.
+- Rejected reservations are recorded as rejected results but do not consume capacity; accepted reservations can be released to return capacity.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` before implementation; it failed with `ModuleNotFoundError: No module named 'apps.gateway.quota'`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Quota focused tests pass: 4 passed.
+- Focused M3 unit tests pass: 19 passed.
+- Full pytest result after this slice: 65 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
