@@ -377,3 +377,21 @@ Outcome:
 - Alembic offline SQL generation succeeds and emits `CREATE TABLE` statements for `provider_connections`, `config_revisions`, and `usage_ledger`.
 - Full pytest result after this slice: 51 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 14 - Catalog and DB baseline commits pushed
+
+Changed:
+- Committed the legacy catalog compatibility slice separately as `fdb8c21 test: restore catalog import compatibility`.
+- Committed the DB/Alembic baseline slice separately as `daaf684 feat: add database baseline models`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before the catalog compatibility commit.
+- Inspected the staged catalog compatibility diff for secret-like terms before commit.
+- Ran `git diff --cached --check` before the DB/Alembic baseline commit.
+- Inspected the staged DB/Alembic baseline diff for secret-like terms before commit; matches were model field names, usage token fields, and test placeholder values only.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `014d05f` to `daaf684`.
+- Two logical implementation commits are now available on the remote feature branch.
