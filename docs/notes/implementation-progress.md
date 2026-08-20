@@ -815,3 +815,18 @@ Outcome:
 - Focused M3 unit tests pass: 33 passed.
 - Full pytest result after this slice: 79 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 36 - Shared quota group slice pushed
+
+Changed:
+- Committed the shared quota group slice as `084007d thêm ngữ nghĩa nhóm quota dùng chung`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; no secret-like terms were present.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `33316a3` to `084007d`.
+- The in-memory quota domain now models shared capacity pools for multiple model/resources that depend on the same account or subscription quota.
