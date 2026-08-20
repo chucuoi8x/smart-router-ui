@@ -1,0 +1,7 @@
+id: anthropic
+driver: generic-anthropic
+name: Anthropic Official
+transport:
+  base_url: https://api.anthropic.com/v1
+auth:
+  type: x-api-key

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from aibox_catalog import build_records, select_routes
+from apps.worker.collectors.aibox_catalog import build_records, select_routes
 
 
 POLICY = {

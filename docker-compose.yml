@@ -1,0 +1,14 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8320:8320"
+    environment:
+      SMART_ROUTER_CONFIG: /app/config.yaml
+      SMART_ROUTER_KEY: ${SMART_ROUTER_KEY:?SMART_ROUTER_KEY is required}
+      PROXYPAL_API_KEY: ${PROXYPAL_API_KEY:-}
+      XKIRO_API_KEY: ${XKIRO_API_KEY:-}
+      AIBOX_API_KEY: ${AIBOX_API_KEY:-}
+    restart: unless-stopped

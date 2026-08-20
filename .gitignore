@@ -6,4 +6,8 @@ state/*.json
 state/*.yaml
 state/*.lock
 logs/*
+.pytest_cache/
 !.gitkeep
+
+# Local env backups
+.env-backups/

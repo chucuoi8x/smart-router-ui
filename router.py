@@ -21,7 +21,9 @@ import yaml
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from aibox_catalog import build_records, select_routes, state_from_records
+from apps.gateway.api.admin import router as admin_router
+
+# Moved to worker/collectors - import removed
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -677,6 +679,28 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Claude Smart Router", version="1.0.0", lifespan=lifespan)
+app.include_router(admin_router, prefix="/api/admin/v1")
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.get("/health/live")
+async def health_live() -> dict[str, Any]:
+    return {"status": "ok", "service": "smart-router"}
+
+
+@app.get("/health/ready")
+async def health_ready(request: Request) -> dict[str, Any]:
+    service = getattr(request.app.state, "router", None)
+    upstream_count = len(service.clients) if service is not None else 0
+    return {"status": "ok", "service": "smart-router", "upstream_count": upstream_count}
 
 
 @app.get("/healthz")

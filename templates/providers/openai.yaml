@@ -1,0 +1,7 @@
+id: openai
+driver: generic-openai
+name: OpenAI Official
+transport:
+  base_url: https://api.openai.com/v1
+auth:
+  type: bearer

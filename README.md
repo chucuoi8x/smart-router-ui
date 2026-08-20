@@ -1,8 +1,8 @@
 # Smart Router
 
-> **Implementation baseline for AI coding agents and human contributors**  
-> Version: **1.0**  
-> Status: **Architecture and implementation baseline**  
+> **Implementation baseline for AI coding agents and human contributors**
+> Version: **1.0**
+> Status: **Architecture and implementation baseline**
 > Scope: **Gateway + Provider Registry + Usage Ledger + Universal Quota Engine + Smart Scheduler + Control Plane**
 
 Smart Router is a self-hosted, provider-agnostic AI resource orchestrator. It evolves the current `smart-router-ui` codebase from a hardcoded multi-upstream failover proxy into a system where users can add and manage AI providers, credentials, models, quotas, budgets, and routing policies without changing the routing core.
@@ -1981,6 +1981,10 @@ A merge to `main` should require:
 - Alembic migration smoke test when schema changes;
 - secret scan;
 - legacy migration smoke test while legacy support exists.
+
+### 31.4 Implementation progress tracking
+
+Every implementation step must be recorded in `docs/notes/implementation-progress.md` as the work proceeds. Each note should include the date, what changed, verification run, test outcome, and any follow-up risks or TODOs. This progress note is the project handoff log for future humans and agents, so do not rely on chat history as the source of truth.
 
 A release candidate additionally requires:
 
