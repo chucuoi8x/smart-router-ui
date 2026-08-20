@@ -335,3 +335,22 @@ Final outcome:
 - Full pytest result after timestamp fix: 45 passed, 2 warnings.
 - Remaining warnings are the existing pytest `asyncio_mode` config warning and FastAPI/Starlette TestClient deprecation warning.
 - `git diff --check` reported no whitespace errors; this progress note reports the Git line-ending warning (`LF will be replaced by CRLF`).
+- Commit pushed: `014d05f fix: use timezone-aware revision timestamps`.
+
+### Step 12 - Legacy catalog import compatibility restored
+
+Changed:
+- Added `tests/unit/test_catalog_import_compat.py` to assert `router.py` exposes `build_records`, `select_routes`, and `state_from_records`.
+- Restored the explicit import in `router.py` from `apps.worker.collectors.aibox_catalog`.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_catalog_import_compat.py -q` before the fix; it failed with `AttributeError: module 'router' has no attribute 'build_records'`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_catalog_import_compat.py -q` after the fix; it passed.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git diff --check`.
+- Ran `git status --short --untracked-files=all`.
+
+Outcome:
+- Full pytest result: 46 passed, 2 warnings.
+- `git diff --check` produced zero warnings or errors.
+- Legacy `sync_catalog()` path no longer risks `NameError` at runtime when calling moved catalog helpers.

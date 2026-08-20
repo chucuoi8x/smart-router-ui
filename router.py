@@ -22,8 +22,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from apps.gateway.api.admin import router as admin_router
+from apps.worker.collectors.aibox_catalog import build_records, select_routes, state_from_records
 
-# Moved to worker/collectors - import removed
 
 
 BASE_DIR = Path(__file__).resolve().parent
