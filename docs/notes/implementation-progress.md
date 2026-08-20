@@ -490,3 +490,18 @@ Outcome:
 - Usage ledger focused tests pass: 6 passed.
 - Full pytest result after this slice: 58 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 20 - UsageLedger repository slice pushed
+
+Changed:
+- Committed the async UsageLedger repository slice as `4b23f96 feat: add usage ledger repository`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; matches were usage token field names only.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `ebaea1a` to `4b23f96`.
+- The M3 usage ledger now has a tested async repository boundary for future FastAPI/DB wiring.
