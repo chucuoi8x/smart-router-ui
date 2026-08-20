@@ -572,3 +572,18 @@ Outcome:
 - Focused M3 unit tests pass: 19 passed.
 - Full pytest result after this slice: 65 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 24 - Quota reservation slice pushed
+
+Changed:
+- Committed the quota resource/in-memory reservation slice as `12b4e1a feat: add quota reservation domain`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; no secret-like terms were present.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `4de1a09` to `12b4e1a`.
+- The M3 Resource Plane now has a tested in-memory quota reservation domain for future router/Redis integration.
