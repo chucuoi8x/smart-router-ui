@@ -14,6 +14,8 @@ class QuotaResource:
     used: int = 0
     safety_buffer: int = 0
     hard_limit: bool = True
+    source: str = "configured"
+    confidence: str = "high"
 
     def __post_init__(self) -> None:
         if self.limit < 0:
@@ -36,6 +38,27 @@ class QuotaResource:
     @property
     def effective_remaining(self) -> int:
         return max(0, self.limit - self.used - self.safety_buffer)
+
+
+@dataclass(frozen=True)
+class QuotaObservation:
+    resource_id: str
+    limit: int
+    used: int
+    source: str
+    confidence: str
+    safety_buffer: int | None = None
+    hard_limit: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.limit < 0:
+            raise ValueError("limit must be non-negative")
+        if self.used < 0:
+            raise ValueError("used must be non-negative")
+        if self.used > self.limit:
+            raise ValueError("used cannot exceed limit")
+        if self.safety_buffer is not None and self.safety_buffer < 0:
+            raise ValueError("safety_buffer must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -108,6 +131,27 @@ class InMemoryQuotaReservations:
     def snapshot(self, resource_id: str) -> QuotaResource:
         with self._lock:
             return self._resource(resource_id)
+
+    def apply_observation(self, observation: QuotaObservation) -> QuotaResource:
+        with self._lock:
+            current = self._resource(observation.resource_id)
+            safety_buffer = (
+                current.safety_buffer
+                if observation.safety_buffer is None
+                else observation.safety_buffer
+            )
+            hard_limit = current.hard_limit if observation.hard_limit is None else observation.hard_limit
+            updated = replace(
+                current,
+                limit=observation.limit,
+                used=observation.used,
+                safety_buffer=safety_buffer,
+                hard_limit=hard_limit,
+                source=observation.source,
+                confidence=observation.confidence,
+            )
+            self._resources[observation.resource_id] = updated
+            return updated
 
     def check_many(self, requests: list[QuotaReservationRequest]) -> QuotaAdmissionResult:
         if not requests:

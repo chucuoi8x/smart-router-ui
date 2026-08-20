@@ -20,6 +20,63 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(resource.window_seconds, 60)
         self.assertEqual(resource.used, 0)
         self.assertEqual(resource.remaining, 100)
+        self.assertEqual(resource.source, "configured")
+        self.assertEqual(resource.confidence, "high")
+
+    def test_quota_observation_updates_resource_with_provenance(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaObservation, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+
+        updated = store.apply_observation(
+            QuotaObservation(
+                resource_id="tokens:tenant-a:gpt-4o:minute",
+                limit=120,
+                used=25,
+                source="provider_api",
+                confidence="exact",
+            )
+        )
+
+        self.assertEqual(updated.limit, 120)
+        self.assertEqual(updated.used, 25)
+        self.assertEqual(updated.source, "provider_api")
+        self.assertEqual(updated.confidence, "exact")
+        self.assertEqual(updated.scope, "tenant-a")
+        self.assertEqual(updated.metric, "total_token")
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute"), updated)
+
+    def test_quota_observation_can_update_safety_and_hard_limit(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaObservation, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource(
+                "tokens:tenant-a:gpt-4o:minute",
+                "tenant-a",
+                "total_token",
+                100,
+                60,
+                safety_buffer=10,
+            )
+        )
+
+        updated = store.apply_observation(
+            QuotaObservation(
+                resource_id="tokens:tenant-a:gpt-4o:minute",
+                limit=100,
+                used=50,
+                source="response_header",
+                confidence="high",
+                safety_buffer=20,
+                hard_limit=False,
+            )
+        )
+
+        self.assertEqual(updated.safety_buffer, 20)
+        self.assertFalse(updated.hard_limit)
+        self.assertEqual(updated.effective_remaining, 30)
 
     def test_in_memory_reservation_rejects_amount_that_exceeds_hard_limit(self):
         from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource

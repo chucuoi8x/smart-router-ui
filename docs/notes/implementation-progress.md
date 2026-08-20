@@ -749,3 +749,28 @@ Outcome:
 - Remote branch advanced from `1c89be0` to `df5b2f5`.
 - Starting with this slice, Git commit messages are written in Vietnamese per the user's instruction.
 - The quota domain now has a non-mutating admission check that separates hard quota failures from soft quota pressure for future scheduler integration.
+
+### Step 33 - Quota observation provenance updates
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests for default quota provenance and applying quota observations with source/confidence metadata.
+- Extended `apps/gateway/quota/reservations.py` with `QuotaResource.source`, `QuotaResource.confidence`, `QuotaObservation`, and `InMemoryQuotaReservations.apply_observation()`.
+
+Implementation notes:
+- This follows README 15.6's guidance that quota values must carry source and confidence rather than pretending all values are exact provider truth.
+- New `QuotaResource` instances default to `source="configured"` and `confidence="high"`.
+- `apply_observation()` updates `limit`, `used`, `source`, and `confidence` while preserving resource identity fields such as scope, metric, and window.
+- Observations may also update `safety_buffer` and `hard_limit` when those fields are known from the observation source.
+- This remains in-memory only; provider collectors, response-header parsing, and DB persistence remain later slices.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` before implementation; the new tests failed with missing `QuotaObservation` and missing `QuotaResource.source`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Quota focused tests pass: 16 passed.
+- Focused M3 unit tests pass: 31 passed.
+- Full pytest result after this slice: 77 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
