@@ -668,3 +668,28 @@ Verification:
 Outcome:
 - Remote branch advanced from `2464622` to `c2d9e9b`.
 - The in-memory quota prototype now supports README 15.9-style reservation reconciliation with unused release, overshoot accounting, and idempotent repeated reconciliation.
+
+### Step 29 - Quota safety buffer and risk-buffered reservation
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests for resource safety buffers, per-reservation risk buffers, and per-constraint risk buffers in multi-resource reservations.
+- Extended `apps/gateway/quota/reservations.py` so `QuotaResource` exposes `safety_buffer` and `effective_remaining`, and `QuotaReservationRequest` supports `risk_buffer`.
+- Updated `InMemoryQuotaReservations.reserve()` and `reserve_many()` to check README 15.8-style `required = expected_consumption + risk_buffer` against effective capacity.
+
+Implementation notes:
+- `QuotaResource.remaining` remains the raw `limit - used` value, while `effective_remaining` subtracts `safety_buffer` for admission decisions.
+- Single-resource reservations now store the required amount (`amount + risk_buffer`) so reconciliation can release unused risk buffer once actual usage is known.
+- Multi-resource reservations apply each request's risk buffer independently and still remain all-or-nothing.
+- This remains an in-memory prototype; safety tuning, estimator feedback, Redis/Lua atomicity, and router admission wiring remain later slices.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` before implementation; the three new tests failed with unexpected `safety_buffer`/`risk_buffer` keyword arguments.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Quota focused tests pass: 12 passed.
+- Focused M3 unit tests pass: 27 passed.
+- Full pytest result after this slice: 73 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
