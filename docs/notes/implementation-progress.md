@@ -830,3 +830,29 @@ Verification:
 Outcome:
 - Remote branch advanced from `33316a3` to `084007d`.
 - The in-memory quota domain now models shared capacity pools for multiple model/resources that depend on the same account or subscription quota.
+
+### Step 37 - Quota resource persistence baseline
+
+Changed:
+- Extended `tests/unit/test_db_models.py` with RED coverage for the `quota_resources` table metadata, `QuotaResourceState` model instantiation, and Alembic revision `004_quota_resources` importability.
+- Extended `tests/unit/test_quota_reservations.py` with a RED test for mapping a `QuotaResource` domain object into its SQLAlchemy persistence row.
+- Added `QuotaResourceState` in `apps/gateway/db/models.py` with resource identity, scope/metric, hard/soft quota state, source/confidence provenance, shared group ID, and `updated_at` timestamp fields.
+- Added `QuotaResource.to_db_model()` in `apps/gateway/quota/reservations.py`.
+- Added `migrations/versions/004_quota_resources.py` creating `quota_resources` and indexes for scope, metric, and shared group lookups.
+
+Implementation notes:
+- This is a persistence shape baseline only; it does not add a quota repository, live DB writes, Redis/Lua atomicity, provider collectors, or router admission wiring.
+- The persisted fields preserve the Resource Plane concepts already modeled in memory: safety buffer, hard-vs-soft limit flag, observation provenance, and shared quota group identity.
+- No provider credentials, raw prompts, raw responses, Authorization headers, cookies, or CLIProxy management keys are stored by this quota resource state table.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_db_models.py -q` before implementation; it failed with missing `QuotaResourceState`, missing `quota_resources` metadata, missing `004_quota_resources.py`, and missing `QuotaResource.to_db_model()`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_db_models.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m alembic upgrade head --sql` to verify the `001 -> 002 -> 003 -> 004` offline migration chain.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Focused quota/DB tests pass: 28 passed.
+- Alembic offline SQL generation succeeds and emits `CREATE TABLE quota_resources` plus indexes for `metric`, `scope`, and `shared_group_id`.
+- Full pytest result after this slice: 82 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.

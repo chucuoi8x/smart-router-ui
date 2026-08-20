@@ -88,3 +88,20 @@ class UsageLedger(Base):
     confidence: Mapped[str] = mapped_column(String(64), nullable=False, default="estimated")
     estimated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+
+
+class QuotaResourceState(Base):
+    __tablename__ = "quota_resources"
+
+    resource_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    metric: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    safety_buffer: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    hard_limit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="configured")
+    confidence: Mapped[str] = mapped_column(String(64), nullable=False, default="high")
+    shared_group_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)

@@ -40,6 +40,23 @@ class QuotaResource:
     def effective_remaining(self) -> int:
         return max(0, self.limit - self.used - self.safety_buffer)
 
+    def to_db_model(self):
+        from apps.gateway.db.models import QuotaResourceState
+
+        return QuotaResourceState(
+            resource_id=self.resource_id,
+            scope=self.scope,
+            metric=self.metric,
+            limit=self.limit,
+            used=self.used,
+            window_seconds=self.window_seconds,
+            safety_buffer=self.safety_buffer,
+            hard_limit=self.hard_limit,
+            source=self.source,
+            confidence=self.confidence,
+            shared_group_id=self.shared_group_id,
+        )
+
 
 @dataclass(frozen=True)
 class QuotaObservation:

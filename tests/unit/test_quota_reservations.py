@@ -23,6 +23,39 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(resource.source, "configured")
         self.assertEqual(resource.confidence, "high")
 
+    def test_quota_resource_maps_to_db_model(self):
+        from apps.gateway.db.models import QuotaResourceState
+        from apps.gateway.quota.reservations import QuotaResource
+
+        resource = QuotaResource(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            window_seconds=60,
+            used=25,
+            safety_buffer=10,
+            hard_limit=True,
+            source="provider_api",
+            confidence="exact",
+            shared_group_id="account-weekly-123",
+        )
+
+        row = resource.to_db_model()
+
+        self.assertIsInstance(row, QuotaResourceState)
+        self.assertEqual(row.resource_id, "tokens:tenant-a:gpt-4o:minute")
+        self.assertEqual(row.scope, "tenant-a")
+        self.assertEqual(row.metric, "total_token")
+        self.assertEqual(row.limit, 100)
+        self.assertEqual(row.used, 25)
+        self.assertEqual(row.window_seconds, 60)
+        self.assertEqual(row.safety_buffer, 10)
+        self.assertTrue(row.hard_limit)
+        self.assertEqual(row.source, "provider_api")
+        self.assertEqual(row.confidence, "exact")
+        self.assertEqual(row.shared_group_id, "account-weekly-123")
+
     def test_quota_observation_updates_resource_with_provenance(self):
         from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaObservation, QuotaResource
 

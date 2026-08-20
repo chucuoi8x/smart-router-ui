@@ -13,6 +13,33 @@ class DBModelsBaselineTests(unittest.TestCase):
         self.assertIn("request_ledger", tables)
         self.assertIn("attempt_ledger", tables)
         self.assertIn("usage_ledger", tables)
+        self.assertIn("quota_resources", tables)
+
+    def test_quota_resource_state_model_instantiation(self):
+        from apps.gateway.db.models import QuotaResourceState
+
+        resource = QuotaResourceState(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            used=25,
+            window_seconds=60,
+            safety_buffer=10,
+            hard_limit=True,
+            source="provider_api",
+            confidence="exact",
+            shared_group_id="account-weekly-123",
+        )
+
+        self.assertEqual(resource.resource_id, "tokens:tenant-a:gpt-4o:minute")
+        self.assertEqual(resource.limit, 100)
+        self.assertEqual(resource.used, 25)
+        self.assertEqual(resource.safety_buffer, 10)
+        self.assertTrue(resource.hard_limit)
+        self.assertEqual(resource.source, "provider_api")
+        self.assertEqual(resource.confidence, "exact")
+        self.assertEqual(resource.shared_group_id, "account-weekly-123")
 
     def test_provider_connection_model_instantiation(self):
         from apps.gateway.db.models import ProviderConnection
@@ -100,6 +127,21 @@ class DBModelsBaselineTests(unittest.TestCase):
 
         self.assertEqual(module.revision, "003_request_attempt_ledger")
         self.assertEqual(module.down_revision, "002_usage_ledger_provenance")
+        self.assertTrue(callable(module.upgrade))
+        self.assertTrue(callable(module.downgrade))
+
+    def test_quota_resource_migration_is_importable(self):
+        migration_path = Path("migrations/versions/004_quota_resources.py")
+        self.assertTrue(migration_path.exists())
+
+        spec = importlib.util.spec_from_file_location("quota_resources", migration_path)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+
+        self.assertEqual(module.revision, "004_quota_resources")
+        self.assertEqual(module.down_revision, "003_request_attempt_ledger")
         self.assertTrue(callable(module.upgrade))
         self.assertTrue(callable(module.downgrade))
 
