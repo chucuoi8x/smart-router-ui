@@ -693,3 +693,18 @@ Outcome:
 - Focused M3 unit tests pass: 27 passed.
 - Full pytest result after this slice: 73 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 30 - Quota safety/risk buffer slice pushed
+
+Changed:
+- Committed the quota safety/risk buffer slice as `c0ba609 feat: add quota safety and risk buffers`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; the only match was the progress note heading text for the safety/risk-buffer slice, not a secret.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `cca05ab` to `c0ba609`.
+- The in-memory quota prototype now models README 15.8's `effective_remaining` and `required = expected_consumption + risk_buffer` formulas.
