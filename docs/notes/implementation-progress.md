@@ -393,5 +393,28 @@ Verification:
 - Ran `git push origin feature/admin-api-baseline`.
 
 Outcome:
-- Remote branch advanced from `014d05f` to `daaf684`.
-- Two logical implementation commits are now available on the remote feature branch.
+- Remote branch advanced from `014d05f` to `216ebea` after the follow-up progress-note commit.
+- Two logical implementation commits and one documentation tracking commit are now available on the remote feature branch.
+
+### Step 15 - First M3 usage ledger domain slice
+
+Changed:
+- Added `tests/unit/test_usage_ledger.py` covering usage event normalization, request-level totals across multiple attempts, and privacy filtering for request metadata.
+- Added `apps/gateway/usage/__init__.py` package marker.
+- Added `apps/gateway/usage/ledger.py` with `UsageEvent`, `RequestRecord`, `AttemptRecord`, and `InMemoryUsageLedger`.
+
+Implementation notes:
+- This is a domain/service slice only; it is not yet wired into live `router.py`, DB persistence, or quota admission control.
+- Request and attempt records are intentionally separate so a single client request can retain multiple upstream attempts.
+- Request-level totals include all usage events for the request, including failed/retried attempts that may have consumed capacity.
+- `record_request()` filters private payload/secret metadata keys such as raw prompts, raw responses, authorization headers, cookies, and provider secrets.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_usage_ledger.py -q` before implementation; it failed with `ModuleNotFoundError: No module named 'apps.gateway.usage'`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_usage_ledger.py -q` after implementation.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Usage ledger focused tests pass: 3 passed.
+- Full pytest result after this slice: 54 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
