@@ -1,6 +1,22 @@
 import unittest
 
 
+class FakeAsyncSession:
+    def __init__(self):
+        self.added = []
+        self.committed = False
+        self.flushed = False
+
+    def add(self, item):
+        self.added.append(item)
+
+    async def flush(self):
+        self.flushed = True
+
+    async def commit(self):
+        self.committed = True
+
+
 class UsageLedgerTests(unittest.TestCase):
     def test_usage_event_normalizes_provider_usage(self):
         from apps.gateway.usage.ledger import UsageEvent
@@ -149,6 +165,52 @@ class UsageLedgerTests(unittest.TestCase):
         self.assertEqual(row.source, "provider_api")
         self.assertEqual(row.confidence, "exact")
         self.assertFalse(row.estimated)
+
+
+class UsageLedgerRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repository_records_usage_event_with_flush_only_by_default(self):
+        from apps.gateway.db.models import UsageLedger
+        from apps.gateway.usage.ledger import UsageEvent, UsageLedgerRepository
+
+        session = FakeAsyncSession()
+        repository = UsageLedgerRepository(session)
+        event = UsageEvent.from_parsed_usage(
+            request_id="req_1",
+            attempt_id="att_1",
+            provider_connection_id="conn_1",
+            credential_id="cred_1",
+            model_resource_id="model_1",
+            usage={"input_tokens": 10, "output_tokens": 20, "source": "provider_api", "confidence": "exact"},
+        )
+
+        row = await repository.record_usage(event, id="led_1")
+
+        self.assertIsInstance(row, UsageLedger)
+        self.assertEqual(session.added, [row])
+        self.assertTrue(session.flushed)
+        self.assertFalse(session.committed)
+        self.assertEqual(row.request_id, "req_1")
+        self.assertEqual(row.attempt_id, "att_1")
+        self.assertEqual(row.total_tokens, 30)
+
+    async def test_repository_can_commit_when_requested(self):
+        from apps.gateway.usage.ledger import UsageEvent, UsageLedgerRepository
+
+        session = FakeAsyncSession()
+        repository = UsageLedgerRepository(session)
+        event = UsageEvent.from_parsed_usage(
+            request_id="req_1",
+            attempt_id="att_1",
+            provider_connection_id="conn_1",
+            credential_id=None,
+            model_resource_id="model_1",
+            usage={"input_tokens": 1, "output_tokens": 2},
+        )
+
+        await repository.record_usage(event, id="led_1", commit=True)
+
+        self.assertTrue(session.flushed)
+        self.assertTrue(session.committed)
 
 
 if __name__ == "__main__":

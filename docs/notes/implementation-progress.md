@@ -469,3 +469,24 @@ Verification:
 Outcome:
 - Remote branch advanced from `c3fd28e` to `80dfcc8`.
 - UsageEvent-to-DB persistence mapping and migration `002_usage_ledger_provenance` are now available on the remote feature branch.
+
+### Step 19 - Async UsageLedger repository boundary
+
+Changed:
+- Extended `tests/unit/test_usage_ledger.py` with RED tests for an async repository that stores a `UsageEvent` through a SQLAlchemy-like session.
+- Added `UsageLedgerRepository` in `apps/gateway/usage/ledger.py`.
+
+Implementation notes:
+- The repository accepts an injected async session boundary instead of importing the global session, which keeps it testable and usable with FastAPI dependency injection later.
+- `record_usage()` maps `UsageEvent` to `UsageLedger`, calls `session.add()`, always flushes, and commits only when explicitly requested.
+- This slice still does not wire usage persistence into `router.py`; that remains a later integration slice.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_usage_ledger.py -q` before implementation; it failed with `ImportError: cannot import name 'UsageLedgerRepository'`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_usage_ledger.py -q` after implementation.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Usage ledger focused tests pass: 6 passed.
+- Full pytest result after this slice: 58 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.

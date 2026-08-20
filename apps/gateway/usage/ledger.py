@@ -151,6 +151,19 @@ class AttemptRecord:
     created_at: datetime = field(default_factory=_utc_now)
 
 
+class UsageLedgerRepository:
+    def __init__(self, session) -> None:
+        self._session = session
+
+    async def record_usage(self, event: UsageEvent, *, id: str | None = None, commit: bool = False):
+        row = event.to_db_model(id=id)
+        self._session.add(row)
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
+        return row
+
+
 class InMemoryUsageLedger:
     def __init__(self) -> None:
         self._requests: dict[str, RequestRecord] = {}
