@@ -774,3 +774,18 @@ Outcome:
 - Focused M3 unit tests pass: 31 passed.
 - Full pytest result after this slice: 77 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 34 - Quota observation provenance slice pushed
+
+Changed:
+- Committed the quota observation provenance slice as `e5df894 thêm cập nhật quan sát quota có nguồn tin cậy`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; no secret-like terms were present.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `9d51e0c` to `e5df894`.
+- The quota domain now preserves source/confidence metadata and can apply in-memory quota observations from future collectors or response-header parsers.
