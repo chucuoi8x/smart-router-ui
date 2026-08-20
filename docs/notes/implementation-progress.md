@@ -653,3 +653,18 @@ Outcome:
 - Focused M3 unit tests pass: 24 passed.
 - Full pytest result after this slice: 70 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 28 - Quota reconciliation slice pushed
+
+Changed:
+- Committed the quota reconciliation slice as `c2d9e9b feat: reconcile quota reservations`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; no secret-like terms were present.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `2464622` to `c2d9e9b`.
+- The in-memory quota prototype now supports README 15.9-style reservation reconciliation with unused release, overshoot accounting, and idempotent repeated reconciliation.
