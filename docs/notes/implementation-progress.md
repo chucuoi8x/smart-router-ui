@@ -532,3 +532,18 @@ Outcome:
 - Alembic offline SQL generation succeeds and emits `CREATE TABLE request_ledger` and `CREATE TABLE attempt_ledger` for migration `003_request_attempt_ledger`.
 - Full pytest result after this slice: 61 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 22 - Request and attempt ledger slice pushed
+
+Changed:
+- Committed the request/attempt ledger persistence slice as `45c679a feat: persist request and attempt ledgers`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; matches were documentation about secret filtering and existing test assertions only.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `044b87a` to `45c679a`.
+- Request, attempt, and usage event ledger persistence scaffolding is now available on the remote feature branch.
