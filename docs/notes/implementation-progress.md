@@ -263,3 +263,20 @@ Verification:
 Outcome:
 - Pre-commit full pytest result: 44 passed, 5 warnings.
 - `git diff --check` reported no whitespace errors; README.md still reports the Git line-ending warning (`LF will be replaced by CRLF`).
+
+### Step 8 - Current state committed and pushed
+
+Changed:
+- Stripped trailing whitespace from staged text files before commit because `git diff --cached --check` caught whitespace issues in the handoff batch.
+- Committed the current migration baseline on branch `feature/admin-api-baseline`.
+- Pushed the branch to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q` after whitespace cleanup.
+- Re-ran `git diff --cached --check` after restaging.
+- Scanned staged diff for secret-like terms before commit; matches were placeholder/test values, environment variable names, token field names, and documentation references, not real secrets.
+
+Outcome:
+- Commit pushed: `12edc00 feat: add smart router admin baseline`.
+- Remote branch: `origin/feature/admin-api-baseline`.
+- GitHub PR URL suggested by remote: `https://github.com/chucuoi8x/smart-router-ui/pull/new/feature/admin-api-baseline`.
