@@ -310,3 +310,28 @@ Outcome:
 - Full pytest result after this slice: 45 passed, 5 warnings.
 - `git diff --check` reported no whitespace errors; Dockerfile and this progress note report Git line-ending warnings (`LF will be replaced by CRLF`).
 - Pending changes for this slice before commit: `Dockerfile`, `docs/notes/implementation-progress.md`, and `tests/unit/test_docker_packaging.py`.
+- Commit pushed: `5c5751b test: guard Docker gateway packaging`.
+
+### Step 11 - Timezone-aware revision timestamps
+
+Changed:
+- Updated `apps/gateway/config/revision.py` to use `datetime.now(UTC)` instead of deprecated `datetime.utcnow()`.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_templates_and_revisions.py tests/unit/test_admin_api.py -q`.
+- Searched Python files for `utcnow(`.
+
+Outcome:
+- Targeted revision/Admin tests pass: 5 passed, 2 warnings.
+- No remaining `utcnow(` matches in Python files.
+- The previous `datetime.utcnow()` deprecation warning is removed from the targeted test run.
+
+Final verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git diff --check`.
+- Ran `git status --short --untracked-files=all`.
+
+Final outcome:
+- Full pytest result after timestamp fix: 45 passed, 2 warnings.
+- Remaining warnings are the existing pytest `asyncio_mode` config warning and FastAPI/Starlette TestClient deprecation warning.
+- `git diff --check` reported no whitespace errors; this progress note reports the Git line-ending warning (`LF will be replaced by CRLF`).

@@ -1,6 +1,6 @@
 import uuid
 from typing import Dict, Any, Tuple, List, Optional
-from datetime import datetime
+from datetime import UTC, datetime
 from apps.gateway.config.snapshot import RuntimeConfigSnapshot
 
 class ConfigRevisionManager:
@@ -14,7 +14,7 @@ class ConfigRevisionManager:
             'revision_id': revision_id,
             'snapshot_data': snapshot_data,
             'active': False,
-            'created_at': datetime.utcnow()
+            'created_at': datetime.now(UTC)
         }
         return revision_id
 
