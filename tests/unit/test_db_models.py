@@ -71,6 +71,21 @@ class DBModelsBaselineTests(unittest.TestCase):
         self.assertTrue(callable(module.upgrade))
         self.assertTrue(callable(module.downgrade))
 
+    def test_usage_ledger_provenance_migration_is_importable(self):
+        migration_path = Path("migrations/versions/002_usage_ledger_provenance.py")
+        self.assertTrue(migration_path.exists())
+
+        spec = importlib.util.spec_from_file_location("usage_ledger_provenance", migration_path)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+
+        self.assertEqual(module.revision, "002_usage_ledger_provenance")
+        self.assertEqual(module.down_revision, "001_initial_baseline")
+        self.assertTrue(callable(module.upgrade))
+        self.assertTrue(callable(module.downgrade))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -433,3 +433,24 @@ Verification:
 Outcome:
 - Remote branch advanced from `216ebea` to `b570f3c`.
 - First M3 usage ledger domain slice is now available on the remote feature branch.
+
+### Step 17 - UsageEvent persistence mapping and provenance migration
+
+Changed:
+- Extended `tests/unit/test_usage_ledger.py` with a RED test for mapping `UsageEvent` to the SQLAlchemy `UsageLedger` model while preserving attempt/provenance/accounting fields.
+- Extended `apps/gateway/usage/ledger.py` with `UsageEvent.to_db_model()`.
+- Extended `apps/gateway/db/models.py` `UsageLedger` columns with `attempt_id`, `credential_id`, cached/cache-write/reasoning/total token fields, native metric fields, currency, source, confidence, and estimated flag.
+- Added `migrations/versions/002_usage_ledger_provenance.py` to migrate existing `usage_ledger` tables from the initial baseline to the richer provenance schema.
+- Extended `tests/unit/test_db_models.py` to assert migration revision `002_usage_ledger_provenance` is importable and chained after `001_initial_baseline`.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_usage_ledger.py -q` before implementation; it failed with `AttributeError: 'UsageEvent' object has no attribute 'to_db_model'`.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m alembic upgrade head --sql` to verify the `001 -> 002` offline migration chain.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Focused usage/DB model tests pass: 10 passed.
+- Alembic offline SQL generation succeeds and emits upgrade SQL for `002_usage_ledger_provenance`.
+- Full pytest result after this slice: 56 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.

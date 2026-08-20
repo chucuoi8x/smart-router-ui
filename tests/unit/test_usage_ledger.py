@@ -102,6 +102,54 @@ class UsageLedgerTests(unittest.TestCase):
         self.assertNotIn("provider_secret", exported["metadata"])
         self.assertNotIn("cookie", exported["metadata"])
 
+    def test_usage_event_maps_to_db_model_with_provenance(self):
+        from apps.gateway.db.models import UsageLedger
+        from apps.gateway.usage.ledger import UsageEvent
+
+        event = UsageEvent.from_parsed_usage(
+            request_id="req_1",
+            attempt_id="att_1",
+            provider_connection_id="conn_1",
+            credential_id="cred_1",
+            model_resource_id="model_1",
+            usage={
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "cached_input_tokens": 3,
+                "cache_write_tokens": 2,
+                "reasoning_tokens": 5,
+                "native_metric": "tokens",
+                "native_amount": 40.0,
+                "actual_cost": 0.0123,
+                "currency": "USD",
+                "source": "provider_api",
+                "confidence": "exact",
+                "estimated": False,
+            },
+        )
+
+        row = event.to_db_model(id="led_1")
+        self.assertIsInstance(row, UsageLedger)
+        self.assertEqual(row.id, "led_1")
+        self.assertEqual(row.request_id, "req_1")
+        self.assertEqual(row.attempt_id, "att_1")
+        self.assertEqual(row.provider_id, "conn_1")
+        self.assertEqual(row.credential_id, "cred_1")
+        self.assertEqual(row.model, "model_1")
+        self.assertEqual(row.prompt_tokens, 10)
+        self.assertEqual(row.completion_tokens, 20)
+        self.assertEqual(row.cached_input_tokens, 3)
+        self.assertEqual(row.cache_write_tokens, 2)
+        self.assertEqual(row.reasoning_tokens, 5)
+        self.assertEqual(row.total_tokens, 30)
+        self.assertEqual(row.native_metric, "tokens")
+        self.assertEqual(row.native_amount, 40.0)
+        self.assertEqual(row.estimated_cost, 0.0123)
+        self.assertEqual(row.currency, "USD")
+        self.assertEqual(row.source, "provider_api")
+        self.assertEqual(row.confidence, "exact")
+        self.assertFalse(row.estimated)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -96,6 +96,32 @@ class UsageEvent:
             estimated=estimated,
         )
 
+    def to_db_model(self, *, id: str | None = None):
+        from apps.gateway.db.models import UsageLedger
+
+        return UsageLedger(
+            id=id,
+            request_id=self.request_id,
+            attempt_id=self.attempt_id,
+            provider_id=self.provider_connection_id,
+            credential_id=self.credential_id,
+            model=self.model_resource_id,
+            prompt_tokens=self.input_tokens,
+            completion_tokens=self.output_tokens,
+            cached_input_tokens=self.cached_input_tokens,
+            cache_write_tokens=self.cache_write_tokens,
+            reasoning_tokens=self.reasoning_tokens,
+            total_tokens=self.total_tokens,
+            native_metric=self.native_metric,
+            native_amount=self.native_amount,
+            estimated_cost=self.actual_cost or 0.0,
+            currency=self.currency,
+            source=self.source,
+            confidence=self.confidence,
+            estimated=self.estimated,
+            created_at=self.observed_at,
+        )
+
 
 @dataclass(frozen=True)
 class RequestRecord:
