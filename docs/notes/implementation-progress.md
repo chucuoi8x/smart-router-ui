@@ -354,3 +354,26 @@ Outcome:
 - Full pytest result: 46 passed, 2 warnings.
 - `git diff --check` produced zero warnings or errors.
 - Legacy `sync_catalog()` path no longer risks `NameError` at runtime when calling moved catalog helpers.
+
+### Step 13 - Database baseline and Alembic migration added
+
+Changed:
+- Added `tests/unit/test_db_models.py` to define the expected SQLAlchemy baseline model behavior and Alembic revision importability.
+- Added `apps/gateway/db/models.py` with SQLAlchemy 2.0 declarative models for `provider_connections`, `config_revisions`, and `usage_ledger`.
+- Added `migrations/versions/001_initial_baseline.py` with the initial Alembic migration for the three baseline tables and indexes.
+- Updated `migrations/env.py` to use Alembic's async migration pattern with `async_engine_from_config` and `connection.run_sync()` for the existing `postgresql+asyncpg` URL.
+- Updated `alembic.ini` with standard logging sections required by `fileConfig`.
+- Added `sqlalchemy`, `alembic`, and `asyncpg` to `pyproject.toml` and `requirements.txt` so DB/Alembic dependencies are reproducible.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_db_models.py -q` before the model implementation; it failed with `ModuleNotFoundError: No module named 'apps.gateway.db.models'`.
+- Installed DB dependencies into the project `.venv` using `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pip install sqlalchemy alembic asyncpg pytest-asyncio` after the first RED run exposed missing local SQLAlchemy packages.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_db_models.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m alembic upgrade head --sql` to verify offline SQL generation without requiring a live database.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- DB baseline focused tests pass: 5 passed.
+- Alembic offline SQL generation succeeds and emits `CREATE TABLE` statements for `provider_connections`, `config_revisions`, and `usage_ledger`.
+- Full pytest result after this slice: 51 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
