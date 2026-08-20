@@ -895,3 +895,18 @@ Outcome:
 - Focused M3 unit tests pass: 39 passed.
 - Full pytest result after this slice: 85 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 40 - Quota resource repository slice pushed
+
+Changed:
+- Committed the quota resource repository boundary as `961a1f9 thêm repository trạng thái quota resource`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; matches were quota token metric field names in tests, not real secrets.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `a68a1f9` to `961a1f9`.
+- Quota resource state now has a tested async repository boundary ready for later collector or admission integration.
