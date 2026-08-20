@@ -454,3 +454,18 @@ Outcome:
 - Alembic offline SQL generation succeeds and emits upgrade SQL for `002_usage_ledger_provenance`.
 - Full pytest result after this slice: 56 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 18 - UsageEvent persistence slice pushed
+
+Changed:
+- Committed the UsageEvent persistence/provenance slice as `80dfcc8 feat: persist usage event provenance`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; matches were usage token field names and existing privacy-filter assertions only.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `c3fd28e` to `80dfcc8`.
+- UsageEvent-to-DB persistence mapping and migration `002_usage_ledger_provenance` are now available on the remote feature branch.
