@@ -708,3 +708,28 @@ Verification:
 Outcome:
 - Remote branch advanced from `cca05ab` to `c0ba609`.
 - The in-memory quota prototype now models README 15.8's `effective_remaining` and `required = expected_consumption + risk_buffer` formulas.
+
+### Step 31 - Hard and soft quota admission checks
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests for non-mutating admission checks that distinguish hard quota failures from soft quota pressure.
+- Extended `apps/gateway/quota/reservations.py` with `QuotaResource.hard_limit`, `QuotaAdmissionResult`, and `InMemoryQuotaReservations.check_many()`.
+
+Implementation notes:
+- This follows README 15.5's eligibility rule: all hard constraints must pass, while soft constraints contribute pressure/penalty to scheduling.
+- `check_many()` is intentionally non-mutating; it reports hard shortfalls, soft pressure, and effective remaining values without consuming capacity.
+- Soft constraints with shortfall keep `accepted=True` so later scheduler/scoring logic can decide how strongly to penalize the candidate.
+- Hard constraints with shortfall set `accepted=False` and report the shortfall by resource ID.
+- This slice does not wire admission checks into `RouterEngine` or the live FastAPI data plane yet.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` before implementation; the new tests failed with missing `hard_limit` and missing `check_many()`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Quota focused tests pass: 14 passed.
+- Focused M3 unit tests pass: 29 passed.
+- Full pytest result after this slice: 75 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.

@@ -215,6 +215,50 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 60)
         self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 1)
 
+    def test_admission_check_rejects_when_hard_constraint_would_fail(self):
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaReservationRequest,
+            QuotaResource,
+        )
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60, used=95))
+
+        result = store.check_many([QuotaReservationRequest("tokens:tenant-a:gpt-4o:minute", 10)])
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.hard_failures, {"tokens:tenant-a:gpt-4o:minute": 5})
+        self.assertEqual(result.soft_pressure_by_resource, {})
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 95)
+
+    def test_admission_check_allows_soft_constraint_pressure_without_mutation(self):
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaReservationRequest,
+            QuotaResource,
+        )
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource(
+                "soft:tenant-a:daily-token-guidance",
+                "tenant-a",
+                "total_token",
+                100,
+                86400,
+                used=95,
+                hard_limit=False,
+            )
+        )
+
+        result = store.check_many([QuotaReservationRequest("soft:tenant-a:daily-token-guidance", 10)])
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.hard_failures, {})
+        self.assertEqual(result.soft_pressure_by_resource, {"soft:tenant-a:daily-token-guidance": 5})
+        self.assertEqual(store.snapshot("soft:tenant-a:daily-token-guidance").used, 95)
+
     def test_release_multi_resource_reservation_returns_all_capacity(self):
         from apps.gateway.quota.reservations import (
             InMemoryQuotaReservations,

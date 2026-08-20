@@ -13,6 +13,7 @@ class QuotaResource:
     window_seconds: int
     used: int = 0
     safety_buffer: int = 0
+    hard_limit: bool = True
 
     def __post_init__(self) -> None:
         if self.limit < 0:
@@ -84,6 +85,14 @@ class ReconciliationResult:
     remaining_by_resource: dict[str, int]
 
 
+@dataclass(frozen=True)
+class QuotaAdmissionResult:
+    accepted: bool
+    hard_failures: dict[str, int]
+    soft_pressure_by_resource: dict[str, int]
+    remaining_by_resource: dict[str, int]
+
+
 class InMemoryQuotaReservations:
     def __init__(self) -> None:
         self._resources: dict[str, QuotaResource] = {}
@@ -99,6 +108,36 @@ class InMemoryQuotaReservations:
     def snapshot(self, resource_id: str) -> QuotaResource:
         with self._lock:
             return self._resource(resource_id)
+
+    def check_many(self, requests: list[QuotaReservationRequest]) -> QuotaAdmissionResult:
+        if not requests:
+            raise ValueError("requests must not be empty")
+
+        with self._lock:
+            hard_failures: dict[str, int] = {}
+            soft_pressure: dict[str, int] = {}
+            remaining: dict[str, int] = {}
+            projected_used: dict[str, int] = {}
+
+            for request in requests:
+                resource = self._resource(request.resource_id)
+                used = projected_used.get(request.resource_id, resource.used)
+                effective_remaining = max(0, resource.limit - used - resource.safety_buffer)
+                remaining[request.resource_id] = effective_remaining
+                shortfall = request.required - effective_remaining
+                if shortfall > 0:
+                    if resource.hard_limit:
+                        hard_failures[request.resource_id] = shortfall
+                    else:
+                        soft_pressure[request.resource_id] = shortfall
+                projected_used[request.resource_id] = used + request.required
+
+            return QuotaAdmissionResult(
+                accepted=not hard_failures,
+                hard_failures=hard_failures,
+                soft_pressure_by_resource=soft_pressure,
+                remaining_by_resource=remaining,
+            )
 
     def reserve(
         self,
