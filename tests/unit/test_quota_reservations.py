@@ -105,6 +105,87 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(len(rejected), 5)
         self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 90)
 
+    def test_multi_resource_reservation_is_all_or_nothing(self):
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaReservationRequest,
+            QuotaResource,
+        )
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource(
+                resource_id="tokens:tenant-a:gpt-4o:minute",
+                scope="tenant-a",
+                metric="total_token",
+                limit=100,
+                window_seconds=60,
+            )
+        )
+        store.add_resource(
+            QuotaResource(
+                resource_id="requests:tenant-a:minute",
+                scope="tenant-a",
+                metric="request",
+                limit=1,
+                window_seconds=60,
+            )
+        )
+
+        accepted = store.reserve_many(
+            reservation_id="res_1",
+            requests=[
+                QuotaReservationRequest(resource_id="tokens:tenant-a:gpt-4o:minute", amount=60),
+                QuotaReservationRequest(resource_id="requests:tenant-a:minute", amount=1),
+            ],
+        )
+        rejected = store.reserve_many(
+            reservation_id="res_2",
+            requests=[
+                QuotaReservationRequest(resource_id="tokens:tenant-a:gpt-4o:minute", amount=10),
+                QuotaReservationRequest(resource_id="requests:tenant-a:minute", amount=1),
+            ],
+        )
+
+        self.assertTrue(accepted.accepted)
+        self.assertEqual(
+            accepted.remaining_by_resource,
+            {
+                "tokens:tenant-a:gpt-4o:minute": 40,
+                "requests:tenant-a:minute": 0,
+            },
+        )
+        self.assertFalse(rejected.accepted)
+        self.assertEqual(rejected.reason, "quota_exceeded")
+        self.assertEqual(rejected.rejected_resource_id, "requests:tenant-a:minute")
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 60)
+        self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 1)
+
+    def test_release_multi_resource_reservation_returns_all_capacity(self):
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaReservationRequest,
+            QuotaResource,
+        )
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+        store.add_resource(QuotaResource("requests:tenant-a:minute", "tenant-a", "request", 2, 60))
+
+        result = store.reserve_many(
+            reservation_id="res_1",
+            requests=[
+                QuotaReservationRequest("tokens:tenant-a:gpt-4o:minute", 75),
+                QuotaReservationRequest("requests:tenant-a:minute", 1),
+            ],
+        )
+        released = store.release("res_1")
+
+        self.assertTrue(result.accepted)
+        self.assertTrue(released)
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 0)
+        self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -587,3 +587,28 @@ Verification:
 Outcome:
 - Remote branch advanced from `4de1a09` to `12b4e1a`.
 - The M3 Resource Plane now has a tested in-memory quota reservation domain for future router/Redis integration.
+
+### Step 25 - Atomic multi-constraint reservation
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests for all-or-nothing multi-resource reservation and releasing multi-resource reservations.
+- Extended `apps/gateway/quota/reservations.py` with `QuotaReservationRequest`, `ReservationBatchResult`, and `InMemoryQuotaReservations.reserve_many()`.
+
+Implementation notes:
+- This matches README 15.8's atomic reservation semantics in the in-memory prototype: a multi-constraint reservation either reserves every requested resource or reserves none.
+- If any hard constraint lacks capacity, `reserve_many()` returns a rejected batch result with `reason="quota_exceeded"` and `rejected_resource_id` identifying the failing resource.
+- Repeating a reservation ID remains idempotent and returns the stored single-resource or batch result.
+- `release()` now handles both single-resource and multi-resource accepted reservations.
+- This remains process-local only; Redis/Lua distributed atomicity remains a later Resource Plane integration slice.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` before implementation; the two new tests failed with `ImportError: cannot import name 'QuotaReservationRequest'`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Quota focused tests pass: 6 passed.
+- Focused M3 unit tests pass: 21 passed.
+- Full pytest result after this slice: 67 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
