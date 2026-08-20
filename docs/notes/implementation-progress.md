@@ -856,3 +856,18 @@ Outcome:
 - Alembic offline SQL generation succeeds and emits `CREATE TABLE quota_resources` plus indexes for `metric`, `scope`, and `shared_group_id`.
 - Full pytest result after this slice: 82 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 38 - Quota resource persistence slice pushed
+
+Changed:
+- Committed the quota resource persistence baseline as `21d1357 thêm baseline lưu trạng thái quota resource`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; matches were documentation guardrails and token metric field names in tests, not real secrets.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `26ee127` to `21d1357`.
+- M3 Resource Plane now has a tested SQLAlchemy/Alembic persistence shape for quota resource state, ready for a later repository or collector integration slice.
