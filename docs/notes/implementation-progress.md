@@ -733,3 +733,19 @@ Outcome:
 - Focused M3 unit tests pass: 29 passed.
 - Full pytest result after this slice: 75 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 32 - Hard/soft quota admission slice pushed
+
+Changed:
+- Committed the hard/soft quota admission slice as `df5b2f5 thêm kiểm tra quota cứng và mềm`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; no secret-like terms were present.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `1c89be0` to `df5b2f5`.
+- Starting with this slice, Git commit messages are written in Vietnamese per the user's instruction.
+- The quota domain now has a non-mutating admission check that separates hard quota failures from soft quota pressure for future scheduler integration.
