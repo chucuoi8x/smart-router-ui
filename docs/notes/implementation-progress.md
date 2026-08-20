@@ -612,3 +612,18 @@ Outcome:
 - Focused M3 unit tests pass: 21 passed.
 - Full pytest result after this slice: 67 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 26 - Atomic quota batch reservation slice pushed
+
+Changed:
+- Committed the atomic multi-constraint reservation slice as `09fb915 feat: add atomic quota batch reservation`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; no secret-like terms were present.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `1f47bc6` to `09fb915`.
+- The in-memory quota prototype now supports README 15.8-style all-or-nothing reservation across multiple hard constraints.
