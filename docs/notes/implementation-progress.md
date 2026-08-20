@@ -280,3 +280,33 @@ Outcome:
 - Commit pushed: `12edc00 feat: add smart router admin baseline`.
 - Remote branch: `origin/feature/admin-api-baseline`.
 - GitHub PR URL suggested by remote: `https://github.com/chucuoi8x/smart-router-ui/pull/new/feature/admin-api-baseline`.
+
+### Step 9 - Docker runtime packaging guard added
+
+Changed:
+- Added `tests/unit/test_docker_packaging.py` to assert the gateway Docker image includes the new runtime package directories and no longer references the moved root `aibox_catalog.py`.
+- Updated `Dockerfile` to copy `router.py`, `config.yaml`, `apps/`, `templates/`, `migrations/`, and `alembic.ini` into the image.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_docker_packaging.py -q` before the Dockerfile fix; it failed because `COPY apps ./apps` was missing and `aibox_catalog.py` was still referenced.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_docker_packaging.py -q` after the fix.
+- Attempted `docker compose build gateway`.
+
+Outcome:
+- Docker packaging focused test now passes: 1 passed, 1 warning.
+- Docker build could not be verified in this environment because Docker CLI is not installed or not on PATH (`docker` is not recognized).
+
+Follow-up notes:
+- Run `docker compose build gateway` and `docker compose up gateway` on a machine with Docker installed before treating Docker runtime as fully verified.
+
+### Step 10 - Docker packaging slice verified
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q` after the Dockerfile/test changes.
+- Ran `git diff --check`.
+- Ran `git status --short --untracked-files=all`.
+
+Outcome:
+- Full pytest result after this slice: 45 passed, 5 warnings.
+- `git diff --check` reported no whitespace errors; Dockerfile and this progress note report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Pending changes for this slice before commit: `Dockerfile`, `docs/notes/implementation-progress.md`, and `tests/unit/test_docker_packaging.py`.
