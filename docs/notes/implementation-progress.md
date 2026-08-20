@@ -505,3 +505,30 @@ Verification:
 Outcome:
 - Remote branch advanced from `ebaea1a` to `4b23f96`.
 - The M3 usage ledger now has a tested async repository boundary for future FastAPI/DB wiring.
+
+### Step 21 - Request and attempt ledger persistence
+
+Changed:
+- Extended `tests/unit/test_usage_ledger.py` with RED tests for mapping `RequestRecord` and `AttemptRecord` to SQLAlchemy models and persisting them through `UsageLedgerRepository`.
+- Extended `tests/unit/test_db_models.py` to include `request_ledger` and `attempt_ledger` metadata plus migration revision `003_request_attempt_ledger` importability.
+- Added `RequestLedger` and `AttemptLedger` SQLAlchemy models in `apps/gateway/db/models.py`.
+- Added `RequestRecord.to_db_model()` and `AttemptRecord.to_db_model()` in `apps/gateway/usage/ledger.py`.
+- Added `UsageLedgerRepository.record_request()` and `UsageLedgerRepository.record_attempt()`.
+- Added `migrations/versions/003_request_attempt_ledger.py` creating the request and attempt ledger tables and indexes.
+
+Implementation notes:
+- This completes the first persistence shape for README M3's Request / Attempt / UsageEvent ledger requirement.
+- The request table stores sanitized metadata from `RequestRecord`; raw prompt/response and secret-like fields remain filtered by earlier domain logic.
+- This slice still does not wire live `router.py` request handling to the repository.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q` before implementation; it failed because `RequestLedger` and `AttemptLedger` did not exist.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m alembic upgrade head --sql` to verify the `001 -> 002 -> 003` offline migration chain.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Focused usage/DB tests pass: 15 passed.
+- Alembic offline SQL generation succeeds and emits `CREATE TABLE request_ledger` and `CREATE TABLE attempt_ledger` for migration `003_request_attempt_ledger`.
+- Full pytest result after this slice: 61 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.

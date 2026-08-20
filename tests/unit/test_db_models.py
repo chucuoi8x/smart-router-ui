@@ -10,6 +10,8 @@ class DBModelsBaselineTests(unittest.TestCase):
         tables = Base.metadata.tables
         self.assertIn("provider_connections", tables)
         self.assertIn("config_revisions", tables)
+        self.assertIn("request_ledger", tables)
+        self.assertIn("attempt_ledger", tables)
         self.assertIn("usage_ledger", tables)
 
     def test_provider_connection_model_instantiation(self):
@@ -83,6 +85,21 @@ class DBModelsBaselineTests(unittest.TestCase):
 
         self.assertEqual(module.revision, "002_usage_ledger_provenance")
         self.assertEqual(module.down_revision, "001_initial_baseline")
+        self.assertTrue(callable(module.upgrade))
+        self.assertTrue(callable(module.downgrade))
+
+    def test_request_attempt_ledger_migration_is_importable(self):
+        migration_path = Path("migrations/versions/003_request_attempt_ledger.py")
+        self.assertTrue(migration_path.exists())
+
+        spec = importlib.util.spec_from_file_location("request_attempt_ledger", migration_path)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+
+        self.assertEqual(module.revision, "003_request_attempt_ledger")
+        self.assertEqual(module.down_revision, "002_usage_ledger_provenance")
         self.assertTrue(callable(module.upgrade))
         self.assertTrue(callable(module.downgrade))
 

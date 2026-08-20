@@ -140,6 +140,17 @@ class RequestRecord:
             "created_at": self.created_at.isoformat(),
         }
 
+    def to_db_model(self):
+        from apps.gateway.db.models import RequestLedger
+
+        return RequestLedger(
+            request_id=self.request_id,
+            route_id=self.route_id,
+            logical_model=self.logical_model,
+            metadata_=self.metadata,
+            created_at=self.created_at,
+        )
+
 
 @dataclass(frozen=True)
 class AttemptRecord:
@@ -150,10 +161,38 @@ class AttemptRecord:
     status: str
     created_at: datetime = field(default_factory=_utc_now)
 
+    def to_db_model(self):
+        from apps.gateway.db.models import AttemptLedger
+
+        return AttemptLedger(
+            request_id=self.request_id,
+            attempt_id=self.attempt_id,
+            provider_id=self.provider_connection_id,
+            model=self.model_resource_id,
+            status=self.status,
+            created_at=self.created_at,
+        )
+
 
 class UsageLedgerRepository:
     def __init__(self, session) -> None:
         self._session = session
+
+    async def record_request(self, record: RequestRecord, *, commit: bool = False):
+        row = record.to_db_model()
+        self._session.add(row)
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
+        return row
+
+    async def record_attempt(self, record: AttemptRecord, *, commit: bool = False):
+        row = record.to_db_model()
+        self._session.add(row)
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
+        return row
 
     async def record_usage(self, event: UsageEvent, *, id: str | None = None, commit: bool = False):
         row = event.to_db_model(id=id)

@@ -118,6 +118,38 @@ class UsageLedgerTests(unittest.TestCase):
         self.assertNotIn("provider_secret", exported["metadata"])
         self.assertNotIn("cookie", exported["metadata"])
 
+    def test_request_and_attempt_records_map_to_db_models(self):
+        from apps.gateway.db.models import RequestLedger, AttemptLedger
+        from apps.gateway.usage.ledger import AttemptRecord, RequestRecord
+
+        request = RequestRecord(
+            request_id="req_1",
+            route_id="chat",
+            logical_model="smart-chat",
+            metadata={"tenant": "local-dev"},
+        )
+        request_row = request.to_db_model()
+        self.assertIsInstance(request_row, RequestLedger)
+        self.assertEqual(request_row.request_id, "req_1")
+        self.assertEqual(request_row.route_id, "chat")
+        self.assertEqual(request_row.logical_model, "smart-chat")
+        self.assertEqual(request_row.metadata_, {"tenant": "local-dev"})
+
+        attempt = AttemptRecord(
+            request_id="req_1",
+            attempt_id="att_1",
+            provider_connection_id="conn_1",
+            model_resource_id="model_1",
+            status="success",
+        )
+        attempt_row = attempt.to_db_model()
+        self.assertIsInstance(attempt_row, AttemptLedger)
+        self.assertEqual(attempt_row.request_id, "req_1")
+        self.assertEqual(attempt_row.attempt_id, "att_1")
+        self.assertEqual(attempt_row.provider_id, "conn_1")
+        self.assertEqual(attempt_row.model, "model_1")
+        self.assertEqual(attempt_row.status, "success")
+
     def test_usage_event_maps_to_db_model_with_provenance(self):
         from apps.gateway.db.models import UsageLedger
         from apps.gateway.usage.ledger import UsageEvent
@@ -168,6 +200,35 @@ class UsageLedgerTests(unittest.TestCase):
 
 
 class UsageLedgerRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repository_records_request_and_attempt(self):
+        from apps.gateway.db.models import AttemptLedger, RequestLedger
+        from apps.gateway.usage.ledger import AttemptRecord, RequestRecord, UsageLedgerRepository
+
+        session = FakeAsyncSession()
+        repository = UsageLedgerRepository(session)
+        request = RequestRecord(
+            request_id="req_1",
+            route_id="chat",
+            logical_model="smart-chat",
+            metadata={"tenant": "local-dev"},
+        )
+        attempt = AttemptRecord(
+            request_id="req_1",
+            attempt_id="att_1",
+            provider_connection_id="conn_1",
+            model_resource_id="model_1",
+            status="success",
+        )
+
+        request_row = await repository.record_request(request)
+        attempt_row = await repository.record_attempt(attempt, commit=True)
+
+        self.assertIsInstance(request_row, RequestLedger)
+        self.assertIsInstance(attempt_row, AttemptLedger)
+        self.assertEqual(session.added, [request_row, attempt_row])
+        self.assertTrue(session.flushed)
+        self.assertTrue(session.committed)
+
     async def test_repository_records_usage_event_with_flush_only_by_default(self):
         from apps.gateway.db.models import UsageLedger
         from apps.gateway.usage.ledger import UsageEvent, UsageLedgerRepository

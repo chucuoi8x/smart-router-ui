@@ -44,6 +44,27 @@ class ConfigRevision(Base):
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class RequestLedger(Base):
+    __tablename__ = "request_ledger"
+
+    request_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    route_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    logical_model: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+
+
+class AttemptLedger(Base):
+    __tablename__ = "attempt_ledger"
+
+    attempt_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    provider_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+
+
 class UsageLedger(Base):
     __tablename__ = "usage_ledger"
 
