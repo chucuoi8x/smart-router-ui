@@ -871,3 +871,27 @@ Verification:
 Outcome:
 - Remote branch advanced from `26ee127` to `21d1357`.
 - M3 Resource Plane now has a tested SQLAlchemy/Alembic persistence shape for quota resource state, ready for a later repository or collector integration slice.
+
+### Step 39 - Quota resource repository boundary
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests for saving quota resource state through an async SQLAlchemy-like session, optional commit behavior, and loading persisted rows back into `QuotaResource` domain objects.
+- Added `QuotaResourceRepository` in `apps/gateway/quota/reservations.py`.
+
+Implementation notes:
+- The repository accepts an injected async session boundary, matching the usage ledger repository pattern and keeping future FastAPI dependency injection straightforward.
+- `save_resource()` uses `session.merge()` so collector/admission code can upsert latest quota observations without duplicating resource rows.
+- `get_resource()` maps `QuotaResourceState` rows back into immutable `QuotaResource` domain objects while preserving safety buffer, hard/soft flag, source/confidence, and shared group ID.
+- This slice still does not wire quota persistence into live request handling, Redis/Lua reservation atomicity, or provider quota collectors.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` before implementation; it failed with missing `QuotaResourceRepository` imports.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Quota focused tests pass: 22 passed.
+- Focused M3 unit tests pass: 39 passed.
+- Full pytest result after this slice: 85 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.

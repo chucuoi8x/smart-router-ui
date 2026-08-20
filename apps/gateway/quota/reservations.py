@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from threading import Lock
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,38 @@ class QuotaResource:
             source=self.source,
             confidence=self.confidence,
             shared_group_id=self.shared_group_id,
+        )
+
+
+@dataclass(frozen=True)
+class QuotaResourceRepository:
+    session: Any
+
+    async def save_resource(self, resource: QuotaResource, *, commit: bool = False):
+        row = await self.session.merge(resource.to_db_model())
+        await self.session.flush()
+        if commit:
+            await self.session.commit()
+        return row
+
+    async def get_resource(self, resource_id: str) -> QuotaResource | None:
+        from apps.gateway.db.models import QuotaResourceState
+
+        row = await self.session.get(QuotaResourceState, resource_id)
+        if row is None:
+            return None
+        return QuotaResource(
+            resource_id=row.resource_id,
+            scope=row.scope,
+            metric=row.metric,
+            limit=row.limit,
+            window_seconds=row.window_seconds,
+            used=row.used,
+            safety_buffer=row.safety_buffer,
+            hard_limit=row.hard_limit,
+            source=row.source,
+            confidence=row.confidence,
+            shared_group_id=row.shared_group_id,
         )
 
 

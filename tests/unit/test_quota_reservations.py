@@ -2,6 +2,28 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 
+class FakeQuotaSession:
+    def __init__(self, rows=None):
+        self.rows = rows or {}
+        self.merged = []
+        self.flushed = False
+        self.committed = False
+
+    async def merge(self, row):
+        self.merged.append(row)
+        self.rows[row.resource_id] = row
+        return row
+
+    async def get(self, model, key):
+        return self.rows.get(key)
+
+    async def flush(self):
+        self.flushed = True
+
+    async def commit(self):
+        self.committed = True
+
+
 class QuotaReservationTests(unittest.TestCase):
     def test_quota_resource_normalizes_scope_and_metric(self):
         from apps.gateway.quota.reservations import QuotaResource
@@ -530,6 +552,87 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(result.overshoot_by_resource, {})
         self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 55)
         self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 1)
+
+
+class QuotaResourceRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_repository_saves_resource_state_with_flush_only_by_default(self):
+        from apps.gateway.db.models import QuotaResourceState
+        from apps.gateway.quota.reservations import QuotaResource, QuotaResourceRepository
+
+        session = FakeQuotaSession()
+        repository = QuotaResourceRepository(session)
+        resource = QuotaResource(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            window_seconds=60,
+            used=25,
+            safety_buffer=10,
+            source="provider_api",
+            confidence="exact",
+        )
+
+        row = await repository.save_resource(resource)
+
+        self.assertIsInstance(row, QuotaResourceState)
+        self.assertEqual(session.merged, [row])
+        self.assertTrue(session.flushed)
+        self.assertFalse(session.committed)
+        self.assertEqual(row.resource_id, "tokens:tenant-a:gpt-4o:minute")
+        self.assertEqual(row.used, 25)
+        self.assertEqual(row.source, "provider_api")
+        self.assertEqual(row.confidence, "exact")
+
+    async def test_repository_can_commit_saved_resource(self):
+        from apps.gateway.quota.reservations import QuotaResource, QuotaResourceRepository
+
+        session = FakeQuotaSession()
+        repository = QuotaResourceRepository(session)
+        resource = QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60)
+
+        await repository.save_resource(resource, commit=True)
+
+        self.assertTrue(session.flushed)
+        self.assertTrue(session.committed)
+
+    async def test_repository_gets_resource_by_id_as_domain_object(self):
+        from apps.gateway.db.models import QuotaResourceState
+        from apps.gateway.quota.reservations import QuotaResourceRepository
+
+        row = QuotaResourceState(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            used=25,
+            window_seconds=60,
+            safety_buffer=10,
+            hard_limit=False,
+            source="provider_api",
+            confidence="exact",
+            shared_group_id="account-weekly-123",
+        )
+        session = FakeQuotaSession(rows={row.resource_id: row})
+        repository = QuotaResourceRepository(session)
+
+        resource = await repository.get_resource("tokens:tenant-a:gpt-4o:minute")
+        missing = await repository.get_resource("missing")
+
+        self.assertIsNotNone(resource)
+        assert resource is not None
+        self.assertEqual(resource.resource_id, "tokens:tenant-a:gpt-4o:minute")
+        self.assertEqual(resource.scope, "tenant-a")
+        self.assertEqual(resource.metric, "total_token")
+        self.assertEqual(resource.limit, 100)
+        self.assertEqual(resource.used, 25)
+        self.assertEqual(resource.window_seconds, 60)
+        self.assertEqual(resource.safety_buffer, 10)
+        self.assertFalse(resource.hard_limit)
+        self.assertEqual(resource.source, "provider_api")
+        self.assertEqual(resource.confidence, "exact")
+        self.assertEqual(resource.shared_group_id, "account-weekly-123")
+        self.assertIsNone(missing)
 
 
 if __name__ == "__main__":
