@@ -418,3 +418,18 @@ Outcome:
 - Usage ledger focused tests pass: 3 passed.
 - Full pytest result after this slice: 54 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 16 - Usage ledger slice pushed
+
+Changed:
+- Committed the first M3 usage ledger domain slice as `b570f3c feat: add usage ledger domain slice`.
+- Pushed `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran `git diff --cached --check` before commit.
+- Inspected staged diff for secret-like terms before commit; matches were privacy filter keys, token usage field names, and placeholder values in tests used to verify secret filtering.
+- Ran `git push origin feature/admin-api-baseline`.
+
+Outcome:
+- Remote branch advanced from `216ebea` to `b570f3c`.
+- First M3 usage ledger domain slice is now available on the remote feature branch.
