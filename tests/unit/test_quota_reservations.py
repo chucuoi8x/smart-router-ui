@@ -186,6 +186,68 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 0)
         self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 0)
 
+    def test_reconcile_releases_unused_reserved_capacity(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+        store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=80, reservation_id="res_1")
+
+        result = store.reconcile("res_1", {"tokens:tenant-a:gpt-4o:minute": 50})
+        repeated = store.reconcile("res_1", {"tokens:tenant-a:gpt-4o:minute": 10})
+
+        self.assertEqual(result.reserved_by_resource, {"tokens:tenant-a:gpt-4o:minute": 80})
+        self.assertEqual(result.actual_by_resource, {"tokens:tenant-a:gpt-4o:minute": 50})
+        self.assertEqual(result.released_by_resource, {"tokens:tenant-a:gpt-4o:minute": 30})
+        self.assertEqual(result.overshoot_by_resource, {})
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 50)
+        self.assertEqual(repeated, result)
+        self.assertFalse(store.release("res_1"))
+
+    def test_reconcile_records_overshoot_when_actual_exceeds_reservation(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+        store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=60, reservation_id="res_1")
+
+        result = store.reconcile("res_1", {"tokens:tenant-a:gpt-4o:minute": 75})
+
+        self.assertEqual(result.released_by_resource, {})
+        self.assertEqual(result.overshoot_by_resource, {"tokens:tenant-a:gpt-4o:minute": 15})
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 75)
+
+    def test_reconcile_multi_resource_reservation_by_actual_usage(self):
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaReservationRequest,
+            QuotaResource,
+        )
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+        store.add_resource(QuotaResource("requests:tenant-a:minute", "tenant-a", "request", 2, 60))
+        store.reserve_many(
+            reservation_id="res_1",
+            requests=[
+                QuotaReservationRequest("tokens:tenant-a:gpt-4o:minute", 70),
+                QuotaReservationRequest("requests:tenant-a:minute", 1),
+            ],
+        )
+
+        result = store.reconcile(
+            "res_1",
+            {
+                "tokens:tenant-a:gpt-4o:minute": 55,
+                "requests:tenant-a:minute": 1,
+            },
+        )
+
+        self.assertEqual(result.released_by_resource, {"tokens:tenant-a:gpt-4o:minute": 15})
+        self.assertEqual(result.overshoot_by_resource, {})
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 55)
+        self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -627,3 +627,29 @@ Verification:
 Outcome:
 - Remote branch advanced from `1f47bc6` to `09fb915`.
 - The in-memory quota prototype now supports README 15.8-style all-or-nothing reservation across multiple hard constraints.
+
+### Step 27 - Quota reservation reconciliation
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests for reconciliation releasing unused reservations, recording overshoot, and reconciling multi-resource reservations.
+- Extended `apps/gateway/quota/reservations.py` with `ReconciliationResult` and `InMemoryQuotaReservations.reconcile()`.
+
+Implementation notes:
+- This follows README 15.9's reconciliation model in the in-memory prototype: actual usage replaces the reserved estimate after upstream completion.
+- If actual usage is lower than the reservation, unused capacity is released from the in-memory counter.
+- If actual usage is higher than the reservation, overshoot is recorded and the counter is increased to the actual amount.
+- Reconciliation is idempotent by `reservation_id`; a repeated call returns the original `ReconciliationResult` and does not mutate counters again.
+- Once a reservation has been reconciled, `release()` no longer returns capacity for that same reservation ID.
+- This remains process-local only; durable ledger integration and Redis distributed reconciliation are later slices.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` before implementation; the three new tests failed with `AttributeError: 'InMemoryQuotaReservations' object has no attribute 'reconcile'`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Quota focused tests pass: 9 passed.
+- Focused M3 unit tests pass: 24 passed.
+- Full pytest result after this slice: 70 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
