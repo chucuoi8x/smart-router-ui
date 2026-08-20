@@ -16,6 +16,7 @@ class QuotaResource:
     hard_limit: bool = True
     source: str = "configured"
     confidence: str = "high"
+    shared_group_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.limit < 0:
@@ -125,8 +126,12 @@ class InMemoryQuotaReservations:
 
     def add_resource(self, resource: QuotaResource) -> QuotaResource:
         with self._lock:
-            self._resources[resource.resource_id] = resource
-            return resource
+            synced = resource
+            peers = self._group_resources(resource)
+            if peers:
+                synced = replace(resource, used=peers[0].used)
+            self._resources[synced.resource_id] = synced
+            return synced
 
     def snapshot(self, resource_id: str) -> QuotaResource:
         with self._lock:
@@ -165,7 +170,8 @@ class InMemoryQuotaReservations:
 
             for request in requests:
                 resource = self._resource(request.resource_id)
-                used = projected_used.get(request.resource_id, resource.used)
+                usage_key = self._usage_key(resource)
+                used = projected_used.get(usage_key, resource.used)
                 effective_remaining = max(0, resource.limit - used - resource.safety_buffer)
                 remaining[request.resource_id] = effective_remaining
                 shortfall = request.required - effective_remaining
@@ -174,7 +180,7 @@ class InMemoryQuotaReservations:
                         hard_failures[request.resource_id] = shortfall
                     else:
                         soft_pressure[request.resource_id] = shortfall
-                projected_used[request.resource_id] = used + request.required
+                projected_used[usage_key] = used + request.required
 
             return QuotaAdmissionResult(
                 accepted=not hard_failures,
@@ -211,8 +217,8 @@ class InMemoryQuotaReservations:
                 self._reservations[reservation_id] = result
                 return result
 
-            updated = replace(resource, used=resource.used + request.required)
-            self._resources[resource_id] = updated
+            self._set_used(resource, resource.used + request.required)
+            updated = self._resource(resource_id)
             result = ReservationResult(
                 reservation_id=reservation_id,
                 resource_id=resource_id,
@@ -239,9 +245,11 @@ class InMemoryQuotaReservations:
                 return existing
 
             projected_used: dict[str, int] = {}
+            projected_resources: dict[str, QuotaResource] = {}
             for request in request_tuple:
                 resource = self._resource(request.resource_id)
-                used = projected_used.get(request.resource_id, resource.used)
+                usage_key = self._usage_key(resource)
+                used = projected_used.get(usage_key, resource.used)
                 if request.required > max(0, resource.limit - used - resource.safety_buffer):
                     result = ReservationBatchResult(
                         reservation_id=reservation_id,
@@ -253,10 +261,11 @@ class InMemoryQuotaReservations:
                     )
                     self._reservations[reservation_id] = result
                     return result
-                projected_used[request.resource_id] = used + request.required
+                projected_used[usage_key] = used + request.required
+                projected_resources[usage_key] = resource
 
-            for resource_id, used in projected_used.items():
-                self._resources[resource_id] = replace(self._resource(resource_id), used=used)
+            for usage_key, used in projected_used.items():
+                self._set_used(projected_resources[usage_key], used)
 
             result = ReservationBatchResult(
                 reservation_id=reservation_id,
@@ -301,10 +310,7 @@ class InMemoryQuotaReservations:
             for resource_id, actual_amount in actual.items():
                 resource = self._resource(resource_id)
                 reserved = reserved_by_resource[resource_id]
-                self._resources[resource_id] = replace(
-                    resource,
-                    used=max(0, resource.used - reserved + actual_amount),
-                )
+                self._set_used(resource, max(0, resource.used - reserved + actual_amount))
 
             result = ReconciliationResult(
                 reservation_id=reservation_id,
@@ -333,10 +339,7 @@ class InMemoryQuotaReservations:
 
     def _release_request(self, request: QuotaReservationRequest) -> None:
         resource = self._resource(request.resource_id)
-        self._resources[request.resource_id] = replace(
-            resource,
-            used=max(0, resource.used - request.required),
-        )
+        self._set_used(resource, max(0, resource.used - request.required))
 
     def _reserved_by_resource(self, reservation: ReservationResult | ReservationBatchResult) -> dict[str, int]:
         if isinstance(reservation, ReservationBatchResult):
@@ -357,6 +360,22 @@ class InMemoryQuotaReservations:
             resource_id: self._resource(resource_id).remaining
             for resource_id in amounts
         }
+
+    def _usage_key(self, resource: QuotaResource) -> str:
+        return resource.shared_group_id or resource.resource_id
+
+    def _group_resources(self, resource: QuotaResource) -> list[QuotaResource]:
+        if resource.shared_group_id is None:
+            return [resource]
+        return [
+            candidate
+            for candidate in self._resources.values()
+            if candidate.shared_group_id == resource.shared_group_id
+        ]
+
+    def _set_used(self, resource: QuotaResource, used: int) -> None:
+        for candidate in self._group_resources(resource):
+            self._resources[candidate.resource_id] = replace(candidate, used=used)
 
     def _resource(self, resource_id: str) -> QuotaResource:
         try:

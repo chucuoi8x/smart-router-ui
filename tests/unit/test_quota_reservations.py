@@ -316,6 +316,68 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(result.soft_pressure_by_resource, {"soft:tenant-a:daily-token-guidance": 5})
         self.assertEqual(store.snapshot("soft:tenant-a:daily-token-guidance").used, 95)
 
+    def test_shared_quota_group_reservation_consumes_shared_capacity(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource(
+                "model-a:account-weekly",
+                "tenant-a",
+                "total_token",
+                100,
+                604800,
+                shared_group_id="account-weekly-123",
+            )
+        )
+        store.add_resource(
+            QuotaResource(
+                "model-b:account-weekly",
+                "tenant-a",
+                "total_token",
+                100,
+                604800,
+                shared_group_id="account-weekly-123",
+            )
+        )
+
+        accepted = store.reserve(resource_id="model-a:account-weekly", amount=70, reservation_id="res_1")
+        rejected = store.reserve(resource_id="model-b:account-weekly", amount=40, reservation_id="res_2")
+
+        self.assertTrue(accepted.accepted)
+        self.assertFalse(rejected.accepted)
+        self.assertEqual(rejected.remaining, 30)
+        self.assertEqual(store.snapshot("model-a:account-weekly").used, 70)
+        self.assertEqual(store.snapshot("model-b:account-weekly").used, 70)
+        self.assertEqual(store.snapshot("model-b:account-weekly").effective_remaining, 30)
+
+    def test_shared_quota_group_admission_projects_usage_without_mutation(self):
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaReservationRequest,
+            QuotaResource,
+        )
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource("model-a:account-weekly", "tenant-a", "total_token", 100, 604800, shared_group_id="account-weekly-123")
+        )
+        store.add_resource(
+            QuotaResource("model-b:account-weekly", "tenant-a", "total_token", 100, 604800, shared_group_id="account-weekly-123")
+        )
+
+        result = store.check_many(
+            [
+                QuotaReservationRequest("model-a:account-weekly", 60),
+                QuotaReservationRequest("model-b:account-weekly", 50),
+            ]
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.hard_failures, {"model-b:account-weekly": 10})
+        self.assertEqual(store.snapshot("model-a:account-weekly").used, 0)
+        self.assertEqual(store.snapshot("model-b:account-weekly").used, 0)
+
     def test_release_multi_resource_reservation_returns_all_capacity(self):
         from apps.gateway.quota.reservations import (
             InMemoryQuotaReservations,

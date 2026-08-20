@@ -789,3 +789,29 @@ Verification:
 Outcome:
 - Remote branch advanced from `9d51e0c` to `e5df894`.
 - The quota domain now preserves source/confidence metadata and can apply in-memory quota observations from future collectors or response-header parsers.
+
+### Step 35 - Shared quota group semantics
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests for shared quota group reservation and non-mutating admission projection across shared groups.
+- Extended `apps/gateway/quota/reservations.py` with `QuotaResource.shared_group_id` and shared usage helpers inside `InMemoryQuotaReservations`.
+
+Implementation notes:
+- This follows README 15.4: several model resources can depend on the same shared quota group instead of receiving independent capacity copies.
+- Resources with the same `shared_group_id` share the same in-memory `used` counter in this prototype.
+- Reserving capacity against one resource in a group updates the effective capacity visible through its peers.
+- `check_many()` projects usage by shared group key so multi-resource admission does not double-count a shared capacity pool.
+- Release and reconciliation use the same shared counter update path.
+- This remains in-memory only; persistent shared-group modeling and Redis/Lua atomicity remain later slices.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` before implementation; the new tests failed with unexpected `shared_group_id` keyword arguments.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Quota focused tests pass: 18 passed.
+- Focused M3 unit tests pass: 33 passed.
+- Full pytest result after this slice: 79 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
