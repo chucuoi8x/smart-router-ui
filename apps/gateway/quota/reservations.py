@@ -294,6 +294,9 @@ class InMemoryQuotaReservations:
 
         with self._lock:
             resource = self._resource(resource_id)
+            if not resource.hard_limit:
+                raise ValueError("cannot reserve soft quota resource")
+
             existing = self._reservations.get(reservation_id)
             if existing is not None:
                 self._ensure_same_reservation_request(reservation_id, (request,), kind="single")
@@ -338,6 +341,11 @@ class InMemoryQuotaReservations:
 
         request_tuple = tuple(requests)
         with self._lock:
+            for req in request_tuple:
+                resource = self._resource(req.resource_id)
+                if not resource.hard_limit:
+                    raise ValueError("cannot reserve soft quota resource")
+
             existing = self._reservations.get(reservation_id)
             if existing is not None:
                 self._ensure_same_reservation_request(reservation_id, request_tuple, kind="batch")

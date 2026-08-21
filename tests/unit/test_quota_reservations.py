@@ -914,6 +914,67 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(repeated_negative, result)
         self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 70)
 
+    def test_reserve_rejects_soft_quota_resource(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource(
+                "tokens:tenant-a:gpt-4o:minute",
+                "tenant-a",
+                "total_token",
+                100,
+                60,
+                hard_limit=False,
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "cannot reserve soft quota resource"):
+            store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=10, reservation_id="res_1")
+
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 0)
+
+    def test_reserve_many_rejects_if_any_resource_is_soft_quota(self):
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaReservationRequest,
+            QuotaResource,
+        )
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource(
+                "tokens:tenant-a:gpt-4o:minute",
+                "tenant-a",
+                "total_token",
+                100,
+                60,
+                hard_limit=True,
+            )
+        )
+        store.add_resource(
+            QuotaResource(
+                "requests:tenant-a:minute",
+                "tenant-a",
+                "request",
+                10,
+                60,
+                hard_limit=False,
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "cannot reserve soft quota resource"):
+            store.reserve_many(
+                reservation_id="res_1",
+                requests=[
+                    QuotaReservationRequest("tokens:tenant-a:gpt-4o:minute", 10),
+                    QuotaReservationRequest("requests:tenant-a:minute", 1),
+                ],
+            )
+
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 0)
+        self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 0)
+
 
 class QuotaResourceRepositoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_repository_saves_resource_state_with_flush_only_by_default(self):

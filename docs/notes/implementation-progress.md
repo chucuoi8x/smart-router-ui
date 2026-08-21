@@ -1225,3 +1225,28 @@ Outcome:
 - Full pytest result after this slice: 103 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
 - Pending changes before commit: `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.
+
+### Step 53 - Soft quota reservation boundary enforcement
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests ensuring single (`reserve`) and batch (`reserve_many`) reservation methods explicitly reject soft quota resources (`hard_limit=False`).
+- Updated `InMemoryQuotaReservations` in `apps/gateway/quota/reservations.py` to raise `ValueError("cannot reserve soft quota resource")` before mutating state or attempting to reserve a soft quota constraint.
+
+Implementation notes:
+- Soft constraints (`hard_limit=False`) are intended for non-mutating scheduler check/scoring mechanisms (`check_many`), whereas mutation methods (`reserve`/`reserve_many`) are strictly reserved for hard quotas.
+- Reserving a soft quota resource immediately fails before applying any state mutations, maintaining transactional integrity across multi-resource batch requests.
+
+Review:
+- Ran the plan check with `claude-router-review`; it approved restricting `reserve`/`reserve_many` from mutating soft quota resources.
+- Ran post-implementation `claude-router-review`; it evaluated the changes and confirmed proper soft quota boundary validation without issues.
+
+Verification:
+- Ran RED tests; both soft quota reservation tests failed as expected (`ValueError not raised`).
+- Ran GREEN tests after implementation; both passed.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Focused soft quota tests pass: 2 passed.
+- Quota focused tests pass: 42 passed.
+- Full pytest result after this slice: 105 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
