@@ -363,12 +363,18 @@ class SmartRouter:
                 content={"error": {"type": "unknown_model", "message": "unknown logical router model"}},
             )
 
+        reservation_id = None
+        resource_id = None
         # Quota admission check
         if self.quota_reservations is not None:
             from apps.gateway.quota.reservations import QuotaReservationRequest
             resource_id = f"model:{route_name}"
             try:
-                result = self.quota_reservations.check_many([QuotaReservationRequest(resource_id, amount=1)])
+                reservation_id = uuid.uuid4().hex
+                result = self.quota_reservations.reserve_many(
+                    reservation_id=reservation_id,
+                    requests=[QuotaReservationRequest(resource_id, amount=1)],
+                )
                 if not result.accepted:
                     return JSONResponse(
                         status_code=503,
@@ -376,17 +382,21 @@ class SmartRouter:
                     )
             except KeyError:
                 # No quota resource defined for this route; allow the request
-                pass
+                reservation_id = None
+                resource_id = None
 
         candidates = await self._candidate_order(route_name)
         if not candidates:
+            # If we had a reservation, release it before returning overloaded
+            if reservation_id is not None and resource_id is not None:
+                self.quota_reservations.release(reservation_id)
             return JSONResponse(
                 status_code=503,
                 content={"error": {"type": "overloaded", "message": "all candidates are cooling down or unavailable"}},
             )
         if bool(body.get("stream", False)) and path.endswith("/messages"):
-            return await self._stream_messages(body, incoming_headers, candidates, route_name, path)
-        return await self._non_stream_messages(body, incoming_headers, candidates, route_name, path)
+            return await self._stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id)
+        return await self._non_stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id)
 
     async def _non_stream_messages(
         self,
@@ -395,6 +405,8 @@ class SmartRouter:
         candidates: list[Candidate],
         route_name: str,
         path: str,
+        reservation_id: str | None = None,
+        resource_id: str | None = None,
     ) -> Response:
         last_failure: str | None = None
         for candidate in candidates:
@@ -412,12 +424,18 @@ class SmartRouter:
                 last_failure = f"upstream returned {response.status_code}"
                 await self._record_failure(candidate, response.status_code, last_failure)
                 continue
+            # Request succeeded (non-failover status). Reconcile quota if reserved.
+            if reservation_id is not None and resource_id is not None:
+                self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
             await self._record_success(candidate, response.status_code)
             return Response(
                 content=response.content,
                 status_code=response.status_code,
                 headers=_response_headers(response.headers),
             )
+        # All candidates failed. Release reservation if held.
+        if reservation_id is not None and resource_id is not None:
+            self.quota_reservations.release(reservation_id)
         self.logger.warning("route=%s failover_exhausted reason=%s", route_name, last_failure or "unknown")
         return JSONResponse(
             status_code=503,
@@ -431,6 +449,8 @@ class SmartRouter:
         candidates: list[Candidate],
         route_name: str,
         path: str,
+        reservation_id: str | None = None,
+        resource_id: str | None = None,
     ) -> Response:
         last_failure: str | None = None
         for candidate in candidates:
@@ -442,6 +462,9 @@ class SmartRouter:
                     last_failure = f"upstream returned {opened.status_code}"
                     await self._record_failure(candidate, opened.status_code, last_failure)
                     continue
+                # Non-failover status: reconcile quota if reserved
+                if reservation_id is not None and resource_id is not None:
+                    self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
                 return opened
             stream = opened
             response_headers = _response_headers(stream.response.headers)
@@ -452,14 +475,23 @@ class SmartRouter:
                         yield stream.first_chunk
                     async for chunk in stream.iterator:
                         yield chunk
+                    # Stream completed successfully
+                    if reservation_id is not None and resource_id is not None:
+                        self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
                     await self._record_success(candidate, stream.response.status_code)
                 except Exception as exc:
+                    # Stream failed; release reservation
+                    if reservation_id is not None and resource_id is not None:
+                        self.quota_reservations.release(reservation_id)
                     await self._record_failure(candidate, None, _safe_error(exc))
                     raise
                 finally:
                     await stream.context_manager.__aexit__(None, None, None)
 
             return StreamingResponse(iterator(), status_code=stream.response.status_code, headers=response_headers)
+        # All candidates failed. Release reservation if held.
+        if reservation_id is not None and resource_id is not None:
+            self.quota_reservations.release(reservation_id)
         self.logger.warning("route=%s stream_failover_exhausted reason=%s", route_name, last_failure or "unknown")
         return JSONResponse(
             status_code=503,
