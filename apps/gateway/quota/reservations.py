@@ -182,6 +182,7 @@ class InMemoryQuotaReservations:
     def __init__(self) -> None:
         self._resources: dict[str, QuotaResource] = {}
         self._reservations: dict[str, ReservationResult | ReservationBatchResult] = {}
+        self._reservation_requests: dict[str, tuple[str, tuple[QuotaReservationRequest, ...]]] = {}
         self._reconciliations: dict[str, ReconciliationResult] = {}
         self._lock = Lock()
 
@@ -294,7 +295,10 @@ class InMemoryQuotaReservations:
             resource = self._resource(resource_id)
             existing = self._reservations.get(reservation_id)
             if existing is not None:
+                self._ensure_same_reservation_request(reservation_id, (request,), kind="single")
                 return existing
+            if reservation_id in self._reservation_requests:
+                raise ValueError("reservation_id conflict")
 
             if request.required > resource.effective_remaining:
                 result = ReservationResult(
@@ -306,6 +310,7 @@ class InMemoryQuotaReservations:
                     reason="quota_exceeded",
                 )
                 self._reservations[reservation_id] = result
+                self._reservation_requests[reservation_id] = ("single", (request,))
                 return result
 
             self._set_used(resource, resource.used + request.required)
@@ -318,6 +323,7 @@ class InMemoryQuotaReservations:
                 remaining=updated.effective_remaining,
             )
             self._reservations[reservation_id] = result
+            self._reservation_requests[reservation_id] = ("single", (request,))
             return result
 
     def reserve_many(
@@ -333,7 +339,10 @@ class InMemoryQuotaReservations:
         with self._lock:
             existing = self._reservations.get(reservation_id)
             if existing is not None:
+                self._ensure_same_reservation_request(reservation_id, request_tuple, kind="batch")
                 return existing
+            if reservation_id in self._reservation_requests:
+                raise ValueError("reservation_id conflict")
 
             projected_used: dict[str, int] = {}
             projected_resources: dict[str, QuotaResource] = {}
@@ -351,6 +360,7 @@ class InMemoryQuotaReservations:
                         rejected_resource_id=request.resource_id,
                     )
                     self._reservations[reservation_id] = result
+                    self._reservation_requests[reservation_id] = ("batch", request_tuple)
                     return result
                 projected_used[usage_key] = used + request.required
                 projected_resources[usage_key] = resource
@@ -365,6 +375,7 @@ class InMemoryQuotaReservations:
                 remaining_by_resource=self._remaining_for(request_tuple),
             )
             self._reservations[reservation_id] = result
+            self._reservation_requests[reservation_id] = ("batch", request_tuple)
             return result
 
     def reconcile(self, reservation_id: str, actual_by_resource: dict[str, int]) -> ReconciliationResult:
@@ -431,6 +442,16 @@ class InMemoryQuotaReservations:
     def _release_request(self, request: QuotaReservationRequest) -> None:
         resource = self._resource(request.resource_id)
         self._set_used(resource, max(0, resource.used - request.required))
+
+    def _ensure_same_reservation_request(
+        self,
+        reservation_id: str,
+        requests: tuple[QuotaReservationRequest, ...],
+        *,
+        kind: str,
+    ) -> None:
+        if self._reservation_requests.get(reservation_id) != (kind, requests):
+            raise ValueError("reservation_id conflict")
 
     def _reserved_by_resource(self, reservation: ReservationResult | ReservationBatchResult) -> dict[str, int]:
         if isinstance(reservation, ReservationBatchResult):

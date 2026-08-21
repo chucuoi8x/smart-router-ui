@@ -254,6 +254,123 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(second.remaining, 0)
         self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 2)
 
+    def test_single_reservation_id_replay_requires_same_request_shape(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+
+        first = store.reserve(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            amount=10,
+            reservation_id="res_1",
+            risk_buffer=5,
+        )
+        repeated = store.reserve(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            amount=10,
+            reservation_id="res_1",
+            risk_buffer=5,
+        )
+
+        self.assertEqual(repeated, first)
+        with self.assertRaisesRegex(ValueError, "reservation_id conflict"):
+            store.reserve(
+                resource_id="tokens:tenant-a:gpt-4o:minute",
+                amount=15,
+                reservation_id="res_1",
+                risk_buffer=0,
+            )
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 15)
+
+    def test_rejected_reservation_id_replay_requires_same_request_shape(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 10, 60))
+
+        first = store.reserve(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            amount=15,
+            reservation_id="res_1",
+        )
+        repeated = store.reserve(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            amount=15,
+            reservation_id="res_1",
+        )
+
+        self.assertFalse(first.accepted)
+        self.assertEqual(repeated, first)
+        with self.assertRaisesRegex(ValueError, "reservation_id conflict"):
+            store.reserve(
+                resource_id="tokens:tenant-a:gpt-4o:minute",
+                amount=11,
+                reservation_id="res_1",
+            )
+
+    def test_reservation_id_conflicts_across_single_and_batch_forms(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaReservationRequest, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+
+        store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=10, reservation_id="res_1")
+
+        with self.assertRaisesRegex(ValueError, "reservation_id conflict"):
+            store.reserve_many(
+                reservation_id="res_1",
+                requests=[QuotaReservationRequest("tokens:tenant-a:gpt-4o:minute", 10)],
+            )
+
+    def test_reservation_id_cannot_be_reused_after_reconciliation(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+        store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=10, reservation_id="res_1")
+        store.reconcile("res_1", {"tokens:tenant-a:gpt-4o:minute": 10})
+
+        with self.assertRaisesRegex(ValueError, "reservation_id conflict"):
+            store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=10, reservation_id="res_1")
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 10)
+
+    def test_rejected_reservation_id_cannot_be_reused_after_release_cleanup(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 10, 60))
+        rejected = store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=15, reservation_id="res_1")
+        released = store.release("res_1")
+
+        self.assertFalse(rejected.accepted)
+        self.assertFalse(released)
+        with self.assertRaisesRegex(ValueError, "reservation_id conflict"):
+            store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=1, reservation_id="res_1")
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 0)
+
+    def test_batch_reservation_id_replay_requires_same_request_tuple(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaReservationRequest, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+        store.add_resource(QuotaResource("requests:tenant-a:minute", "tenant-a", "request", 10, 60))
+        requests = [
+            QuotaReservationRequest("tokens:tenant-a:gpt-4o:minute", 10, risk_buffer=5),
+            QuotaReservationRequest("requests:tenant-a:minute", 1),
+        ]
+
+        first = store.reserve_many(reservation_id="res_1", requests=requests)
+        repeated = store.reserve_many(reservation_id="res_1", requests=list(requests))
+
+        self.assertEqual(repeated, first)
+        with self.assertRaisesRegex(ValueError, "reservation_id conflict"):
+            store.reserve_many(reservation_id="res_1", requests=list(reversed(requests)))
+        with self.assertRaisesRegex(ValueError, "reservation_id conflict"):
+            store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=15, reservation_id="res_1")
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 15)
+        self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 1)
+
     def test_concurrent_reservations_do_not_oversubscribe(self):
         from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
 

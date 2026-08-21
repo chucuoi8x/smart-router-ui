@@ -1122,3 +1122,37 @@ Outcome:
 - Post-commit status was clean before this progress-note update.
 - The next-slice `claude-router-review` attempt was blocked by the command safety classifier when trying to use `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1`; the earlier direct attempt showed this Claude Code version does not recognize model `claude-router-review`.
 - No further coding was started after the commit because README section 31.5 now requires a working `claude-router-review` plan check before implementation.
+
+### Step 50 - Reservation ID conflict detection
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests for reservation ID replay and conflict semantics.
+- Updated `InMemoryQuotaReservations` in `apps/gateway/quota/reservations.py` to track the original reservation request shape separately from public result objects.
+
+Implementation notes:
+- A `reservation_id` remains idempotent only when replayed with the same request shape.
+- Single-resource reservations compare the full `QuotaReservationRequest`, so `(amount=10, risk_buffer=5)` is distinct from `(amount=15, risk_buffer=0)` even though both reserve the same required amount.
+- Batch reservations compare the tuple of `QuotaReservationRequest` values and preserve order as part of the idempotency contract.
+- Cross-form collisions between `reserve()` and `reserve_many()` with the same `reservation_id` raise `ValueError("reservation_id conflict")` instead of returning the wrong result type.
+- Reservation request fingerprints survive reconciliation and release cleanup so a completed/released ID cannot be reused for a new reservation.
+
+Review:
+- Ran the required plan check with `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 claude ... --model claude-router-review`; it conditionally approved the narrower slice and required preserving original single-request shape plus cross-form collision behavior.
+- Ran the required post-code `claude-router-review` check after implementation; it approved the updated diff with no verified blockers.
+
+Verification:
+- Ran the initial reservation ID conflict RED tests; they failed because conflicts were not detected.
+- Ran lifecycle RED tests after the first implementation; they failed because reservation IDs could be reused after reconciliation/release cleanup.
+- Re-ran focused lifecycle/conflict tests after the lifecycle fix.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q`.
+- Ran `git diff --check`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git status --short --untracked-files=all`.
+
+Outcome:
+- Focused lifecycle/conflict tests pass: 4 passed.
+- Quota focused tests pass: 34 passed.
+- `git diff --check` reported no whitespace errors; the three touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Full pytest result after this slice: 97 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- Pending changes before commit: `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.
