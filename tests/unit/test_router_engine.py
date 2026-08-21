@@ -420,5 +420,54 @@ routes:
         self.assertEqual([candidate.resource_ref], [selected.resource_ref for selected in engine.select_candidates("chat")])
 
 
+    def test_smart_router_uses_router_engine_when_enabled(self):
+        import asyncio
+        import os
+        from router import SmartRouter
+        from unittest.mock import patch, MagicMock
+
+        # Arrange: set environment variable
+        with patch.dict(os.environ, {'USE_ROUTER_ENGINE': 'true'}):
+            config = {
+                'routes': {
+                    'test-route': {
+                        'strategy': 'priority',
+                        'candidates': [
+                            {'upstream': 'primary', 'model': 'model-a', 'weight': 5},
+                            {'upstream': 'secondary', 'model': 'model-b', 'weight': 3}
+                        ]
+                    }
+                },
+                'upstreams': {
+                    'primary': {'base_url': 'https://primary', 'auth': {'mode': 'bearer', 'token_env': 'PRIMARY_TOKEN'}},
+                    'secondary': {'base_url': 'https://secondary', 'auth': {'mode': 'bearer', 'token_env': 'SECONDARY_TOKEN'}}
+                },
+                'logging': {'level': 'CRITICAL'}
+            }
+            router = SmartRouter(config)
+
+            # Assert: router_engine is instantiated
+            self.assertIsNotNone(router.router_engine)
+
+            # Mock the engine's select_candidates to return a known candidate
+            mock_candidate = MagicMock()
+            mock_candidate.resource_ref.provider_connection_id = 'primary'
+            mock_candidate.resource_ref.model_id = 'model-a'
+            mock_candidate.weight = 5
+            mock_candidate.metadata = {}
+            router.router_engine.select_candidates = MagicMock(return_value=[mock_candidate])
+
+            # Act: call _candidate_order and await it
+            candidates = asyncio.run(router._candidate_order('test-route'))
+
+            # Since router_engine is used, _candidate_order should use it.
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0].upstream, 'primary')
+            self.assertEqual(candidates[0].model, 'model-a')
+            router.router_engine.select_candidates.assert_called_once_with('test-route')
+
+        # Clean up env var
+        os.environ.pop('USE_ROUTER_ENGINE', None)
+
 if __name__ == '__main__':
     unittest.main()

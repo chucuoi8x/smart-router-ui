@@ -22,6 +22,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from apps.gateway.api.admin import router as admin_router
+from apps.gateway.routing.engine import RouterEngine
+from apps.gateway.config.compiler import LegacyConfigCompiler
 from apps.worker.collectors.aibox_catalog import build_records, select_routes, state_from_records
 
 
@@ -98,6 +100,11 @@ class SmartRouter:
         self.catalog: dict[str, Any] = self._load_catalog()
         self.logger = logging.getLogger("smart-router")
         self._configure_logging()
+        self.router_engine = None
+        if os.getenv("USE_ROUTER_ENGINE", "false").lower() == "true":
+            compiler = LegacyConfigCompiler()
+            snapshot = compiler.compile_dict(config)
+            self.router_engine = RouterEngine(snapshot, quota_reservations=quota_reservations)
 
     @classmethod
     def from_environment(cls) -> "SmartRouter":
@@ -256,6 +263,9 @@ class SmartRouter:
         return f"{base}{path}"
 
     async def _candidate_order(self, route_name: str) -> list[Candidate]:
+        if self.router_engine is not None:
+            resource_candidates = self.router_engine.select_candidates(route_name)
+            return self._convert_resource_candidates(resource_candidates)
         async with self.state_lock:
             route = self.routes.get(route_name)
             if route is None:
@@ -329,6 +339,17 @@ class SmartRouter:
         if isinstance(resource_id, str) and resource_id:
             return [resource_id]
         return [f"model:{candidate.model}"]
+
+    def _convert_resource_candidates(self, resource_candidates: list) -> list[Candidate]:
+        candidates = []
+        for rc in resource_candidates:
+            candidates.append(Candidate(
+                upstream=rc.resource_ref.provider_connection_id,
+                model=rc.resource_ref.model_id,
+                weight=rc.weight,
+                metadata=rc.metadata
+            ))
+        return candidates
 
     def _is_available(self, candidate: Candidate) -> bool:
         state = self.circuits.get(candidate.key)
