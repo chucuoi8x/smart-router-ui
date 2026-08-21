@@ -1,6 +1,6 @@
 # Smart Router implementation progress handoff
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 Purpose: this note helps a future human or AI agent continue the Smart Router migration without relying on chat history.
 
@@ -910,3 +910,196 @@ Verification:
 Outcome:
 - Remote branch advanced from `a68a1f9` to `961a1f9`.
 - Quota resource state now has a tested async repository boundary ready for later collector or admission integration.
+
+### Step 41 - List persisted quota resources
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests for `QuotaResourceRepository.list_resources()`.
+- Extended `QuotaResourceRepository` in `apps/gateway/quota/reservations.py` with `list_resources()` and reusable `_to_domain()` mapping with safe null fallbacks.
+
+Implementation notes:
+- `list_resources()` executes a `select(QuotaResourceState)` query and returns a list of immutable `QuotaResource` domain objects.
+- `_to_domain()` provides safe fallbacks for optional/defaulted DB columns (`used=0`, `safety_buffer=0`, `hard_limit=True`, `source="configured"`, `confidence="high"`) when a DB row contains `None`.
+- This enables future background collectors or router startup logic to hydrate the in-memory Resource Plane from persistent DB state.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` before implementation; it failed with missing `list_resources()`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Quota focused tests pass: 23 passed.
+- Focused M3 unit tests pass: 40 passed.
+- Full pytest result after this slice: 86 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 42 - Hydrate quota reservations from repository
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with a focused hydration path that uses `InMemoryQuotaReservations.from_repository()` instead of manually listing repository rows and adding each resource in the test.
+- Added `InMemoryQuotaReservations.from_repository()` in `apps/gateway/quota/reservations.py` to build process-local quota reservation state from `QuotaResourceRepository.list_resources()`.
+
+Implementation notes:
+- The helper centralizes startup-style hydration logic so callers do not need to duplicate `list_resources()` plus `add_resource()` loops.
+- Hydration preserves persisted quota metadata including used capacity, safety buffer, source/confidence, hard/soft behavior, and shared quota group semantics.
+- This remains an in-memory hydration helper only; live FastAPI startup wiring, Redis/Lua atomicity, and provider collector integration remain later slices.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py::test_hydrate_reservations_from_repository -q`.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q`.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_admin_api.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+
+Outcome:
+- Hydration focused test passes: 1 passed.
+- Quota focused tests pass: 24 passed.
+- Admin API focused tests pass: 2 passed, 1 warning.
+- Full pytest result after this slice: 87 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 43 - Conservative shared quota hydration
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with a RED test for hydrating shared quota group resources when persisted rows disagree on current `used` capacity.
+- Updated `InMemoryQuotaReservations.add_resource()` in `apps/gateway/quota/reservations.py` to synchronize a shared group to the highest observed `used` value when adding a resource.
+
+Implementation notes:
+- Shared quota resources represent the same underlying capacity pool, so inconsistent persisted usage should not hydrate to a lower counter and accidentally allow oversubscription.
+- The in-memory store now chooses the conservative maximum `used` value across the incoming resource and existing peers, then updates all peers in the shared group to that value.
+- This preserves existing shared-group behavior while making repository hydration safer if rows are temporarily inconsistent.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py::QuotaResourceRepositoryTests::test_hydrate_shared_group_uses_conservative_persisted_usage -q` before implementation; it failed with `AssertionError: 30 != 45`.
+- Re-ran the same focused test after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q`.
+- Ran `git diff --check`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git status --short --untracked-files=all`.
+
+Outcome:
+- Conservative hydration focused test passes: 1 passed.
+- Quota focused tests pass: 25 passed.
+- `git diff --check` reported no whitespace errors; the three touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Full pytest result after this slice: 88 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- Pending changes remain uncommitted in `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.
+
+### Step 44 - Shared quota observation usage sync
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with a RED test for applying a quota observation to one resource in a shared quota group.
+- Updated `InMemoryQuotaReservations.apply_observation()` in `apps/gateway/quota/reservations.py` to synchronize the observed `used` value across shared-group peers.
+
+Implementation notes:
+- A provider/API observation for one member of a shared quota group describes the underlying shared capacity pool, so peers must see the same `used` counter before later admission/reservation checks.
+- Observation metadata such as `source` and `confidence` remains attached to the observed resource; peers only receive the synchronized shared usage counter.
+- This keeps shared group semantics consistent across reservations, hydration, and provider/API observations without adding live collector or router wiring yet.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py::QuotaReservationTests::test_shared_quota_group_observation_updates_peer_usage -q` before implementation; it failed because the peer did not receive the observed shared usage.
+- Re-ran the same focused test after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q`.
+- Ran `git diff --check`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git status --short --untracked-files=all`.
+
+Outcome:
+- Shared quota observation focused test passes: 1 passed.
+- Quota focused tests pass: 26 passed.
+- `git diff --check` reported no whitespace errors; the three touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Full pytest result after this slice: 89 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- Pending changes remain uncommitted in `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.
+
+### Step 45 - Shared quota observation capacity sync
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with a RED test for applying a quota observation that changes capacity fields on one member of a shared quota group.
+- Updated `InMemoryQuotaReservations.apply_observation()` in `apps/gateway/quota/reservations.py` to synchronize shared capacity fields across group peers.
+
+Implementation notes:
+- A quota observation for a shared group member describes the same underlying quota pool, so peers now receive the observed `limit`, `used`, `safety_buffer`, and `hard_limit` values.
+- Peer provenance remains local to each resource: `source` and `confidence` on peers are not overwritten by an observation applied to a different resource ID.
+- This keeps shared group capacity and admission math consistent while preserving per-row provenance until a later collector/persistence strategy decides how to write shared observations durably.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py::QuotaReservationTests::test_shared_quota_group_observation_updates_peer_capacity -q` before implementation; it failed because peer `limit` stayed at `100` instead of the observed `120`.
+- Re-ran the shared capacity and shared usage focused observation tests after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q`.
+- Ran `git diff --check`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git status --short --untracked-files=all`.
+
+Outcome:
+- Shared quota observation focused tests pass: 2 passed.
+- Quota focused tests pass: 27 passed.
+- `git diff --check` reported no whitespace errors; the three touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Full pytest result after this slice: 90 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- Pending changes remain uncommitted in `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.
+
+### Step 46 - Conservative shared quota capacity hydration
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with a RED test for hydrating a shared quota group whose persisted rows disagree on capacity fields.
+- Updated `InMemoryQuotaReservations.add_resource()` in `apps/gateway/quota/reservations.py` to synchronize conservative capacity fields when adding a resource to an existing shared group.
+
+Implementation notes:
+- When shared group rows disagree, the in-memory store now uses the highest observed `used`, the lowest safe `limit`, the highest safe `safety_buffer`, and hard-limit behavior if any peer is hard-limited.
+- The synchronized limit is never allowed below the synchronized used value, preserving the `QuotaResource` invariant while driving `effective_remaining` to zero for over-used inconsistent rows.
+- This reduces oversubscription risk during startup/repository hydration without adding distributed Redis/Lua state yet.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py::QuotaResourceRepositoryTests::test_hydrate_shared_group_uses_conservative_capacity_fields -q` before implementation; it failed with `ValueError: used cannot exceed limit` while trying to synchronize inconsistent shared rows.
+- Re-ran the conservative capacity and conservative usage focused hydration tests after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q`.
+- Ran `git diff --check`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git status --short --untracked-files=all`.
+
+Outcome:
+- Conservative shared hydration focused tests pass: 2 passed.
+- Quota focused tests pass: 28 passed.
+- `git diff --check` reported no whitespace errors; the three touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Full pytest result after this slice: 91 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- Pending changes remain uncommitted in `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.
+
+### Step 47 - Mandatory claude-router-review checks documented
+
+Changed:
+- Updated `README.md` section 1.4 to require `claude-router-review` review after analysis/planning and after each coding step.
+- Added `README.md` section 31.5 to make the `claude-router-review` checks a standing Definition-of-Done/progress-tracking requirement.
+
+Implementation notes:
+- Plan review must check whether the plan is optimized, appropriately scoped, and architecture-consistent before implementation begins.
+- Code review must check whether each coding step is correct, simple, secure, and aligned with the README architecture contract before moving to the next step.
+- Review outcomes should be recorded in this progress note together with normal verification notes.
+
+Verification:
+- Documentation-only change; no pytest run was required for this README update.
+- Ran `git diff --check`.
+- Ran `git status --short --untracked-files=all`.
+
+Outcome:
+- `git diff --check` reported no whitespace errors; README and the previously touched quota/progress files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Pending changes remain uncommitted in `README.md`, `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.
+
+### Step 48 - Commit preparation and review-model blocker
+
+Changed:
+- Attempted to run the newly required `claude-router-review` review against the pending README/quota/test diff before committing.
+
+Verification:
+- Ran `git status --short --untracked-files=all`.
+- Ran `git diff --stat`.
+- Ran `git diff --check`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- User ran the requested `claude-router-review` command directly in the session.
+
+Outcome:
+- Full pytest result before commit preparation: 91 passed, 1 warning.
+- `git diff --check` reported no whitespace errors; touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- The `claude-router-review` command could not complete because this Claude Code version does not recognize model `claude-router-review` (`claude-code:unrecognized_model`) and timed out.
+- This is a tooling/configuration blocker for future enforcement of README section 31.5 until the model is mapped in `modelOverrides`, Claude Code is updated, or the environment is configured to allow the model.

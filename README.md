@@ -67,13 +67,15 @@ Before implementing a task:
 1. Identify the milestone and acceptance criteria affected.
 2. Inspect current source and existing tests.
 3. Determine whether the change belongs to core, driver, resource plane, control plane, or compatibility code.
-4. Add or update tests for the invariant being changed.
-5. Prefer the smallest architecture-consistent change over unrelated refactoring.
-6. If database schema changes, add an Alembic migration.
-7. If an API contract changes, update the relevant schema and contract tests.
-8. If a new provider is added, implement it through a generic template/driver or a provider-specific driver outside routing core.
-9. Run unit, contract, and relevant integration tests before considering the task complete.
-10. Update this README only when architecture, contracts, setup, or scope changes.
+4. After analysis and planning, ask model `claude-router-review` to review whether the plan is sufficiently optimized, scoped, and architecture-consistent before coding.
+5. Add or update tests for the invariant being changed.
+6. Prefer the smallest architecture-consistent change over unrelated refactoring.
+7. If database schema changes, add an Alembic migration.
+8. If an API contract changes, update the relevant schema and contract tests.
+9. If a new provider is added, implement it through a generic template/driver or a provider-specific driver outside routing core.
+10. After each coding step, ask model `claude-router-review` to review whether the code is correct, simple, secure, and aligned with this README before continuing.
+11. Run unit, contract, and relevant integration tests before considering the task complete.
+12. Update this README only when architecture, contracts, setup, or scope changes.
 
 If a requirement is ambiguous, choose the option that preserves provider agnosticism, truthful accounting, backward compatibility, and the milestone dependency order.
 
@@ -1985,6 +1987,12 @@ A merge to `main` should require:
 ### 31.4 Implementation progress tracking
 
 Every implementation step must be recorded in `docs/notes/implementation-progress.md` as the work proceeds. Each note should include the date, what changed, verification run, test outcome, and any follow-up risks or TODOs. This progress note is the project handoff log for future humans and agents, so do not rely on chat history as the source of truth.
+
+### 31.5 Mandatory `claude-router-review` checks
+
+After analysis and planning, use model `claude-router-review` to review whether the plan is optimized, appropriately scoped, and aligned with the architecture contract in this README before implementation begins.
+
+After each coding step, use model `claude-router-review` again to review whether the code is correct, simple, secure, and architecture-consistent before moving to the next step. Record the review outcome in `docs/notes/implementation-progress.md` together with the normal verification notes.
 
 A release candidate additionally requires:
 

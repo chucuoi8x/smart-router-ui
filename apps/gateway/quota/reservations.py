@@ -76,17 +76,28 @@ class QuotaResourceRepository:
         row = await self.session.get(QuotaResourceState, resource_id)
         if row is None:
             return None
+        return self._to_domain(row)
+
+    async def list_resources(self) -> list[QuotaResource]:
+        from sqlalchemy import select
+
+        from apps.gateway.db.models import QuotaResourceState
+
+        rows = await self.session.scalars(select(QuotaResourceState))
+        return [self._to_domain(row) for row in rows.all()]
+
+    def _to_domain(self, row: Any) -> QuotaResource:
         return QuotaResource(
             resource_id=row.resource_id,
             scope=row.scope,
             metric=row.metric,
             limit=row.limit,
             window_seconds=row.window_seconds,
-            used=row.used,
-            safety_buffer=row.safety_buffer,
-            hard_limit=row.hard_limit,
-            source=row.source,
-            confidence=row.confidence,
+            used=row.used if row.used is not None else 0,
+            safety_buffer=row.safety_buffer if row.safety_buffer is not None else 0,
+            hard_limit=row.hard_limit if row.hard_limit is not None else True,
+            source=row.source if row.source is not None else "configured",
+            confidence=row.confidence if row.confidence is not None else "high",
             shared_group_id=row.shared_group_id,
         )
 
@@ -179,7 +190,28 @@ class InMemoryQuotaReservations:
             synced = resource
             peers = self._group_resources(resource)
             if peers:
-                synced = replace(resource, used=peers[0].used)
+                synced_used = max(resource.used, *(peer.used for peer in peers))
+                synced_limit = max(synced_used, min(resource.limit, *(peer.limit for peer in peers)))
+                synced_safety_buffer = min(
+                    synced_limit,
+                    max(resource.safety_buffer, *(peer.safety_buffer for peer in peers)),
+                )
+                synced_hard_limit = resource.hard_limit or any(peer.hard_limit for peer in peers)
+                for peer in peers:
+                    self._resources[peer.resource_id] = replace(
+                        peer,
+                        limit=synced_limit,
+                        used=synced_used,
+                        safety_buffer=synced_safety_buffer,
+                        hard_limit=synced_hard_limit,
+                    )
+                synced = replace(
+                    resource,
+                    limit=synced_limit,
+                    used=synced_used,
+                    safety_buffer=synced_safety_buffer,
+                    hard_limit=synced_hard_limit,
+                )
             self._resources[synced.resource_id] = synced
             return synced
 
@@ -206,7 +238,16 @@ class InMemoryQuotaReservations:
                 confidence=observation.confidence,
             )
             self._resources[observation.resource_id] = updated
-            return updated
+            if updated.shared_group_id is not None:
+                for peer in self._group_resources(updated):
+                    self._resources[peer.resource_id] = replace(
+                        peer,
+                        limit=updated.limit,
+                        used=updated.used,
+                        safety_buffer=updated.safety_buffer,
+                        hard_limit=updated.hard_limit,
+                    )
+            return self._resource(observation.resource_id)
 
     def check_many(self, requests: list[QuotaReservationRequest]) -> QuotaAdmissionResult:
         if not requests:
@@ -426,6 +467,14 @@ class InMemoryQuotaReservations:
     def _set_used(self, resource: QuotaResource, used: int) -> None:
         for candidate in self._group_resources(resource):
             self._resources[candidate.resource_id] = replace(candidate, used=used)
+
+    @classmethod
+    async def from_repository(cls, repository: QuotaResourceRepository) -> "InMemoryQuotaReservations":
+        resources = await repository.list_resources()
+        reservations = cls()
+        for resource in resources:
+            reservations.add_resource(resource)
+        return reservations
 
     def _resource(self, resource_id: str) -> QuotaResource:
         try:

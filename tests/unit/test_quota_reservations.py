@@ -2,10 +2,19 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 
 
+class FakeScalarResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return list(self._rows)
+
+
 class FakeQuotaSession:
     def __init__(self, rows=None):
         self.rows = rows or {}
         self.merged = []
+        self.statements = []
         self.flushed = False
         self.committed = False
 
@@ -16,6 +25,10 @@ class FakeQuotaSession:
 
     async def get(self, model, key):
         return self.rows.get(key)
+
+    async def scalars(self, statement):
+        self.statements.append(statement)
+        return FakeScalarResult(self.rows.values())
 
     async def flush(self):
         self.flushed = True
@@ -433,6 +446,85 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(store.snapshot("model-a:account-weekly").used, 0)
         self.assertEqual(store.snapshot("model-b:account-weekly").used, 0)
 
+    def test_shared_quota_group_observation_updates_peer_usage(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaObservation, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource("model-a:account-weekly", "tenant-a", "total_token", 100, 604800, shared_group_id="account-weekly-123")
+        )
+        store.add_resource(
+            QuotaResource("model-b:account-weekly", "tenant-a", "total_token", 100, 604800, shared_group_id="account-weekly-123")
+        )
+
+        updated = store.apply_observation(
+            QuotaObservation(
+                resource_id="model-a:account-weekly",
+                limit=100,
+                used=65,
+                source="provider_api",
+                confidence="exact",
+            )
+        )
+        rejected = store.reserve(
+            resource_id="model-b:account-weekly",
+            amount=36,
+            reservation_id="res_1",
+        )
+
+        self.assertEqual(updated.used, 65)
+        self.assertEqual(store.snapshot("model-a:account-weekly").used, 65)
+        self.assertEqual(store.snapshot("model-b:account-weekly").used, 65)
+        self.assertEqual(store.snapshot("model-b:account-weekly").source, "configured")
+        self.assertFalse(rejected.accepted)
+        self.assertEqual(rejected.remaining, 35)
+
+    def test_shared_quota_group_observation_updates_peer_capacity(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaObservation, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource(
+                "model-a:account-weekly",
+                "tenant-a",
+                "total_token",
+                100,
+                604800,
+                safety_buffer=5,
+                shared_group_id="account-weekly-123",
+            )
+        )
+        store.add_resource(
+            QuotaResource(
+                "model-b:account-weekly",
+                "tenant-a",
+                "total_token",
+                100,
+                604800,
+                safety_buffer=5,
+                shared_group_id="account-weekly-123",
+            )
+        )
+
+        store.apply_observation(
+            QuotaObservation(
+                resource_id="model-a:account-weekly",
+                limit=120,
+                used=40,
+                source="provider_api",
+                confidence="exact",
+                safety_buffer=10,
+            )
+        )
+
+        peer = store.snapshot("model-b:account-weekly")
+        self.assertEqual(peer.limit, 120)
+        self.assertEqual(peer.used, 40)
+        self.assertEqual(peer.safety_buffer, 10)
+        self.assertEqual(peer.effective_remaining, 70)
+        self.assertEqual(peer.source, "configured")
+        self.assertEqual(peer.confidence, "high")
+
     def test_release_multi_resource_reservation_returns_all_capacity(self):
         from apps.gateway.quota.reservations import (
             InMemoryQuotaReservations,
@@ -634,6 +726,232 @@ class QuotaResourceRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resource.shared_group_id, "account-weekly-123")
         self.assertIsNone(missing)
 
+    async def test_repository_lists_resources_as_domain_objects(self):
+        from apps.gateway.db.models import QuotaResourceState
+        from apps.gateway.quota.reservations import QuotaResourceRepository
+
+        token_row = QuotaResourceState(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            used=25,
+            window_seconds=60,
+            source="provider_api",
+            confidence="exact",
+        )
+        request_row = QuotaResourceState(
+            resource_id="requests:tenant-a:minute",
+            scope="tenant-a",
+            metric="request",
+            limit=10,
+            used=2,
+            window_seconds=60,
+        )
+        session = FakeQuotaSession(
+            rows={
+                token_row.resource_id: token_row,
+                request_row.resource_id: request_row,
+            }
+        )
+        repository = QuotaResourceRepository(session)
+
+        resources = await repository.list_resources()
+
+        self.assertEqual([resource.resource_id for resource in resources], [token_row.resource_id, request_row.resource_id])
+        self.assertEqual(resources[0].source, "provider_api")
+        self.assertEqual(resources[0].confidence, "exact")
+        self.assertEqual(resources[1].metric, "request")
+        self.assertEqual(len(session.statements), 1)
+
+    async def test_hydrate_reservations_from_repository(self):
+        from apps.gateway.db.models import QuotaResourceState
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaResourceRepository,
+        )
+
+        row1 = QuotaResourceState(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            used=25,
+            window_seconds=60,
+            safety_buffer=10,
+            hard_limit=True,
+            source="provider_api",
+            confidence="exact",
+        )
+        row2 = QuotaResourceState(
+            resource_id="requests:tenant-a:minute",
+            scope="tenant-a",
+            metric="request",
+            limit=10,
+            used=2,
+            window_seconds=60,
+        )
+        # Two resources sharing a group
+        row3 = QuotaResourceState(
+            resource_id="model-a:account-weekly",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            used=30,
+            window_seconds=604800,
+            shared_group_id="account-weekly-123",
+        )
+        row4 = QuotaResourceState(
+            resource_id="model-b:account-weekly",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            used=30,
+            window_seconds=604800,
+            shared_group_id="account-weekly-123",
+        )
+
+        session = FakeQuotaSession(
+            rows={
+                row1.resource_id: row1,
+                row2.resource_id: row2,
+                row3.resource_id: row3,
+                row4.resource_id: row4,
+            }
+        )
+        repository = QuotaResourceRepository(session)
+        reservations = await InMemoryQuotaReservations.from_repository(repository)
+
+        # Verify individual resources were loaded
+        self.assertEqual(reservations.snapshot("tokens:tenant-a:gpt-4o:minute").used, 25)
+        self.assertEqual(reservations.snapshot("tokens:tenant-a:gpt-4o:minute").safety_buffer, 10)
+        self.assertEqual(reservations.snapshot("tokens:tenant-a:gpt-4o:minute").source, "provider_api")
+        self.assertEqual(reservations.snapshot("requests:tenant-a:minute").used, 2)
+
+        # Verify shared group synchronization: both have the same used value
+        self.assertEqual(reservations.snapshot("model-a:account-weekly").used, 30)
+        self.assertEqual(reservations.snapshot("model-b:account-weekly").used, 30)
+
+        # Verify capacity checks work after hydration: requesting 70 exceeds effective remaining (65)
+        rejected = reservations.reserve(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            amount=70,
+            reservation_id="res_1",
+        )
+        self.assertFalse(rejected.accepted)
+        self.assertEqual(rejected.reason, "quota_exceeded")
+
+        # Requesting 60 fits within effective remaining (65)
+        accepted2 = reservations.reserve(
+            resource_id="tokens:tenant-a:gpt-4o:minute",
+            amount=60,
+            reservation_id="res_2",
+        )
+        self.assertTrue(accepted2.accepted)
+        self.assertEqual(accepted2.remaining, 5)  # 100 - 25 - 60 - 10 = 5
+
+        # Check shared group reservation after hydration
+        shared_accepted = reservations.reserve(
+            resource_id="model-a:account-weekly",
+            amount=60,
+            reservation_id="res_3",
+        )
+        self.assertTrue(shared_accepted.accepted)
+        self.assertEqual(shared_accepted.remaining, 10)  # 100 - 30 - 60 = 10
+        # model-b should reflect the same used value
+        self.assertEqual(reservations.snapshot("model-b:account-weekly").used, 90)
+
+    async def test_hydrate_shared_group_uses_conservative_persisted_usage(self):
+        from apps.gateway.db.models import QuotaResourceState
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaResourceRepository,
+        )
+
+        row1 = QuotaResourceState(
+            resource_id="model-a:account-weekly",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            used=30,
+            window_seconds=604800,
+            shared_group_id="account-weekly-123",
+        )
+        row2 = QuotaResourceState(
+            resource_id="model-b:account-weekly",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            used=45,
+            window_seconds=604800,
+            shared_group_id="account-weekly-123",
+        )
+        session = FakeQuotaSession(rows={row1.resource_id: row1, row2.resource_id: row2})
+        repository = QuotaResourceRepository(session)
+
+        reservations = await InMemoryQuotaReservations.from_repository(repository)
+
+        self.assertEqual(reservations.snapshot("model-a:account-weekly").used, 45)
+        self.assertEqual(reservations.snapshot("model-b:account-weekly").used, 45)
+        accepted = reservations.reserve(
+            resource_id="model-a:account-weekly",
+            amount=55,
+            reservation_id="res_1",
+        )
+        rejected = reservations.reserve(
+            resource_id="model-b:account-weekly",
+            amount=1,
+            reservation_id="res_2",
+        )
+        self.assertTrue(accepted.accepted)
+        self.assertFalse(rejected.accepted)
+
+    async def test_hydrate_shared_group_uses_conservative_capacity_fields(self):
+        from apps.gateway.db.models import QuotaResourceState
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaResourceRepository,
+        )
+
+        row1 = QuotaResourceState(
+            resource_id="model-a:account-weekly",
+            scope="tenant-a",
+            metric="total_token",
+            limit=100,
+            used=80,
+            window_seconds=604800,
+            safety_buffer=5,
+            hard_limit=False,
+            shared_group_id="account-weekly-123",
+        )
+        row2 = QuotaResourceState(
+            resource_id="model-b:account-weekly",
+            scope="tenant-a",
+            metric="total_token",
+            limit=60,
+            used=50,
+            window_seconds=604800,
+            safety_buffer=10,
+            hard_limit=True,
+            shared_group_id="account-weekly-123",
+        )
+        session = FakeQuotaSession(rows={row1.resource_id: row1, row2.resource_id: row2})
+        repository = QuotaResourceRepository(session)
+
+        reservations = await InMemoryQuotaReservations.from_repository(repository)
+
+        resource_a = reservations.snapshot("model-a:account-weekly")
+        resource_b = reservations.snapshot("model-b:account-weekly")
+        self.assertEqual(resource_a.limit, 80)
+        self.assertEqual(resource_b.limit, 80)
+        self.assertEqual(resource_a.used, 80)
+        self.assertEqual(resource_b.used, 80)
+        self.assertEqual(resource_a.safety_buffer, 10)
+        self.assertEqual(resource_b.safety_buffer, 10)
+        self.assertTrue(resource_a.hard_limit)
+        self.assertTrue(resource_b.hard_limit)
+        self.assertEqual(resource_a.effective_remaining, 0)
+        self.assertEqual(resource_b.effective_remaining, 0)
 
 if __name__ == "__main__":
     unittest.main()
