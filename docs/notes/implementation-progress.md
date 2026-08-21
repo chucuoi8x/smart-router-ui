@@ -1312,3 +1312,18 @@ Review:
 Outcome:
 - No code was written for the multi-constraint follow-up slice.
 - Work is paused on additional coding until the review permission/model path is available, or the user explicitly decides how to handle the mandatory review step in this environment.
+
+### Step 57 - RouterEngine quota slice committed and pushed
+
+Changed:
+- Committed the advisory RouterEngine quota filtering/scoring slice and the earlier live SmartRouter quota-admission regression test together as `9092267 thêm lọc quota tư vấn cho router engine`.
+- Pushed branch `feature/admin-api-baseline` to `origin/feature/admin-api-baseline`.
+
+Verification:
+- Ran full pytest before staging: `109 passed, 1 warning`.
+- Ran `git diff --check` before staging; no whitespace errors were reported, only LF-to-CRLF warnings on touched files.
+- Ran `git diff --cached --check` before commit; no whitespace errors were reported, only LF-to-CRLF warnings.
+
+Outcome:
+- Remote branch advanced to `9092267`.
+- Implementation files are pushed; this Step 57 note is being recorded as a follow-up documentation tracking update.
