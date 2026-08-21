@@ -1327,3 +1327,50 @@ Verification:
 Outcome:
 - Remote branch advanced to `9092267`.
 - Implementation files are pushed; this Step 57 note is being recorded as a follow-up documentation tracking update.
+
+### Step 58 - Multi-constraint quota slice still blocked by pre-code review gate
+
+Attempted next slice:
+- Created task #37 for adding RouterEngine multi-constraint quota checks.
+- Confirmed the repository was clean after the previous push.
+- Re-attempted the mandatory pre-code `claude-router-review` plan check with a minimized prompt and no source diff.
+
+Outcome:
+- Claude Code auto-mode denied the review command again because sending the implementation plan to the external review model was classified as data exfiltration.
+- No tests or implementation code were written for this slice.
+- Task #37 remains blocked until the user runs/allows the review command, configures the review model path as trusted, or explicitly updates the project rule for this environment.
+
+### Step 59 - RouterEngine multi-constraint quota advisory checks
+
+Changed:
+- Extended `tests/unit/test_router_engine.py` with RED coverage for programmatic `ResourceCandidate` metadata declaring multiple request-count quota constraints through `quota_resource_ids`.
+- Updated `apps/gateway/routing/engine.py` to resolve quota constraints from `quota_resource_ids`, scalar `quota_resource_id`, or the existing default `model:{model_id}` fallback.
+- `quota_resource_ids` now takes precedence over scalar `quota_resource_id` only when it is a non-empty list/tuple of non-empty strings.
+- Missing quota resource IDs are skipped per ID, so missing optional constraints do not hide known exhausted constraints; if all IDs are missing, the candidate remains unconstrained.
+- Known quota resources are canonicalized by `shared_group_id or resource_id` before the non-mutating `check_many()` call so aliases for the same shared quota group are not double-counted.
+- Soft-pressure ranking remains request-count-only and uses the deduplicated admission result.
+
+Implementation notes:
+- This is explicitly an advisory/pre-reservation RouterEngine slice for request-count quotas only.
+- It does not implement token/cost/concurrency estimators, live FastAPI routing changes, reservation creation, reconciliation, Redis/Lua distributed enforcement, DB persistence, or `LegacyConfigCompiler` metadata preservation.
+- Primary/fallback tier behavior from the previous slice is unchanged.
+
+Review:
+- Initial pre-code `claude-router-review` run returned semantic blockers around metadata shape, missing-resource behavior, shared-group aliases, metric scope, pressure aggregation, and compiler scope.
+- Revised the plan to narrow the slice and define those semantics; the second pre-code `claude-router-review` approved with no blockers.
+- Post-code `claude-router-review` approved the diff with no blockers.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_router_engine.py -q` before implementation; the new tests failed on missing shared-group dedupe and plural-ID precedence.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_router_engine.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_router_engine.py tests/unit/test_quota_integration.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git diff --check`.
+
+Outcome:
+- RouterEngine focused tests pass: 11 passed.
+- Combined RouterEngine/SmartRouter quota focused tests pass: 12 passed.
+- Full pytest result after this slice: 114 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- `git diff --check` reported no whitespace errors; touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Pending changes before commit: `apps/gateway/routing/engine.py`, `tests/unit/test_router_engine.py`, and `docs/notes/implementation-progress.md`.

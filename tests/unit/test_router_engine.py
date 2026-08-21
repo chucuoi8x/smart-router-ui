@@ -209,6 +209,156 @@ class RouterEngineTests(unittest.TestCase):
         self.assertEqual({"model:pressured-model": 1}, candidates[1].metadata["quota_soft_pressure_by_resource"])
         self.assertEqual("model:pressured-model", candidates[1].metadata["quota_resource_id"])
 
+    def test_router_engine_filters_candidate_when_any_metadata_quota_constraint_fails(self):
+        from apps.gateway.config.snapshot import RouteConfig, RuntimeConfigSnapshot
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+        from apps.gateway.routing.engine import RouterEngine
+        from apps.gateway.routing.models import ResourceCandidate, ResourceRef
+
+        blocked = ResourceCandidate(
+            ResourceRef("primary", "primary", "multi-model"),
+            driver_id="anthropic-compatible",
+            metadata={"quota_resource_ids": ["account:primary", "model:multi-model"]},
+        )
+        fallback = ResourceCandidate(
+            ResourceRef("secondary", "secondary", "fallback-model"),
+            driver_id="anthropic-compatible",
+        )
+        snapshot = RuntimeConfigSnapshot(
+            routes={
+                "chat": RouteConfig(
+                    route_name="chat",
+                    strategy="priority",
+                    candidates=[blocked, fallback],
+                )
+            }
+        )
+        quota = InMemoryQuotaReservations()
+        quota.add_resource(QuotaResource("account:primary", "account", "requests", 10, 60))
+        quota.add_resource(QuotaResource("model:multi-model", "model", "requests", 0, 60))
+        quota.add_resource(QuotaResource("model:fallback-model", "model", "requests", 10, 60))
+
+        engine = RouterEngine(snapshot, quota_reservations=quota)
+        candidates = engine.select_candidates("chat")
+
+        self.assertEqual([fallback.resource_ref], [candidate.resource_ref for candidate in candidates])
+
+    def test_router_engine_missing_metadata_quota_id_does_not_hide_known_failure(self):
+        from apps.gateway.config.snapshot import RouteConfig, RuntimeConfigSnapshot
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+        from apps.gateway.routing.engine import RouterEngine
+        from apps.gateway.routing.models import ResourceCandidate, ResourceRef
+
+        candidate = ResourceCandidate(
+            ResourceRef("primary", "primary", "multi-model"),
+            driver_id="anthropic-compatible",
+            metadata={"quota_resource_ids": ["missing:quota", "model:multi-model"]},
+        )
+        snapshot = RuntimeConfigSnapshot(
+            routes={
+                "chat": RouteConfig(
+                    route_name="chat",
+                    strategy="priority",
+                    candidates=[candidate],
+                )
+            }
+        )
+        quota = InMemoryQuotaReservations()
+        quota.add_resource(QuotaResource("model:multi-model", "model", "requests", 0, 60))
+
+        engine = RouterEngine(snapshot, quota_reservations=quota)
+
+        self.assertEqual([], engine.select_candidates("chat"))
+
+    def test_router_engine_deduplicates_shared_quota_group_constraints(self):
+        from apps.gateway.config.snapshot import RouteConfig, RuntimeConfigSnapshot
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+        from apps.gateway.routing.engine import RouterEngine
+        from apps.gateway.routing.models import ResourceCandidate, ResourceRef
+
+        candidate = ResourceCandidate(
+            ResourceRef("primary", "primary", "multi-model"),
+            driver_id="anthropic-compatible",
+            metadata={"quota_resource_ids": ["model:a", "model:b"]},
+        )
+        snapshot = RuntimeConfigSnapshot(
+            routes={
+                "chat": RouteConfig(
+                    route_name="chat",
+                    strategy="priority",
+                    candidates=[candidate],
+                )
+            }
+        )
+        quota = InMemoryQuotaReservations()
+        quota.add_resource(QuotaResource("model:a", "model", "requests", 1, 60, shared_group_id="account:shared"))
+        quota.add_resource(QuotaResource("model:b", "model", "requests", 1, 60, shared_group_id="account:shared"))
+
+        engine = RouterEngine(snapshot, quota_reservations=quota)
+        candidates = engine.select_candidates("chat")
+
+        self.assertEqual([candidate.resource_ref], [selected.resource_ref for selected in candidates])
+        self.assertEqual(["model:a"], candidates[0].metadata["quota_resource_ids"])
+
+    def test_router_engine_multi_quota_ids_take_precedence_over_scalar_metadata(self):
+        from apps.gateway.config.snapshot import RouteConfig, RuntimeConfigSnapshot
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+        from apps.gateway.routing.engine import RouterEngine
+        from apps.gateway.routing.models import ResourceCandidate, ResourceRef
+
+        candidate = ResourceCandidate(
+            ResourceRef("primary", "primary", "multi-model"),
+            driver_id="anthropic-compatible",
+            metadata={
+                "quota_resource_id": "scalar:ignored",
+                "quota_resource_ids": ["account:primary", "model:multi-model"],
+            },
+        )
+        snapshot = RuntimeConfigSnapshot(
+            routes={
+                "chat": RouteConfig(
+                    route_name="chat",
+                    strategy="priority",
+                    candidates=[candidate],
+                )
+            }
+        )
+        quota = InMemoryQuotaReservations()
+        quota.add_resource(QuotaResource("scalar:ignored", "account", "requests", 0, 60))
+        quota.add_resource(QuotaResource("account:primary", "account", "requests", 10, 60))
+        quota.add_resource(QuotaResource("model:multi-model", "model", "requests", 10, 60))
+
+        engine = RouterEngine(snapshot, quota_reservations=quota)
+        candidates = engine.select_candidates("chat")
+
+        self.assertEqual([candidate.resource_ref], [selected.resource_ref for selected in candidates])
+        self.assertEqual(["account:primary", "model:multi-model"], candidates[0].metadata["quota_resource_ids"])
+
+    def test_router_engine_all_missing_metadata_quota_ids_remain_unconstrained(self):
+        from apps.gateway.config.snapshot import RouteConfig, RuntimeConfigSnapshot
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations
+        from apps.gateway.routing.engine import RouterEngine
+        from apps.gateway.routing.models import ResourceCandidate, ResourceRef
+
+        candidate = ResourceCandidate(
+            ResourceRef("primary", "primary", "multi-model"),
+            driver_id="anthropic-compatible",
+            metadata={"quota_resource_ids": ["missing:a", "missing:b"]},
+        )
+        snapshot = RuntimeConfigSnapshot(
+            routes={
+                "chat": RouteConfig(
+                    route_name="chat",
+                    strategy="priority",
+                    candidates=[candidate],
+                )
+            }
+        )
+
+        engine = RouterEngine(snapshot, quota_reservations=InMemoryQuotaReservations())
+
+        self.assertEqual([candidate.resource_ref], [selected.resource_ref for selected in engine.select_candidates("chat")])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -68,26 +68,58 @@ class RouterEngine:
     def _check_candidate_quota(self, candidate: ResourceCandidate) -> ResourceCandidate | None:
         from apps.gateway.quota.reservations import QuotaReservationRequest
 
-        resource_id = self._quota_resource_id(candidate)
-        try:
-            admission = self.quota_reservations.check_many([
-                QuotaReservationRequest(resource_id, amount=1)
-            ])
-        except KeyError:
+        resource_ids = self._known_quota_resource_ids(self._quota_resource_ids(candidate))
+        if not resource_ids:
             return candidate
+
+        admission = self.quota_reservations.check_many([
+            QuotaReservationRequest(resource_id, amount=1)
+            for resource_id in resource_ids
+        ])
 
         if not admission.accepted:
             return None
 
         metadata = {
             **candidate.metadata,
-            "quota_resource_id": resource_id,
             "quota_remaining_by_resource": admission.remaining_by_resource,
         }
+        if self._has_valid_quota_resource_ids(candidate):
+            metadata["quota_resource_ids"] = resource_ids
+        else:
+            metadata["quota_resource_id"] = resource_ids[0]
         if admission.soft_pressure_by_resource:
             metadata["quota_soft_pressure_by_resource"] = admission.soft_pressure_by_resource
 
         return replace(candidate, metadata=metadata)
+
+    def _known_quota_resource_ids(self, resource_ids: list[str]) -> list[str]:
+        known: list[str] = []
+        seen_groups: set[str] = set()
+        for resource_id in resource_ids:
+            try:
+                resource = self.quota_reservations.snapshot(resource_id)
+            except KeyError:
+                continue
+            group_key = resource.shared_group_id or resource.resource_id
+            if group_key in seen_groups:
+                continue
+            seen_groups.add(group_key)
+            known.append(resource_id)
+        return known
+
+    def _quota_resource_ids(self, candidate: ResourceCandidate) -> list[str]:
+        if self._has_valid_quota_resource_ids(candidate):
+            return list(candidate.metadata["quota_resource_ids"])
+        return [self._quota_resource_id(candidate)]
+
+    def _has_valid_quota_resource_ids(self, candidate: ResourceCandidate) -> bool:
+        resource_ids = candidate.metadata.get("quota_resource_ids")
+        return (
+            isinstance(resource_ids, (list, tuple))
+            and len(resource_ids) > 0
+            and all(isinstance(resource_id, str) and resource_id for resource_id in resource_ids)
+        )
 
     def _quota_resource_id(self, candidate: ResourceCandidate) -> str:
         return candidate.metadata.get(
