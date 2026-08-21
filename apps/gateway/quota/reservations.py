@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from threading import Lock
 from typing import Any
 
@@ -158,6 +158,7 @@ class ReservationBatchResult:
     remaining_by_resource: dict[str, int]
     reason: str | None = None
     rejected_resource_id: str | None = None
+    effective_remaining_by_resource: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -358,6 +359,7 @@ class InMemoryQuotaReservations:
                         remaining_by_resource=self._remaining_for(request_tuple),
                         reason="quota_exceeded",
                         rejected_resource_id=request.resource_id,
+                        effective_remaining_by_resource=self._effective_remaining_for(request_tuple),
                     )
                     self._reservations[reservation_id] = result
                     self._reservation_requests[reservation_id] = ("batch", request_tuple)
@@ -373,6 +375,7 @@ class InMemoryQuotaReservations:
                 requests=request_tuple,
                 accepted=True,
                 remaining_by_resource=self._remaining_for(request_tuple),
+                effective_remaining_by_resource=self._effective_remaining_for(request_tuple),
             )
             self._reservations[reservation_id] = result
             self._reservation_requests[reservation_id] = ("batch", request_tuple)
@@ -479,6 +482,12 @@ class InMemoryQuotaReservations:
     def _remaining_for(self, requests: tuple[QuotaReservationRequest, ...]) -> dict[str, int]:
         return {
             request.resource_id: self._resource(request.resource_id).remaining
+            for request in requests
+        }
+
+    def _effective_remaining_for(self, requests: tuple[QuotaReservationRequest, ...]) -> dict[str, int]:
+        return {
+            request.resource_id: self._resource(request.resource_id).effective_remaining
             for request in requests
         }
 

@@ -1192,3 +1192,36 @@ Outcome:
 - Full pytest result after this slice: 101 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
 - Pending changes before commit: `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.
+- Commit created locally: `e621de1 yêu cầu usage đầy đủ khi reconcile quota`.
+
+### Step 52 - Explicit batch effective remaining
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests documenting raw versus effective remaining values for accepted and rejected multi-resource reservations.
+- Extended `ReservationBatchResult` in `apps/gateway/quota/reservations.py` with `effective_remaining_by_resource` while keeping existing `remaining_by_resource` as raw remaining for compatibility.
+- Added `_effective_remaining_for()` to populate explicit effective remaining snapshots for batch results.
+
+Implementation notes:
+- This resolves the prior `claude-router-review` concern that single reservation results report effective remaining while batch results only reported raw remaining.
+- The new dataclass field is appended with a default factory so existing positional construction compatibility is preserved.
+- Existing `remaining_by_resource` behavior is unchanged for this slice; broader result-field renaming remains out of scope.
+
+Review:
+- Ran the required plan check with `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 claude ... --model claude-router-review`; it approved the slice with the compatibility requirement to append the new dataclass field with a default.
+- Ran the required post-code `claude-router-review` check; it approved the diff with no blockers.
+
+Verification:
+- Ran the new remaining-field RED tests; they failed because `ReservationBatchResult` did not yet expose `effective_remaining_by_resource`.
+- Re-ran the remaining-field focused tests after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q`.
+- Ran `git diff --check`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git status --short --untracked-files=all`.
+
+Outcome:
+- Remaining-field focused tests pass: 2 passed.
+- Quota focused tests pass: 40 passed.
+- `git diff --check` reported no whitespace errors; the three touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Full pytest result after this slice: 103 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- Pending changes before commit: `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.

@@ -700,6 +700,77 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 60)
         self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 1)
 
+    def test_multi_resource_result_reports_raw_and_effective_remaining(self):
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaReservationRequest,
+            QuotaResource,
+        )
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource(
+                "tokens:tenant-a:gpt-4o:minute",
+                "tenant-a",
+                "total_token",
+                100,
+                60,
+                safety_buffer=10,
+            )
+        )
+        store.add_resource(QuotaResource("requests:tenant-a:minute", "tenant-a", "request", 10, 60))
+
+        result = store.reserve_many(
+            reservation_id="res_1",
+            requests=[
+                QuotaReservationRequest("tokens:tenant-a:gpt-4o:minute", 60),
+                QuotaReservationRequest("requests:tenant-a:minute", 2),
+            ],
+        )
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.remaining_by_resource["tokens:tenant-a:gpt-4o:minute"], 40)
+        self.assertEqual(result.effective_remaining_by_resource["tokens:tenant-a:gpt-4o:minute"], 30)
+        self.assertEqual(result.remaining_by_resource["requests:tenant-a:minute"], 8)
+        self.assertEqual(result.effective_remaining_by_resource["requests:tenant-a:minute"], 8)
+
+    def test_rejected_multi_resource_result_reports_raw_and_effective_remaining_before_mutation(self):
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaReservationRequest,
+            QuotaResource,
+        )
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(
+            QuotaResource(
+                "tokens:tenant-a:gpt-4o:minute",
+                "tenant-a",
+                "total_token",
+                100,
+                60,
+                used=20,
+                safety_buffer=10,
+            )
+        )
+        store.add_resource(QuotaResource("requests:tenant-a:minute", "tenant-a", "request", 1, 60))
+
+        result = store.reserve_many(
+            reservation_id="res_1",
+            requests=[
+                QuotaReservationRequest("tokens:tenant-a:gpt-4o:minute", 10),
+                QuotaReservationRequest("requests:tenant-a:minute", 2),
+            ],
+        )
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.remaining_by_resource["tokens:tenant-a:gpt-4o:minute"], 80)
+        self.assertEqual(result.effective_remaining_by_resource["tokens:tenant-a:gpt-4o:minute"], 70)
+        self.assertEqual(result.remaining_by_resource["requests:tenant-a:minute"], 1)
+        self.assertEqual(result.effective_remaining_by_resource["requests:tenant-a:minute"], 1)
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 20)
+        self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 0)
+
     def test_reconcile_releases_unused_reserved_capacity(self):
         from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
 
