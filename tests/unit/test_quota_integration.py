@@ -185,3 +185,76 @@ async def test_candidate_quota_exhaustion_all_candidates_returns_overloaded(monk
     data = json.loads(response.body)
     assert data["error"]["type"] == "overloaded"
     primary_client.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_quota_reservation_prevents_concurrent_exceedance(monkeypatch):
+    """
+    Test that quota reservation works in the live request flow:
+    - First request consumes the only quota unit, succeeds.
+    - Second request is rejected because quota is exhausted.
+    """
+    reservations = InMemoryQuotaReservations()
+    reservations.add_resource(
+        QuotaResource(
+            resource_id="model:chat",
+            scope="model",
+            metric="requests",
+            limit=1,
+            window_seconds=60,
+            hard_limit=True,
+        )
+    )
+
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "fast-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+
+    router = SmartRouter(config, quota_reservations=reservations)
+    monkeypatch.setenv("PRIMARY_TOKEN", "test-primary-token")
+
+    # Mock upstream to succeed
+    success_response = AsyncMock()
+    success_response.status_code = 200
+    success_response.content = b'{"result":"ok"}'
+    success_response.headers = {}
+    primary_client = AsyncMock()
+    primary_client.post.return_value = success_response
+    monkeypatch.setattr(router, "clients", {"primary": primary_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    headers = {"authorization": "Bearer test-key"}
+
+    # First request should succeed and consume quota
+    response1 = await router.handle_messages(body, headers, "/v1/messages")
+    assert response1.status_code == 200
+
+    # Verify quota used is 1
+    resource = reservations.snapshot("model:chat")
+    assert resource.used == 1
+
+    # Second request should be rejected (quota exhausted)
+    response2 = await router.handle_messages(body, headers, "/v1/messages")
+    assert response2.status_code == 503
+    data = json.loads(response2.body)
+    assert "quota" in data["error"]["message"].lower()
+
+    # Verify quota used is still 1 (reservation not released on success)
+    resource = reservations.snapshot("model:chat")
+    assert resource.used == 1
+
+    # Verify the second request did not reach upstream
+    # The mock client was called only once (for the first request)
+    assert primary_client.post.call_count == 1
