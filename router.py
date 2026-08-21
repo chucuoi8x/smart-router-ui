@@ -82,8 +82,9 @@ class OpenStream:
 
 
 class SmartRouter:
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, config: dict[str, Any], quota_reservations=None):
         self.config = config
+        self.quota_reservations = quota_reservations
         self.routes: dict[str, dict[str, Any]] = {}
         for name, route in config.get("routes", {}).items():
             self.routes[name] = self._parse_route(route)
@@ -279,6 +280,22 @@ class SmartRouter:
                 status_code=404,
                 content={"error": {"type": "unknown_model", "message": "unknown logical router model"}},
             )
+
+        # Quota admission check
+        if self.quota_reservations is not None:
+            from apps.gateway.quota.reservations import QuotaReservationRequest
+            resource_id = f"model:{route_name}"
+            try:
+                result = self.quota_reservations.check_many([QuotaReservationRequest(resource_id, amount=1)])
+                if not result.accepted:
+                    return JSONResponse(
+                        status_code=503,
+                        content={"error": {"type": "quota_exhausted", "message": "quota exhausted"}},
+                    )
+            except KeyError:
+                # No quota resource defined for this route; allow the request
+                pass
+
         candidates = await self._candidate_order(route_name)
         if not candidates:
             return JSONResponse(

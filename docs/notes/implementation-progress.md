@@ -1250,3 +1250,65 @@ Outcome:
 - Quota focused tests pass: 42 passed.
 - Full pytest result after this slice: 105 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+### Step 54 - Task #6 full verification and completion (2026-08-21)
+
+Completed final verification for Admin API slice:
+
+- Catalog compatibility import is present in `router.py` at line 24.
+- Full pytest: 105 passed, 1 warning (existing Starlette deprecation).
+- `git diff --check`: clean.
+- Admin API tests: 2 passed, 1 warning.
+
+The Admin API slice (Tasks 1-6) is now fully implemented and verified.
+
+Next slice: integrate quota into RouterEngine for live request admission and scoring.
+
+### Step 55 - Advisory RouterEngine quota filtering and scoring
+
+Changed:
+- Extended `tests/unit/test_router_engine.py` with RED coverage for quota-aware RouterEngine candidate selection.
+- Updated `apps/gateway/routing/engine.py` to accept optional `quota_reservations` and apply non-mutating quota admission checks during candidate selection.
+- Hard quota failures now filter out exhausted candidates.
+- Soft quota pressure keeps candidates eligible but scores them after candidates without pressure within the same primary/fallback tier.
+- Candidate metadata may specify `quota_resource_id`; otherwise RouterEngine derives `model:{model_id}`.
+- Missing quota resources are treated as unconstrained so gradual Resource Plane population does not break existing routes.
+
+Implementation notes:
+- This is explicitly an advisory/pre-reservation RouterEngine slice, not live concurrency-safe quota enforcement.
+- RouterEngine does not mutate reservations, create reservation IDs, reconcile usage, or wire quota into live FastAPI request execution in this slice.
+- Primary and fallback tiers remain separate: quota ranking is applied inside each tier, preserving fallback semantics.
+
+Review:
+- Ran the required plan review with `claude-router-review`; it conditionally approved the slice only if described as advisory/pre-reservation and not as complete live/concurrency-safe M3 enforcement.
+- Attempted the required post-code `claude-router-review` check, but Claude Code auto-mode denied sending the repository diff to the external review model as data exfiltration. No workaround was attempted; this remains a tooling/permission blocker for post-code model review in this environment.
+
+Verification:
+- Ran new RouterEngine RED tests before implementation; they failed with `TypeError: RouterEngine.__init__() got an unexpected keyword argument 'quota_reservations'`.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_router_engine.py -q` after implementation.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git diff --check`.
+- Re-ran focused quota integration coverage with `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_router_engine.py tests/unit/test_quota_integration.py -q` after correcting the pending-file note.
+- Re-ran `git diff --check` and `git status --short --untracked-files=all` after correcting the pending-file note.
+
+Outcome:
+- RouterEngine focused tests pass: 6 passed.
+- Combined RouterEngine/SmartRouter quota focused tests pass: 7 passed.
+- Full pytest result after this slice: 109 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- `git diff --check` reported no whitespace errors; touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Pending changes before commit include this RouterEngine slice (`apps/gateway/routing/engine.py`, `tests/unit/test_router_engine.py`, and `docs/notes/implementation-progress.md`) plus earlier uncommitted live SmartRouter quota-admission files (`router.py` and untracked `tests/unit/test_quota_integration.py`).
+
+### Step 56 - Next RouterEngine quota constraint-graph slice blocked by review permission
+
+Attempted next slice:
+- Planned a narrow follow-up for README 15.5 constraint graph support: allow a `ResourceCandidate` to depend on multiple quota constraints through `metadata["quota_resource_ids"]` while preserving the existing scalar `quota_resource_id` and default `model:{model_id}` behavior.
+
+Review:
+- Attempted the required pre-code `claude-router-review` plan check before writing tests or code.
+- Claude Code auto-mode denied the command because sending the project implementation plan to the external review model was classified as data exfiltration.
+- No workaround was attempted because README 31.5 requires the review and the tool explicitly denied this action.
+
+Outcome:
+- No code was written for the multi-constraint follow-up slice.
+- Work is paused on additional coding until the review permission/model path is available, or the user explicitly decides how to handle the mandatory review step in this environment.

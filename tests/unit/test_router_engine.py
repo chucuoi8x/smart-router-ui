@@ -71,6 +71,144 @@ class RouterEngineTests(unittest.TestCase):
         self.assertEqual(len(new_candidates), initial_len - 1)
         self.assertNotIn(ref, [c.resource_ref for c in new_candidates])
 
+    def test_router_engine_filters_hard_quota_exhausted_candidates(self):
+        from apps.gateway.config.snapshot import RouteConfig, RuntimeConfigSnapshot
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+        from apps.gateway.routing.engine import RouterEngine
+        from apps.gateway.routing.models import ResourceCandidate, ResourceRef
+
+        exhausted = ResourceCandidate(
+            ResourceRef("primary", "primary", "primary-model"),
+            driver_id="anthropic-compatible",
+        )
+        available = ResourceCandidate(
+            ResourceRef("secondary", "secondary", "secondary-model"),
+            driver_id="anthropic-compatible",
+        )
+        snapshot = RuntimeConfigSnapshot(
+            routes={
+                "chat": RouteConfig(
+                    route_name="chat",
+                    strategy="priority",
+                    candidates=[exhausted, available],
+                )
+            }
+        )
+        quota = InMemoryQuotaReservations()
+        quota.add_resource(
+            QuotaResource(
+                resource_id="model:primary-model",
+                scope="model",
+                metric="requests",
+                limit=0,
+                window_seconds=60,
+                hard_limit=True,
+            )
+        )
+        quota.add_resource(
+            QuotaResource(
+                resource_id="model:secondary-model",
+                scope="model",
+                metric="requests",
+                limit=10,
+                window_seconds=60,
+                hard_limit=True,
+            )
+        )
+
+        engine = RouterEngine(snapshot, quota_reservations=quota)
+        candidates = engine.select_candidates("chat")
+
+        self.assertEqual([available.resource_ref], [candidate.resource_ref for candidate in candidates])
+
+    def test_router_engine_uses_candidate_quota_resource_metadata(self):
+        from apps.gateway.config.snapshot import RouteConfig, RuntimeConfigSnapshot
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+        from apps.gateway.routing.engine import RouterEngine
+        from apps.gateway.routing.models import ResourceCandidate, ResourceRef
+
+        candidate = ResourceCandidate(
+            ResourceRef("primary", "primary", "provider-native-model"),
+            driver_id="anthropic-compatible",
+            metadata={"quota_resource_id": "account:primary"},
+        )
+        snapshot = RuntimeConfigSnapshot(
+            routes={
+                "chat": RouteConfig(
+                    route_name="chat",
+                    strategy="priority",
+                    candidates=[candidate],
+                )
+            }
+        )
+        quota = InMemoryQuotaReservations()
+        quota.add_resource(
+            QuotaResource(
+                resource_id="account:primary",
+                scope="account",
+                metric="requests",
+                limit=0,
+                window_seconds=60,
+                hard_limit=True,
+            )
+        )
+
+        engine = RouterEngine(snapshot, quota_reservations=quota)
+
+        self.assertEqual([], engine.select_candidates("chat"))
+
+    def test_router_engine_keeps_soft_quota_pressure_eligible_but_scores_it_lower(self):
+        from apps.gateway.config.snapshot import RouteConfig, RuntimeConfigSnapshot
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+        from apps.gateway.routing.engine import RouterEngine
+        from apps.gateway.routing.models import ResourceCandidate, ResourceRef
+
+        pressured = ResourceCandidate(
+            ResourceRef("primary", "primary", "pressured-model"),
+            driver_id="anthropic-compatible",
+        )
+        healthy = ResourceCandidate(
+            ResourceRef("secondary", "secondary", "healthy-model"),
+            driver_id="anthropic-compatible",
+        )
+        snapshot = RuntimeConfigSnapshot(
+            routes={
+                "chat": RouteConfig(
+                    route_name="chat",
+                    strategy="priority",
+                    candidates=[pressured, healthy],
+                )
+            }
+        )
+        quota = InMemoryQuotaReservations()
+        quota.add_resource(
+            QuotaResource(
+                resource_id="model:pressured-model",
+                scope="model",
+                metric="requests",
+                limit=0,
+                window_seconds=60,
+                hard_limit=False,
+            )
+        )
+        quota.add_resource(
+            QuotaResource(
+                resource_id="model:healthy-model",
+                scope="model",
+                metric="requests",
+                limit=10,
+                window_seconds=60,
+                hard_limit=True,
+            )
+        )
+
+        engine = RouterEngine(snapshot, quota_reservations=quota)
+        candidates = engine.select_candidates("chat")
+
+        self.assertEqual([healthy.resource_ref, pressured.resource_ref], [candidate.resource_ref for candidate in candidates])
+        self.assertEqual({"model:pressured-model": 1}, candidates[1].metadata["quota_soft_pressure_by_resource"])
+        self.assertEqual("model:pressured-model", candidates[1].metadata["quota_resource_id"])
+
 
 if __name__ == '__main__':
     unittest.main()
