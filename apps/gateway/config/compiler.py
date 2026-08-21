@@ -35,7 +35,8 @@ class LegacyConfigCompiler:
                     credential_scope=upstream,
                     model_id=model
                 )
-                candidates.append(ResourceCandidate(ref, driver_id='anthropic-compatible', weight=weight))
+                metadata = self._candidate_metadata(item)
+                candidates.append(ResourceCandidate(ref, driver_id='anthropic-compatible', weight=weight, metadata=metadata))
 
             fallback = []
             for item in route_data.get('fallback', []):
@@ -46,7 +47,8 @@ class LegacyConfigCompiler:
                     credential_scope=upstream,
                     model_id=model
                 )
-                fallback.append(ResourceCandidate(ref, driver_id='anthropic-compatible', weight=1))
+                metadata = self._candidate_metadata(item)
+                fallback.append(ResourceCandidate(ref, driver_id='anthropic-compatible', weight=1, metadata=metadata))
 
             routes[route_name] = RouteConfig(
                 route_name=route_name,
@@ -57,3 +59,10 @@ class LegacyConfigCompiler:
             )
 
         return RuntimeConfigSnapshot(connections=connections, routes=routes)
+
+    def _candidate_metadata(self, item: dict) -> dict:
+        metadata = {}
+        for key in ("quota_resource_id", "quota_resource_ids"):
+            if key in item:
+                metadata[key] = item[key]
+        return metadata

@@ -1374,3 +1374,37 @@ Outcome:
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
 - `git diff --check` reported no whitespace errors; touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
 - Pending changes before commit: `apps/gateway/routing/engine.py`, `tests/unit/test_router_engine.py`, and `docs/notes/implementation-progress.md`.
+
+### Step 60 - Legacy compiler preserves quota metadata
+
+Changed:
+- Extended `tests/unit/test_router_engine.py` with a RED test using a temporary YAML fixture to prove `LegacyConfigCompiler` preserves top-level `quota_resource_id` and `quota_resource_ids` fields on both primary candidates and fallback entries.
+- Updated `apps/gateway/config/compiler.py` to copy only those allowlisted quota metadata keys into `ResourceCandidate.metadata` when present.
+
+Implementation notes:
+- The compiler preserves values without coercion, interpretation, precedence decisions, or quota validation; `RouterEngine` remains responsible for advisory quota semantics.
+- Absent keys are omitted, while present `null` or malformed values are copied unchanged for downstream handling.
+- Existing compiler behavior is preserved: upstream/model mappings, hardcoded `anthropic-compatible` driver, route ordering, primary YAML weight, fallback hardcoded weight `1`, and static `generated: true` handling.
+- This slice does not modify production `config.yaml`, dynamic generated-route-file loading, legacy live `SmartRouter` parsing, live FastAPI routing, reservation/reconciliation, Redis, DB, provider-specific logic, or `RouterEngine`.
+
+Review:
+- Initial pre-code `claude-router-review` run returned blockers requiring explicit YAML shape, preservation-vs-validation rules, generated-route scope, and fallback weight behavior.
+- Revised the plan to top-level quota keys only, raw preservation, temp fixture tests, dynamic/live exclusions, and fallback weight preservation; the second pre-code `claude-router-review` approved with no blockers.
+- Post-code `claude-router-review` approved the diff with no blockers.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_router_engine.py::RouterEngineTests::test_legacy_compiler_preserves_quota_metadata_from_yaml_candidates -q` before implementation; it failed with missing `quota_resource_id` metadata.
+- Re-ran the same focused compiler metadata test after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_router_engine.py -q`.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_router_engine.py tests/unit/test_quota_integration.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git diff --check`.
+
+Outcome:
+- Compiler metadata focused test passes: 1 passed.
+- RouterEngine focused tests pass: 12 passed.
+- Combined RouterEngine/SmartRouter quota focused tests pass: 13 passed.
+- Full pytest result after this slice: 115 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- `git diff --check` reported no whitespace errors; touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Pending changes before commit: `apps/gateway/config/compiler.py`, `tests/unit/test_router_engine.py`, and `docs/notes/implementation-progress.md`.

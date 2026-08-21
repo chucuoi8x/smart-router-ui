@@ -47,6 +47,66 @@ class RouterEngineTests(unittest.TestCase):
         self.assertEqual(candidates[0].resource_ref.provider_connection_id, 'proxypal')
         self.assertEqual(candidates[-1].resource_ref.provider_connection_id, 'aibox')
 
+    def test_legacy_compiler_preserves_quota_metadata_from_yaml_candidates(self):
+        from tempfile import TemporaryDirectory
+
+        from apps.gateway.config.compiler import LegacyConfigCompiler
+
+        yaml_text = """
+upstreams:
+  primary:
+    base_url: https://primary.example
+    auth:
+      mode: bearer
+      token_env: PRIMARY_TOKEN
+  backup:
+    base_url: https://backup.example
+    auth:
+      mode: bearer
+      token_env: BACKUP_TOKEN
+routes:
+  chat:
+    strategy: priority
+    generated: true
+    candidates:
+      - upstream: primary
+        model: fast-model
+        weight: 7
+        quota_resource_id: account:primary
+        quota_resource_ids:
+          - account:primary
+          - model:fast-model
+    fallback:
+      - upstream: backup
+        model: fallback-model
+        weight: 9
+        quota_resource_id: null
+        quota_resource_ids: malformed-scalar
+"""
+        with TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text(yaml_text, encoding="utf-8")
+            snapshot = LegacyConfigCompiler().compile_file(config_path)
+
+        route = snapshot.routes["chat"]
+        self.assertTrue(route.generated)
+        primary = route.candidates[0]
+        fallback = route.fallback[0]
+
+        self.assertEqual("primary", primary.resource_ref.provider_connection_id)
+        self.assertEqual("fast-model", primary.resource_ref.model_id)
+        self.assertEqual("anthropic-compatible", primary.driver_id)
+        self.assertEqual(7, primary.weight)
+        self.assertEqual("account:primary", primary.metadata["quota_resource_id"])
+        self.assertEqual(["account:primary", "model:fast-model"], primary.metadata["quota_resource_ids"])
+
+        self.assertEqual("backup", fallback.resource_ref.provider_connection_id)
+        self.assertEqual("fallback-model", fallback.resource_ref.model_id)
+        self.assertEqual("anthropic-compatible", fallback.driver_id)
+        self.assertEqual(1, fallback.weight)
+        self.assertIsNone(fallback.metadata["quota_resource_id"])
+        self.assertEqual("malformed-scalar", fallback.metadata["quota_resource_ids"])
+
     def test_router_engine_respects_circuit_breakers(self):
         from apps.gateway.routing.engine import RouterEngine
         from apps.gateway.config.compiler import LegacyConfigCompiler
