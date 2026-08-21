@@ -1103,3 +1103,22 @@ Outcome:
 - `git diff --check` reported no whitespace errors; touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
 - The `claude-router-review` command could not complete because this Claude Code version does not recognize model `claude-router-review` (`claude-code:unrecognized_model`) and timed out.
 - This is a tooling/configuration blocker for future enforcement of README section 31.5 until the model is mapped in `modelOverrides`, Claude Code is updated, or the environment is configured to allow the model.
+
+### Step 49 - Shared quota changes committed and next review blocked
+
+Changed:
+- Committed the accumulated shared quota hydration/observation hardening and README review-rule updates as `b6426b4 củng cố đồng bộ quota dùng chung`.
+- Attempted to run the required `claude-router-review` plan review for the next Resource Plane slice before coding further.
+
+Verification:
+- Scanned the pending diff for secret-like terms before staging; matches were documentation text, quota token metric names, and test fixture identifiers, not real secrets.
+- Ran `git diff --cached --check` before commit.
+- Ran `git commit` with a Vietnamese commit message and Claude co-author footer.
+- Ran `git status --short --untracked-files=all` and `git log -1 --oneline` after commit.
+- Attempted `claude-router-review` plan review again for the next slice.
+
+Outcome:
+- Commit created locally: `b6426b4 củng cố đồng bộ quota dùng chung`.
+- Post-commit status was clean before this progress-note update.
+- The next-slice `claude-router-review` attempt was blocked by the command safety classifier when trying to use `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1`; the earlier direct attempt showed this Claude Code version does not recognize model `claude-router-review`.
+- No further coding was started after the commit because README section 31.5 now requires a working `claude-router-review` plan check before implementation.
