@@ -1156,3 +1156,39 @@ Outcome:
 - Full pytest result after this slice: 97 passed, 1 warning.
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
 - Pending changes before commit: `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.
+- Commit created locally: `118cc65 thêm phát hiện xung đột reservation id`.
+
+### Step 51 - Complete reconciliation actual usage required
+
+Changed:
+- Extended `tests/unit/test_quota_reservations.py` with RED tests requiring reconciliation actual usage keys to exactly match reserved resource IDs.
+- Updated `InMemoryQuotaReservations.reconcile()` in `apps/gateway/quota/reservations.py` to reject missing and unexpected actual usage keys before mutating reservation state.
+
+Implementation notes:
+- Missing actual usage no longer defaults to zero, which avoids releasing reserved capacity after uncertain upstream outcomes.
+- Unexpected actual usage resource IDs now fail fast instead of being silently ignored.
+- Repeated reconciliation remains idempotent and returns the original `ReconciliationResult` before validating malformed retry input, including negative amounts.
+- Validation compares resource ID sets, not dictionary ordering.
+
+Review:
+- Ran the required plan check with `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 claude ... --model claude-router-review`; it approved the narrow plan with no blockers.
+- Ran the required post-code `claude-router-review` check; the first review reported a blocker because negative amount validation ran before idempotent replay.
+- Added a regression test for repeated reconcile with a negative amount and moved negative amount validation after the existing reconciliation lookup.
+- Re-ran `claude-router-review`; it approved the updated diff.
+
+Verification:
+- Ran the initial reconciliation completeness RED tests; missing and unexpected key tests failed as expected.
+- Ran the repeated negative reconciliation RED test; it failed as expected before moving validation.
+- Re-ran focused reconciliation completeness tests after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_reservations.py -q`.
+- Ran `git diff --check`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git status --short --untracked-files=all`.
+
+Outcome:
+- Focused reconciliation completeness tests pass: 4 passed.
+- Quota focused tests pass: 38 passed.
+- `git diff --check` reported no whitespace errors; the three touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Full pytest result after this slice: 101 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- Pending changes before commit: `apps/gateway/quota/reservations.py`, `tests/unit/test_quota_reservations.py`, and `docs/notes/implementation-progress.md`.

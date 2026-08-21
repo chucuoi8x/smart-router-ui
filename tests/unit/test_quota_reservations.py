@@ -762,6 +762,87 @@ class QuotaReservationTests(unittest.TestCase):
         self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 55)
         self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 1)
 
+    def test_reconcile_requires_actual_usage_for_every_reserved_resource(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+        store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=80, reservation_id="res_1")
+
+        with self.assertRaisesRegex(ValueError, "actual usage missing resource_id: tokens:tenant-a:gpt-4o:minute"):
+            store.reconcile("res_1", {})
+
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 80)
+        result = store.reconcile("res_1", {"tokens:tenant-a:gpt-4o:minute": 70})
+        self.assertEqual(result.actual_by_resource, {"tokens:tenant-a:gpt-4o:minute": 70})
+
+    def test_reconcile_rejects_unexpected_actual_usage_resource(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+        store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=80, reservation_id="res_1")
+
+        with self.assertRaisesRegex(ValueError, "actual usage contains unknown resource_id: requests:tenant-a:minute"):
+            store.reconcile(
+                "res_1",
+                {
+                    "tokens:tenant-a:gpt-4o:minute": 70,
+                    "requests:tenant-a:minute": 1,
+                },
+            )
+
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 80)
+        result = store.reconcile("res_1", {"tokens:tenant-a:gpt-4o:minute": 70})
+        self.assertEqual(result.actual_by_resource, {"tokens:tenant-a:gpt-4o:minute": 70})
+
+    def test_reconcile_multi_resource_requires_exact_actual_usage_keys(self):
+        from apps.gateway.quota.reservations import (
+            InMemoryQuotaReservations,
+            QuotaReservationRequest,
+            QuotaResource,
+        )
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+        store.add_resource(QuotaResource("requests:tenant-a:minute", "tenant-a", "request", 2, 60))
+        store.reserve_many(
+            reservation_id="res_1",
+            requests=[
+                QuotaReservationRequest("tokens:tenant-a:gpt-4o:minute", 70),
+                QuotaReservationRequest("requests:tenant-a:minute", 1),
+            ],
+        )
+
+        with self.assertRaisesRegex(ValueError, "actual usage missing resource_id: requests:tenant-a:minute"):
+            store.reconcile("res_1", {"tokens:tenant-a:gpt-4o:minute": 55})
+
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 70)
+        self.assertEqual(store.snapshot("requests:tenant-a:minute").used, 1)
+        result = store.reconcile(
+            "res_1",
+            {
+                "tokens:tenant-a:gpt-4o:minute": 55,
+                "requests:tenant-a:minute": 1,
+            },
+        )
+        self.assertEqual(result.actual_by_resource, {"tokens:tenant-a:gpt-4o:minute": 55, "requests:tenant-a:minute": 1})
+
+    def test_repeated_reconcile_returns_original_result_before_validating_input(self):
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+
+        store = InMemoryQuotaReservations()
+        store.add_resource(QuotaResource("tokens:tenant-a:gpt-4o:minute", "tenant-a", "total_token", 100, 60))
+        store.reserve(resource_id="tokens:tenant-a:gpt-4o:minute", amount=80, reservation_id="res_1")
+
+        result = store.reconcile("res_1", {"tokens:tenant-a:gpt-4o:minute": 70})
+        repeated_unknown = store.reconcile("res_1", {"unexpected:resource": 1})
+        repeated_negative = store.reconcile("res_1", {"tokens:tenant-a:gpt-4o:minute": -1})
+
+        self.assertEqual(repeated_unknown, result)
+        self.assertEqual(repeated_negative, result)
+        self.assertEqual(store.snapshot("tokens:tenant-a:gpt-4o:minute").used, 70)
+
 
 class QuotaResourceRepositoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_repository_saves_resource_state_with_flush_only_by_default(self):

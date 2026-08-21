@@ -379,23 +379,24 @@ class InMemoryQuotaReservations:
             return result
 
     def reconcile(self, reservation_id: str, actual_by_resource: dict[str, int]) -> ReconciliationResult:
-        if any(amount < 0 for amount in actual_by_resource.values()):
-            raise ValueError("actual amounts must be non-negative")
-
         with self._lock:
             existing = self._reconciliations.get(reservation_id)
             if existing is not None:
                 return existing
+            if any(amount < 0 for amount in actual_by_resource.values()):
+                raise ValueError("actual amounts must be non-negative")
 
-            reservation = self._reservations.pop(reservation_id, None)
+            reservation = self._reservations.get(reservation_id)
             if reservation is None:
                 raise KeyError(f"unknown reservation_id: {reservation_id}")
             if not reservation.accepted:
                 raise ValueError("cannot reconcile a rejected reservation")
 
             reserved_by_resource = self._reserved_by_resource(reservation)
+            self._validate_actual_usage_keys(reserved_by_resource, actual_by_resource)
+            self._reservations.pop(reservation_id)
             actual = {
-                resource_id: actual_by_resource.get(resource_id, 0)
+                resource_id: actual_by_resource[resource_id]
                 for resource_id in reserved_by_resource
             }
             released_by_resource = {
@@ -452,6 +453,20 @@ class InMemoryQuotaReservations:
     ) -> None:
         if self._reservation_requests.get(reservation_id) != (kind, requests):
             raise ValueError("reservation_id conflict")
+
+    def _validate_actual_usage_keys(
+        self,
+        reserved_by_resource: dict[str, int],
+        actual_by_resource: dict[str, int],
+    ) -> None:
+        reserved_ids = set(reserved_by_resource)
+        actual_ids = set(actual_by_resource)
+        missing = sorted(reserved_ids - actual_ids)
+        if missing:
+            raise ValueError(f"actual usage missing resource_id: {missing[0]}")
+        unexpected = sorted(actual_ids - reserved_ids)
+        if unexpected:
+            raise ValueError(f"actual usage contains unknown resource_id: {unexpected[0]}")
 
     def _reserved_by_resource(self, reservation: ReservationResult | ReservationBatchResult) -> dict[str, int]:
         if isinstance(reservation, ReservationBatchResult):
