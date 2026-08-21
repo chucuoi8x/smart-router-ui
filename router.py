@@ -57,6 +57,7 @@ class Candidate:
     upstream: str
     model: str
     weight: int = 1
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def key(self) -> str:
@@ -148,9 +149,18 @@ class SmartRouter:
                     upstream=str(item["upstream"]),
                     model=str(item["model"]),
                     weight=max(1, int(item.get("weight", 1))),
+                    metadata=SmartRouter._candidate_metadata(item),
                 )
             )
         return candidates
+
+    @staticmethod
+    def _candidate_metadata(item: dict[str, Any]) -> dict[str, Any]:
+        metadata = {}
+        for key in ("quota_resource_id", "quota_resource_ids"):
+            if key in item:
+                metadata[key] = item[key]
+        return metadata
 
     @staticmethod
     def _parse_route(route: dict[str, Any]) -> dict[str, Any]:
@@ -253,7 +263,9 @@ class SmartRouter:
             # Primary candidates are ordered by the route strategy; fallback
             # candidates are only reached after every primary candidate has been
             # tried and failed (e.g. proxypal exhausted -> aibox backup).
-            primary = [c for c in route["candidates"] if self._is_available(c)]
+            primary = self._quota_available_candidates(
+                [c for c in route["candidates"] if self._is_available(c)]
+            )
             if route["strategy"] == "smooth_weighted_rr" and len(primary) >= 2:
                 current = self.rr_current.setdefault(route_name, {})
                 total = sum(c.weight for c in primary)
@@ -266,8 +278,57 @@ class SmartRouter:
                 ordered = [selected, *remaining]
             else:
                 ordered = list(primary)
-            fallback = [c for c in route.get("fallback", []) if self._is_available(c)]
+            fallback = self._quota_available_candidates(
+                [c for c in route.get("fallback", []) if self._is_available(c)]
+            )
             return ordered + fallback
+
+    def _quota_available_candidates(self, candidates: list[Candidate]) -> list[Candidate]:
+        if self.quota_reservations is None:
+            return candidates
+        return [candidate for candidate in candidates if self._candidate_quota_accepted(candidate)]
+
+    def _candidate_quota_accepted(self, candidate: Candidate) -> bool:
+        from apps.gateway.quota.reservations import QuotaReservationRequest
+
+        resource_ids = self._known_candidate_quota_resource_ids(candidate)
+        if not resource_ids:
+            return True
+        admission = self.quota_reservations.check_many([
+            QuotaReservationRequest(resource_id, amount=1)
+            for resource_id in resource_ids
+        ])
+        return admission.accepted
+
+    def _known_candidate_quota_resource_ids(self, candidate: Candidate) -> list[str]:
+        known: list[str] = []
+        seen_groups: set[str] = set()
+        for resource_id in self._candidate_quota_resource_ids(candidate):
+            try:
+                resource = self.quota_reservations.snapshot(resource_id)
+            except KeyError:
+                continue
+            if resource.metric != "requests":
+                continue
+            group_key = resource.shared_group_id or resource.resource_id
+            if group_key in seen_groups:
+                continue
+            seen_groups.add(group_key)
+            known.append(resource_id)
+        return known
+
+    def _candidate_quota_resource_ids(self, candidate: Candidate) -> list[str]:
+        resource_ids = candidate.metadata.get("quota_resource_ids")
+        if (
+            isinstance(resource_ids, (list, tuple))
+            and len(resource_ids) > 0
+            and all(isinstance(resource_id, str) and resource_id for resource_id in resource_ids)
+        ):
+            return list(resource_ids)
+        resource_id = candidate.metadata.get("quota_resource_id")
+        if isinstance(resource_id, str) and resource_id:
+            return [resource_id]
+        return [f"model:{candidate.model}"]
 
     def _is_available(self, candidate: Candidate) -> bool:
         state = self.circuits.get(candidate.key)

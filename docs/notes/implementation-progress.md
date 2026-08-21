@@ -1408,3 +1408,39 @@ Outcome:
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
 - `git diff --check` reported no whitespace errors; touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
 - Pending changes before commit: `apps/gateway/config/compiler.py`, `tests/unit/test_router_engine.py`, and `docs/notes/implementation-progress.md`.
+
+### Step 61 - Legacy SmartRouter parses candidate quota metadata and skips hard-exhausted candidates
+
+Changed:
+- Extended `tests/unit/test_quota_integration.py` with RED coverage for parsing candidate quota metadata in `SmartRouter._parse_candidates()` and applying non-mutating quota filtering during `_candidate_order()`.
+- Updated `Candidate` dataclass in `router.py` to include `metadata: dict[str, Any]` and preserved top-level `quota_resource_id` / `quota_resource_ids` fields during candidate parsing.
+- Updated `SmartRouter._candidate_order()` to filter out candidates whose known request-count hard quota constraints fail when `quota_reservations` is injected.
+
+Implementation notes:
+- This is explicitly an injected/legacy SmartRouter candidate-level advisory filter for request-count resources only.
+- It preserves backward compatibility with route-level `model:{route_name}` prechecks (which continue returning `503 quota_exhausted`).
+- When candidate-level filtering removes all candidates, existing handler behavior (`503 overloaded`) is preserved.
+- Plural `quota_resource_ids` takes precedence over scalar `quota_resource_id` only when valid; invalid or absent plural metadata falls back to scalar or `model:{candidate.model}`.
+- Missing resources and non-request resources are skipped as unconstrained.
+- Soft quota pressure does not exclude or reorder candidates in the legacy router.
+- This slice does not wire production `from_environment()` lifespan hydration, `RouterEngine`, `LegacyConfigCompiler`, Redis, DB, ProviderDriver, streaming failover semantics, or provider-specific logic.
+
+Review:
+- Pre-code `claude-router-review` returned blockers requiring explicit responses for empty candidate lists, parser-vs-validation separation, request-count scoping, soft-pressure behavior, duplicate candidate keys, and injected-vs-production wiring.
+- Revised the plan to address those semantics and clarify injected-only scope; the second pre-code `claude-router-review` approved with no blockers.
+- Post-code `claude-router-review` approved the diff with no blockers.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_integration.py -q` before implementation; the new tests failed on missing Candidate metadata and unhandled candidate quota exhaustion.
+- Re-ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_integration.py -q` after implementation.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_router_engine.py tests/unit/test_quota_integration.py -q`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`.
+- Ran `git diff --check`.
+
+Outcome:
+- Quota integration focused tests pass: 4 passed.
+- Combined RouterEngine/SmartRouter quota focused tests pass: 16 passed.
+- Full pytest result after this slice: 118 passed, 1 warning.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+- `git diff --check` reported no whitespace errors; touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
+- Pending changes before commit: `router.py`, `tests/unit/test_quota_integration.py`, and `docs/notes/implementation-progress.md`.

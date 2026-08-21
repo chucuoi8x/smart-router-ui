@@ -58,3 +58,130 @@ async def test_quota_exhaustion_rejects_request(monkeypatch):
     assert response.status_code == 503
     data = json.loads(response.body)
     assert "quota" in data["error"]["message"].lower()
+
+
+def test_smart_router_preserves_candidate_quota_metadata():
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [
+                    {
+                        "upstream": "primary",
+                        "model": "fast-model",
+                        "quota_resource_id": "account:primary",
+                        "quota_resource_ids": ["account:primary", "model:fast-model"],
+                    }
+                ],
+                "fallback": [
+                    {
+                        "upstream": "backup",
+                        "model": "fallback-model",
+                        "quota_resource_id": None,
+                        "quota_resource_ids": "malformed-scalar",
+                    }
+                ],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+            "backup": {
+                "base_url": "https://backup.example",
+                "auth": {"mode": "bearer", "token_env": "BACKUP_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+
+    router = SmartRouter(config)
+
+    primary = router.routes["chat"]["candidates"][0]
+    fallback = router.routes["chat"]["fallback"][0]
+    assert primary.metadata["quota_resource_id"] == "account:primary"
+    assert primary.metadata["quota_resource_ids"] == ["account:primary", "model:fast-model"]
+    assert fallback.metadata["quota_resource_id"] is None
+    assert fallback.metadata["quota_resource_ids"] == "malformed-scalar"
+
+
+@pytest.mark.asyncio
+async def test_candidate_quota_exhaustion_skips_primary_and_uses_fallback(monkeypatch):
+    reservations = InMemoryQuotaReservations()
+    reservations.add_resource(QuotaResource("model:primary-model", "model", "requests", 0, 60))
+    reservations.add_resource(QuotaResource("model:fallback-model", "model", "requests", 10, 60))
+
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "primary-model"}],
+                "fallback": [{"upstream": "backup", "model": "fallback-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+            "backup": {
+                "base_url": "https://backup.example",
+                "auth": {"mode": "bearer", "token_env": "BACKUP_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+    router = SmartRouter(config, quota_reservations=reservations)
+    monkeypatch.setenv("PRIMARY_TOKEN", "test-primary-token")
+    monkeypatch.setenv("BACKUP_TOKEN", "test-backup-token")
+
+    primary_client = AsyncMock()
+    backup_response = AsyncMock()
+    backup_response.status_code = 200
+    backup_response.content = b'{"result":"fallback"}'
+    backup_response.headers = {}
+    backup_client = AsyncMock()
+    backup_client.post.return_value = backup_response
+    monkeypatch.setattr(router, "clients", {"primary": primary_client, "backup": backup_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {"authorization": "Bearer test-key"}, "/v1/messages")
+
+    assert response.status_code == 200
+    assert response.body == b'{"result":"fallback"}'
+    primary_client.post.assert_not_called()
+    backup_client.post.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_candidate_quota_exhaustion_all_candidates_returns_overloaded(monkeypatch):
+    reservations = InMemoryQuotaReservations()
+    reservations.add_resource(QuotaResource("model:primary-model", "model", "requests", 0, 60))
+
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "primary-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+    router = SmartRouter(config, quota_reservations=reservations)
+    primary_client = AsyncMock()
+    monkeypatch.setattr(router, "clients", {"primary": primary_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {"authorization": "Bearer test-key"}, "/v1/messages")
+
+    assert response.status_code == 503
+    data = json.loads(response.body)
+    assert data["error"]["type"] == "overloaded"
+    primary_client.post.assert_not_called()
