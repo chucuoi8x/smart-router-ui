@@ -258,3 +258,135 @@ async def test_quota_reservation_prevents_concurrent_exceedance(monkeypatch):
     # Verify the second request did not reach upstream
     # The mock client was called only once (for the first request)
     assert primary_client.post.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_live_request_records_ledger_entries(monkeypatch):
+    """
+    Test that InMemoryUsageLedger wired to SmartRouter creates
+    RequestRecord on entry and AttemptRecord for every upstream attempt.
+    """
+    from apps.gateway.usage.ledger import InMemoryUsageLedger
+
+    ledger = InMemoryUsageLedger()
+
+    reservations = InMemoryQuotaReservations()
+
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "fast-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+
+    router = SmartRouter(config, quota_reservations=reservations)
+    monkeypatch.setattr(router, "_usage_ledger", ledger)
+    monkeypatch.setenv("PRIMARY_TOKEN", "test-primary-token")
+
+    success_response = AsyncMock()
+    success_response.status_code = 200
+    success_response.content = b'{"result":"ok"}'
+    success_response.headers = {}
+    primary_client = AsyncMock()
+    primary_client.post.return_value = success_response
+    monkeypatch.setattr(router, "clients", {"primary": primary_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    headers = {"authorization": "Bearer test-key"}
+
+    response = await router.handle_messages(body, headers, "/v1/messages")
+    assert response.status_code == 200
+
+    # A RequestRecord should exist with a generated request_id
+    assert len(ledger._requests) >= 1
+    request_id = next(iter(ledger._requests))
+    req = ledger._requests[request_id]
+    assert req.logical_model == "chat"
+
+    # An AttemptRecord must exist keyed to the same request_id
+    attempts = [a for a in ledger._attempts.values() if a.request_id == request_id]
+    assert len(attempts) == 1
+    assert attempts[0].provider_connection_id == "primary"
+    assert attempts[0].status == "success"
+
+    # A failed retry also creates an AttemptRecord
+    fail_response = AsyncMock()
+    fail_response.status_code = 503
+    fail_response.content = b'{"error":"down"}'
+    fail_response.headers = {}
+    primary_client.post.return_value = fail_response
+
+    response2 = await router.handle_messages(body, headers, "/v1/messages")
+    assert response2.status_code == 503
+
+    # Now there should be two requests total (one per handle_messages call)
+    assert len(ledger._requests) == 2
+    # And two attempts (each request attempted one candidate)
+    assert len(ledger._attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_live_request_records_async_ledger_boundary(monkeypatch):
+    """SmartRouter should await repository-style async ledger methods."""
+
+    class FakeAsyncLedger:
+        def __init__(self):
+            self.requests = []
+            self.attempts = []
+
+        async def record_request(self, record, *, commit=False):
+            self.requests.append(record)
+            return record
+
+        async def record_attempt(self, record, *, commit=False):
+            self.attempts.append(record)
+            return record
+
+    ledger = FakeAsyncLedger()
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "fast-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+
+    router = SmartRouter(config, usage_ledger=ledger)
+    monkeypatch.setenv("PRIMARY_TOKEN", "test-primary-token")
+
+    success_response = AsyncMock()
+    success_response.status_code = 200
+    success_response.content = b'{"result":"ok"}'
+    success_response.headers = {}
+    primary_client = AsyncMock()
+    primary_client.post.return_value = success_response
+    monkeypatch.setattr(router, "clients", {"primary": primary_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {"authorization": "Bearer test-key"}, "/v1/messages")
+
+    assert response.status_code == 200
+    assert len(ledger.requests) == 1
+    assert ledger.requests[0].logical_model == "chat"
+    assert len(ledger.attempts) == 1
+    assert ledger.attempts[0].request_id == ledger.requests[0].request_id
+    assert ledger.attempts[0].provider_connection_id == "primary"
+    assert ledger.attempts[0].model_resource_id == "fast-model"
+    assert ledger.attempts[0].status == "success"

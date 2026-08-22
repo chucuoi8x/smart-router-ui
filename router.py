@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from apps.gateway.api.admin import router as admin_router
 from apps.gateway.routing.engine import RouterEngine
 from apps.gateway.config.compiler import LegacyConfigCompiler
+from apps.gateway.usage.ledger import AttemptRecord, RequestRecord
 from apps.worker.collectors.aibox_catalog import build_records, select_routes, state_from_records
 
 
@@ -85,9 +87,10 @@ class OpenStream:
 
 
 class SmartRouter:
-    def __init__(self, config: dict[str, Any], quota_reservations=None):
+    def __init__(self, config: dict[str, Any], quota_reservations=None, usage_ledger=None):
         self.config = config
         self.quota_reservations = quota_reservations
+        self._usage_ledger = usage_ledger
         self.routes: dict[str, dict[str, Any]] = {}
         for name, route in config.get("routes", {}).items():
             self.routes[name] = self._parse_route(route)
@@ -355,6 +358,59 @@ class SmartRouter:
         state = self.circuits.get(candidate.key)
         return state is None or state.cooldown_until <= time.monotonic()
 
+    async def _record_usage_request(self, *, request_id: str, route_name: str) -> None:
+        if self._usage_ledger is None:
+            return
+        record = RequestRecord(request_id=request_id, route_id=route_name, logical_model=route_name)
+        try:
+            method = self._usage_ledger.record_request
+            params = inspect.signature(method).parameters
+            if "request_id" in params:
+                result = method(request_id=request_id, route_id=route_name, logical_model=route_name)
+            else:
+                result = method(record)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            # Ledger failures must not break data-plane traffic.
+            pass
+
+    async def _record_usage_attempt(
+        self,
+        *,
+        request_id: str | None,
+        attempt_id: str,
+        candidate: Candidate,
+        status: str,
+    ) -> None:
+        if self._usage_ledger is None or request_id is None:
+            return
+        record = AttemptRecord(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            provider_connection_id=candidate.upstream,
+            model_resource_id=candidate.model,
+            status=status,
+        )
+        try:
+            method = self._usage_ledger.record_attempt
+            params = inspect.signature(method).parameters
+            if "request_id" in params:
+                result = method(
+                    request_id=request_id,
+                    attempt_id=attempt_id,
+                    provider_connection_id=candidate.upstream,
+                    model_resource_id=candidate.model,
+                    status=status,
+                )
+            else:
+                result = method(record)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            # Ledger failures must not break data-plane traffic.
+            pass
+
     async def handle_messages(self, body: dict[str, Any], incoming_headers: Any, path: str) -> Response:
         route_name = body.get("model")
         if not isinstance(route_name, str) or route_name not in self.routes:
@@ -394,9 +450,13 @@ class SmartRouter:
                 status_code=503,
                 content={"error": {"type": "overloaded", "message": "all candidates are cooling down or unavailable"}},
             )
+
+        request_id = uuid.uuid4().hex
+        await self._record_usage_request(request_id=request_id, route_name=route_name)
+
         if bool(body.get("stream", False)) and path.endswith("/messages"):
-            return await self._stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id)
-        return await self._non_stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id)
+            return await self._stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id, request_id)
+        return await self._non_stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id, request_id)
 
     async def _non_stream_messages(
         self,
@@ -407,9 +467,11 @@ class SmartRouter:
         path: str,
         reservation_id: str | None = None,
         resource_id: str | None = None,
+        request_id: str | None = None,
     ) -> Response:
         last_failure: str | None = None
         for candidate in candidates:
+            attempt_id = uuid.uuid4().hex
             request_body = dict(body)
             request_body["model"] = candidate.model
             try:
@@ -419,14 +481,32 @@ class SmartRouter:
             except (httpx.RequestError, RouterConfigurationError) as exc:
                 last_failure = _safe_error(exc)
                 await self._record_failure(candidate, None, last_failure)
+                await self._record_usage_attempt(
+                    request_id=request_id,
+                    attempt_id=attempt_id,
+                    candidate=candidate,
+                    status="failed",
+                )
                 continue
             if response.status_code in FAILOVER_STATUSES:
                 last_failure = f"upstream returned {response.status_code}"
                 await self._record_failure(candidate, response.status_code, last_failure)
+                await self._record_usage_attempt(
+                    request_id=request_id,
+                    attempt_id=attempt_id,
+                    candidate=candidate,
+                    status="failed",
+                )
                 continue
             # Request succeeded (non-failover status). Reconcile quota if reserved.
             if reservation_id is not None and resource_id is not None:
                 self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+            await self._record_usage_attempt(
+                request_id=request_id,
+                attempt_id=attempt_id,
+                candidate=candidate,
+                status="success",
+            )
             await self._record_success(candidate, response.status_code)
             return Response(
                 content=response.content,
@@ -451,9 +531,11 @@ class SmartRouter:
         path: str,
         reservation_id: str | None = None,
         resource_id: str | None = None,
+        request_id: str | None = None,
     ) -> Response:
         last_failure: str | None = None
         for candidate in candidates:
+            attempt_id = uuid.uuid4().hex
             request_body = dict(body)
             request_body["model"] = candidate.model
             opened = await self._open_stream(candidate, request_body, incoming_headers, path)
@@ -461,13 +543,27 @@ class SmartRouter:
                 if opened.status_code in FAILOVER_STATUSES:
                     last_failure = f"upstream returned {opened.status_code}"
                     await self._record_failure(candidate, opened.status_code, last_failure)
+                    await self._record_usage_attempt(
+                        request_id=request_id,
+                        attempt_id=attempt_id,
+                        candidate=candidate,
+                        status="failed",
+                    )
                     continue
                 # Non-failover status: reconcile quota if reserved
                 if reservation_id is not None and resource_id is not None:
                     self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                await self._record_usage_attempt(
+                    request_id=request_id,
+                    attempt_id=attempt_id,
+                    candidate=candidate,
+                    status="success",
+                )
                 return opened
             stream = opened
             response_headers = _response_headers(stream.response.headers)
+            # Capture candidate info for closure
+            _candidate = candidate
 
             async def iterator() -> AsyncIterator[bytes]:
                 try:
@@ -478,12 +574,24 @@ class SmartRouter:
                     # Stream completed successfully
                     if reservation_id is not None and resource_id is not None:
                         self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
-                    await self._record_success(candidate, stream.response.status_code)
+                    await self._record_success(_candidate, stream.response.status_code)
+                    await self._record_usage_attempt(
+                        request_id=request_id,
+                        attempt_id=attempt_id,
+                        candidate=_candidate,
+                        status="success",
+                    )
                 except Exception as exc:
                     # Stream failed; release reservation
                     if reservation_id is not None and resource_id is not None:
                         self.quota_reservations.release(reservation_id)
-                    await self._record_failure(candidate, None, _safe_error(exc))
+                    await self._record_failure(_candidate, None, _safe_error(exc))
+                    await self._record_usage_attempt(
+                        request_id=request_id,
+                        attempt_id=attempt_id,
+                        candidate=_candidate,
+                        status="failed",
+                    )
                     raise
                 finally:
                     await stream.context_manager.__aexit__(None, None, None)

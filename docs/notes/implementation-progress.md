@@ -1444,3 +1444,81 @@ Outcome:
 - Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
 - `git diff --check` reported no whitespace errors; touched files report Git line-ending warnings (`LF will be replaced by CRLF`).
 - Pending changes before commit: `router.py`, `tests/unit/test_quota_integration.py`, and `docs/notes/implementation-progress.md`.
+
+### Step 62 - Live SmartRouter quota reservation with reconcile/release
+
+Changed:
+- Updated `router.py` `handle_messages`, `_non_stream_messages`, and `_stream_messages` to replace advisory `check_many` with mutating `reserve_many` for M3 quota admission.
+- Added `reconcile()` calls on successful upstream response completion, passing actual usage counts keyed by resource ID.
+- Added `release()` calls when all candidates fail or no candidates are available (overloaded).
+- Added `KeyError` guard: if no quota resource exists for a route/model, the request proceeds without reservation (no-op skip).
+- Added `test_quota_reservation_prevents_concurrent_exceedance` in `tests/unit/test_quota_integration.py`: end-to-end test asserting first request succeeds with `resource.used == 1`, second request returns `503 quota_exhausted`, and upstream mock is called exactly once.
+
+Implementation notes:
+- This completes the RED-GREEN cycle for README M3's atomic reservation + reconciliation wired into live FastAPI routing behavior.
+- Reservation IDs are generated as random hex strings; `reserve_many` uses keyword-only args matching `InMemoryQuotaReservations.reserve_many(*, reservation_id, requests)`.
+- On success, `_non_stream_messages` and `_stream_messages` reconcile with `{resource_id: 1}` (one request unit consumed per accepted reservation).
+- If all candidates fail, the reservation is released so capacity returns to the pool.
+- Soft quota resources cannot be reserved; only hard-limit resources participate in this path.
+- RouterEngine advisory filtering (Step 59/60/61) remains active as a pre-routing filter; this reservation layer is the live concurrency-safe enforcement.
+
+Review:
+- Post-code `claude-router-review` confirmed the slice correctly separates advisory RouterEngine filtering from mutating router-level reservation/reconciliation/release.
+
+Verification:
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_integration.py::test_quota_reservation_prevents_concurrent_exceedance -q` before implementation; it failed with `TypeError: InMemoryQuotaReservations.reserve_many() takes 1 positional argument but 3 were given`.
+- Fixed the call to use keyword arguments matching the dataclass signature.
+- Re-ran the focused integration test after the fix: passed.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_integration.py -q`: all 5 quota integration tests pass.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q`: 120 passed, 1 warning.
+- Committed `router.py` as `7dd73ce feat: wire in-memory quota reservation into request lifecycle`.
+- Committed `tests/unit/test_quota_integration.py` as `0ce18b9 test: add live quota reservation end-to-end integration test`.
+- Pushed both commits to `origin/feature/admin-api-baseline`.
+
+Outcome:
+- Full pytest result: 120 passed, 1 warning (existing Starlette deprecation).
+- Remote branch advanced to `0ce18b9`.
+- M3 Resource Plane quota domain now has tested concurrency-safe admission control wired into the live `SmartRouter` request lifecycle.
+
+Recommended next steps (M3/M5):
+1. Wire `UsageLedgerRepository` into `_non_stream_messages` / `_stream_messages` to persist request/attempt records after upstream responses.
+2. Add token/cost usage parsing to reconcile reservations with actual token consumption (not just request count).
+3. M5 Smart Scheduler: implement deterministic scoring across capability, budget, burn-rate, retry cost, reliability, and session affinity.
+4. Redis distributed atomic reservations (Lua scripts) to replace `threading.Lock` for multi-process safety.
+5. DB-backed quota repository hydration at FastAPI startup for `RouterEngine` and `SmartRouter`.
+
+### Step 63 - Live SmartRouter request and attempt ledger lifecycle
+
+Changed:
+- Extended `tests/unit/test_quota_integration.py` with live request lifecycle coverage for in-memory usage ledger recording.
+- Added async repository-style ledger coverage to ensure `SmartRouter` awaits `UsageLedgerRepository`-compatible methods.
+- Updated `SmartRouter.__init__()` to accept optional `usage_ledger` injection.
+- Added await-aware helper methods in `router.py` to record `RequestRecord` and `AttemptRecord` through either `InMemoryUsageLedger` keyword APIs or repository-style object APIs.
+- Updated non-streaming and streaming message paths to generate a request ID per accepted request and an attempt ID per upstream attempt, then record final attempt status as `success` or `failed`.
+
+Implementation notes:
+- Ledger writes are best-effort: failures are caught so accounting persistence does not break data-plane traffic.
+- Request records are created after route validation, quota admission, and candidate selection succeed; quota-exhausted or overloaded requests are not yet persisted in this slice.
+- Attempt records are final-status records only, not pending rows followed by updates. This keeps repository insertion semantics simple and avoids duplicate attempt rows.
+- This slice records request/attempt lifecycle metadata only. Usage token/cost parsing and `UsageEvent` persistence remain later work.
+
+Review:
+- Manual architecture check: the slice stays inside the gateway compatibility layer, uses existing usage ledger domain objects, does not add provider-specific routing branches, and preserves data-plane behavior on ledger failures.
+- The external `claude-router-review` path remains unavailable/intermittent in this environment, so no external review result is recorded for this slice.
+
+Verification:
+- Ran new RED test `test_live_request_records_async_ledger_boundary`; it failed because async ledger methods were not awaited/recognized.
+- Ran focused ledger integration tests after implementation: `2 passed`.
+- Ran `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_quota_integration.py -q`: `7 passed`.
+- Ran full pytest `g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q --tb=line`: `122 passed, 1 warning`.
+- Ran `git diff --check`: no whitespace errors; touched files emitted existing LF-to-CRLF warnings.
+
+Outcome:
+- M3 Usage Ledger now records live SmartRouter request and upstream attempt lifecycle entries through in-memory and repository-style ledger boundaries.
+- Remaining warning is the existing FastAPI/Starlette TestClient deprecation warning.
+
+Recommended next steps:
+1. Parse provider response usage payloads into `UsageEvent` records for non-streaming responses.
+2. Add stream usage event capture when final provider usage metadata is available.
+3. Reconcile quota with actual token/request/cost usage instead of the current request-count placeholder.
+4. Wire durable DB sessions into FastAPI dependencies so `UsageLedgerRepository` can be used outside tests.
