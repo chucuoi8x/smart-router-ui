@@ -370,9 +370,9 @@ class RedisQuotaReservations:
     async def add_resource(self, resource: QuotaResource) -> QuotaResource:
         """Register / update a quota resource."""
         pipe = self._r.pipeline()
-        pipe.hmset(
+        pipe.hset(
             self._prefix(resource.resource_id),
-            {
+            mapping={
                 "scope": resource.scope,
                 "metric": resource.metric,
                 "limit": str(resource.limit),
@@ -414,7 +414,7 @@ class RedisQuotaReservations:
             updates["safety_buffer"] = str(observation.safety_buffer)
         if observation.hard_limit is not None:
             updates["hard_limit"] = "true" if observation.hard_limit else "false"
-        await self._r.hmset(key, updates)
+        await self._r.hset(key, mapping=updates)
 
         # Propagate to shared-group peers: read current group, sync fields
         gpid = (await self._r.hget(key, "shared_group_id")) or ""
@@ -423,7 +423,7 @@ class RedisQuotaReservations:
             pipe = self._r.pipeline()
             for peer_key in peers:
                 peer_full = self._prefix(peer_key) if ":" not in peer_key else peer_key
-                pipe.hmset(peer_full, {
+                pipe.hset(peer_full, mapping={
                     "limit": str(observation.limit),
                     "used": str(observation.used),
                     "safety_buffer": updates.get("safety_buffer", str(observation.safety_buffer or 0)),
@@ -586,7 +586,7 @@ class RedisQuotaReservations:
         pipe = instance._r.pipeline()
         for res in resources:
             prefix = f"quota:{res.resource_id}"
-            pipe.hmset(prefix, {
+            pipe.hset(prefix, mapping={
                 "scope": res.scope,
                 "metric": res.metric,
                 "limit": str(res.limit),

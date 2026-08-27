@@ -1157,6 +1157,8 @@ class SmartRouter:
             if path != "/v1/messages/count_tokens":
                 try:
                     response_json = response.json()
+                    if inspect.isawaitable(response_json):
+                        response_json = await response_json
                 except Exception:
                     response_json = None
 

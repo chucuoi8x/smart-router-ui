@@ -1818,3 +1818,26 @@ Implemented:
 Verification:
 - Added `test_rejected_requests_record_request_ledger_metadata` to lock quota rejection metadata behavior.
 - Full regression: `207 passed, 6 skipped, 7 warnings`.
+
+## Step 78 — Redis backend deprecation cleanup (2026-08-27)
+
+Implemented:
+- Replaced all deprecated Redis `hmset()` calls in `apps/gateway/quota/redis_backend.py` with `hset(..., mapping=...)`.
+- Covered direct resource writes, shared-group peer propagation, and DB repository hydration pipeline writes.
+
+Verification:
+- Confirmed no remaining `hmset` references in `apps/gateway/quota/redis_backend.py`.
+- Redis quota focused suite: `11 passed, 6 skipped`.
+- Full regression after Step 79: `207 passed, 6 skipped, 1 warning`.
+
+## Step 79 — AsyncMock response JSON warning cleanup (2026-08-27)
+
+Implemented:
+- Hardened `SmartRouter._non_stream_messages()` to await `response.json()` when a test double or compatible client returns an awaitable JSON result.
+- Preserved existing synchronous JSON behavior for normal `httpx.Response` objects.
+- This removes the unawaited `AsyncMockMixin._execute_mock_call` RuntimeWarning without changing production routing semantics.
+
+Verification:
+- Focused warning regression tests: `5 passed`.
+- Full regression: `207 passed, 6 skipped, 1 warning`.
+- Remaining warning is the external FastAPI/Starlette TestClient deprecation warning from the installed dependency stack.
