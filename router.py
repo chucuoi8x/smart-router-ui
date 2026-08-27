@@ -965,16 +965,32 @@ class SmartRouter:
                 }
         return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
-    async def _record_usage_request(self, *, request_id: str, route_name: str) -> None:
+    async def _record_usage_request(
+        self,
+        *,
+        request_id: str,
+        route_name: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         ledger = self._active_usage_ledger()
         if ledger is None:
             return
-        record = RequestRecord(request_id=request_id, route_id=route_name, logical_model=route_name)
+        record = RequestRecord(
+            request_id=request_id,
+            route_id=route_name,
+            logical_model=route_name,
+            metadata=metadata or {},
+        )
         try:
             method = ledger.record_request
             params = inspect.signature(method).parameters
             if "request_id" in params:
-                result = method(request_id=request_id, route_id=route_name, logical_model=route_name)
+                result = method(
+                    request_id=request_id,
+                    route_id=route_name,
+                    logical_model=route_name,
+                    metadata=metadata,
+                )
             else:
                 result = method(record)
             if inspect.isawaitable(result):
@@ -1022,7 +1038,13 @@ class SmartRouter:
 
     async def handle_messages(self, body: dict[str, Any], incoming_headers: Any, path: str) -> Response:
         route_name = body.get("model")
+        request_id = uuid.uuid4().hex
         if not isinstance(route_name, str) or route_name not in self.routes:
+            await self._record_usage_request(
+                request_id=request_id,
+                route_name=route_name if isinstance(route_name, str) else "<missing>",
+                metadata={"status": "rejected", "reason": "unknown_model", "path": path},
+            )
             return JSONResponse(
                 status_code=404,
                 content={"error": {"type": "unknown_model", "message": "unknown logical router model"}},
@@ -1041,6 +1063,11 @@ class SmartRouter:
                     requests=[QuotaReservationRequest(resource_id, amount=1)],
                 )
                 if not result.accepted:
+                    await self._record_usage_request(
+                        request_id=request_id,
+                        route_name=route_name,
+                        metadata={"status": "rejected", "reason": "quota_exhausted", "path": path},
+                    )
                     return JSONResponse(
                         status_code=503,
                         content={"error": {"type": "quota_exhausted", "message": "quota exhausted"}},
@@ -1055,12 +1082,16 @@ class SmartRouter:
             # If we had a reservation, release it before returning overloaded
             if reservation_id is not None and resource_id is not None:
                 await self.quota_reservations.release(reservation_id)
+            await self._record_usage_request(
+                request_id=request_id,
+                route_name=route_name,
+                metadata={"status": "rejected", "reason": "overloaded", "path": path},
+            )
             return JSONResponse(
                 status_code=503,
                 content={"error": {"type": "overloaded", "message": "all candidates are cooling down or unavailable"}},
             )
 
-        request_id = uuid.uuid4().hex
         await self._record_usage_request(request_id=request_id, route_name=route_name)
 
         if bool(body.get("stream", False)) and path.endswith("/messages"):

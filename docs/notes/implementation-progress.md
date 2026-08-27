@@ -1806,3 +1806,15 @@ Implemented:
 Verification:
 - Added `tests/unit/test_runtime_usage_ledger_context.py` for ContextVar precedence, request-local usage token cache, default-off dependency behavior, DB-unavailable fallback, and endpoint-exception propagation through the yield dependency.
 - Full regression: `206 passed, 6 skipped, 7 warnings`.
+
+## Step 77 — Rejected request ledger visibility (2026-08-27)
+
+Implemented:
+- `SmartRouter.handle_messages()` now generates `request_id` before early rejection paths.
+- Unknown-model, quota-exhausted, and overloaded/no-candidate responses record best-effort `RequestRecord` entries with public metadata: `status=rejected`, `reason`, and request `path`.
+- `_record_usage_request()` accepts optional metadata while preserving existing in-memory and repository-style ledger call compatibility.
+- Rejections remain request-only rows: no fake upstream `AttemptRecord` is fabricated when no upstream call occurs.
+
+Verification:
+- Added `test_rejected_requests_record_request_ledger_metadata` to lock quota rejection metadata behavior.
+- Full regression: `207 passed, 6 skipped, 7 warnings`.

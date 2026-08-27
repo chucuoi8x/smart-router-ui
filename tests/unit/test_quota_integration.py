@@ -390,3 +390,46 @@ async def test_live_request_records_async_ledger_boundary(monkeypatch):
     assert ledger.attempts[0].provider_connection_id == "primary"
     assert ledger.attempts[0].model_resource_id == "fast-model"
     assert ledger.attempts[0].status == "success"
+
+
+@pytest.mark.asyncio
+async def test_rejected_requests_record_request_ledger_metadata(monkeypatch):
+    """Quota rejections should create request ledger rows with reason metadata."""
+    from apps.gateway.usage.ledger import InMemoryUsageLedger
+
+    ledger = InMemoryUsageLedger()
+    reservations = InMemoryQuotaReservations()
+    reservations.add_resource(QuotaResource(
+        resource_id="model:chat",
+        scope="tenant",
+        metric="requests",
+        limit=0,
+        window_seconds=60,
+        hard_limit=True,
+    ))
+
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "fast-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+    router = SmartRouter(config, quota_reservations=reservations, usage_ledger=ledger)
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {}, "/v1/messages")
+
+    assert response.status_code == 503
+    assert len(ledger._requests) == 1
+    req = next(iter(ledger._requests.values()))
+    assert req.metadata["status"] == "rejected"
+    assert req.metadata["reason"] == "quota_exhausted"
