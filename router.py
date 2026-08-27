@@ -34,6 +34,34 @@ from apps.gateway.routing.scoring import (
 )
 from apps.worker.collectors.aibox_catalog import build_records, select_routes, state_from_records
 
+# ── Quota reservation factory (Redis → InMemory fallback) ─────────────
+
+
+def _build_quota_reservations():
+    """Create quota reservations using REDIS_URL env var; auto-fallback."""
+    url = os.getenv("REDIS_URL")
+    if not url:
+        logger_debug = logging.getLogger("smart-router")
+        logger_debug.debug("REDIS_URL not set – using in-memory quota reservations")
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations
+        from apps.gateway.quota.adapter import AsyncQuotaFacade
+
+        return AsyncQuotaFacade(InMemoryQuotaReservations())
+    try:
+        from apps.gateway.quota.redis_backend import RedisQuotaReservations  # type: ignore[import-not-found]
+        rqr = RedisQuotaReservations(url)
+        logger_debug = logging.getLogger("smart-router")
+        logger_debug.info("Connected to Redis for distributed quota reservations (%s)", url)
+        return rqr
+    except Exception as exc:  # noqa: BLE001
+        logger_warn = logging.getLogger("smart-router")
+        logger_warn.warning(
+            "Redis connection failed (%s) – falling back to in-memory quota reservations", exc
+        )
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations
+        from apps.gateway.quota.adapter import AsyncQuotaFacade
+
+        return AsyncQuotaFacade(InMemoryQuotaReservations())
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -120,9 +148,21 @@ class SmartRouter:
         if os.getenv("USE_ROUTER_ENGINE", "false").lower() == "true":
             compiler = LegacyConfigCompiler()
             snapshot = compiler.compile_dict(config)
+            engine_quota = quota_reservations
+            # Ensure RouterEngine gets an async-compatible backend too.
+            if engine_quota is not None and not asyncio.iscoroutinefunction(
+                getattr(engine_quota, "check_many", None),
+            ):
+                from apps.gateway.quota.adapter import AsyncQuotaFacade
+                engine_quota = AsyncQuotaFacade(engine_quota)
             self.router_engine = RouterEngine(
-                snapshot, quota_reservations=quota_reservations, scoring_config=self._scoring_config,
+                snapshot, quota_reservations=engine_quota, scoring_config=self._scoring_config,
             )
+        # Ensure our own quota_reservations is async-compatible.
+        if (self.quota_reservations is not None
+                and not asyncio.iscoroutinefunction(getattr(self.quota_reservations, "check_many", None))):
+            from apps.gateway.quota.adapter import AsyncQuotaFacade
+            self.quota_reservations = AsyncQuotaFacade(self.quota_reservations)  # type: ignore[assignment]
         self.driver_registry = None
 
     @classmethod
@@ -138,7 +178,8 @@ class SmartRouter:
             raise RouterConfigurationError(f"unable to load router config: {exc}") from exc
         if not isinstance(config, dict):
             raise RouterConfigurationError("router config must be a YAML mapping")
-        instance = cls(config)
+        quota_reservations = _build_quota_reservations()
+        instance = cls(config, quota_reservations=quota_reservations)
         instance.config_path = path
         return instance
 
@@ -292,7 +333,7 @@ class SmartRouter:
             # Primary candidates are ordered by the route strategy; fallback
             # candidates are only reached after every primary candidate has been
             # tried and failed (e.g. proxypal exhausted -> aibox backup).
-            primary = self._quota_available_candidates(
+            primary = await self._quota_available_candidates(
                 [c for c in route["candidates"] if self._is_available(c)]
             )
             if route["strategy"] == "smooth_weighted_rr" and len(primary) >= 2:
@@ -307,37 +348,40 @@ class SmartRouter:
                 ordered = [selected, *remaining]
             else:
                 ordered = list(primary)
-            fallback = self._quota_available_candidates(
+            fallback = await self._quota_available_candidates(
                 [c for c in route.get("fallback", []) if self._is_available(c)]
             )
             ordered = ordered + fallback
         # Apply smart scoring as an optimization layer (graceful no-op when disabled)
-        ordered = self._apply_smart_scoring(ordered, route_name)
+        ordered = await self._async_apply_scoring(ordered, route_name)
         return ordered
 
-    def _quota_available_candidates(self, candidates: list[Candidate]) -> list[Candidate]:
+    async def _quota_available_candidates(self, candidates: list[Candidate]) -> list[Candidate]:
         if self.quota_reservations is None:
             return candidates
-        return [candidate for candidate in candidates if self._candidate_quota_accepted(candidate)]
+        accepted = await asyncio.gather(
+            *(self._candidate_quota_accepted(c) for c in candidates)
+        )
+        return [c for c, ok in zip(candidates, accepted) if ok]
 
-    def _candidate_quota_accepted(self, candidate: Candidate) -> bool:
+    async def _candidate_quota_accepted(self, candidate: Candidate) -> bool:
         from apps.gateway.quota.reservations import QuotaReservationRequest
 
-        resource_ids = self._known_candidate_quota_resource_ids(candidate)
+        resource_ids = await self._known_candidate_quota_resource_ids(candidate)
         if not resource_ids:
             return True
-        admission = self.quota_reservations.check_many([
+        admission = await self.quota_reservations.check_many([
             QuotaReservationRequest(resource_id, amount=1)
             for resource_id in resource_ids
         ])
         return admission.accepted
 
-    def _known_candidate_quota_resource_ids(self, candidate: Candidate) -> list[str]:
+    async def _known_candidate_quota_resource_ids(self, candidate: Candidate) -> list[str]:
         known: list[str] = []
         seen_groups: set[str] = set()
         for resource_id in self._candidate_quota_resource_ids(candidate):
             try:
-                resource = self.quota_reservations.snapshot(resource_id)
+                resource = await self.quota_reservations.snapshot(resource_id)
             except KeyError:
                 continue
             if resource.metric != "requests":
@@ -404,7 +448,7 @@ class SmartRouter:
             return list(candidates)
         try:
             candidate_keys = [c.key for c in candidates]
-            metrics_by_key = self._build_candidate_metrics(candidate_keys)
+            metrics_by_key = self._get_candidate_metrics(candidate_keys)
             scored = self._score_calculator.compute_scores(
                 candidates=candidates,
                 candidate_keys=candidate_keys,
@@ -415,7 +459,85 @@ class SmartRouter:
             self.logger.warning("smart scoring failed for route=%s: %s, preserving order", route_name, exc)
             return list(candidates)
 
-    def _build_candidate_metrics(
+    async def _async_apply_scoring(
+        self,
+        candidates: list[Candidate],
+        route_name: str,
+    ) -> list[Candidate]:
+        """Async-aware scoring — queries quota resources for burn-rate urgency."""
+        if not self._scoring_config.enabled:
+            return list(candidates)
+        self._ensure_scoring()
+        if self._score_calculator is None:
+            return list(candidates)
+        try:
+            candidate_keys = [c.key for c in candidates]
+            metrics_by_key = await self._build_candidate_metrics(candidate_keys)
+            scored = self._score_calculator.compute_scores(
+                candidates=candidates,
+                candidate_keys=candidate_keys,
+                metrics_by_key=metrics_by_key,
+            )
+            return [c for c, _ in scored]
+        except Exception as exc:
+            self.logger.warning("smart scoring failed for route=%s: %s, preserving order", route_name, exc)
+            return list(candidates)
+
+    def _get_candidate_metrics(
+        self,
+        candidate_keys: list[str],
+    ) -> dict[str, CandidateMetrics]:
+        """Sync-friendly metrics builder — uses quota-agnostic fallback."""
+        return self._build_candidate_metrics_sync(candidate_keys)
+
+    async def _async_get_candidate_metrics(
+        self,
+        candidate_keys: list[str],
+    ) -> dict[str, CandidateMetrics]:
+        """Async-aware metrics builder — queries quota resources."""
+        return await self._build_candidate_metrics(candidate_keys)
+
+    def _build_candidate_metrics_sync(
+        self,
+        candidate_keys: list[str],
+    ) -> dict[str, CandidateMetrics]:
+        """Sync metrics builder — skips quota data (uses neutral defaults)."""
+        prices = self.catalog.get("prices", {})
+        result: dict[str, CandidateMetrics] = {}
+        for key in candidate_keys:
+            parts = key.split(":", 1)
+            model_id = parts[1] if len(parts) > 1 else ""
+            price_info = prices.get(model_id, {})
+            fail_rate, _, _ = self._failure_tracker.failure_rate(key)
+            p50, p99, mean = self._latency_tracker.percentiles(key)
+            cb_state = self.circuits.get(key)
+            cb_status = "closed"
+            consecutive_failures = 0
+            if cb_state:
+                consecutive_failures = cb_state.consecutive_failures
+                if cb_state.cooldown_until > time.monotonic():
+                    cb_status = "open"
+            result[key] = CandidateMetrics(
+                price_per_million_input=price_info.get("input_per_million"),
+                price_per_million_output=price_info.get("output_per_million"),
+                rolling_failure_rate=fail_rate,
+                circuit_breaker_state=cb_status,
+                consecutive_failures=consecutive_failures,
+                total_attempts=sum(1 for _ in []),  # stub
+                total_successes=0,
+                p50_latency_ms=p50,
+                p99_latency_ms=p99,
+                mean_latency_ms=mean,
+                request_count=self._latency_tracker.count(key),
+                effective_remaining=0,
+                limit=0,
+                safety_buffer=0,
+                burn_rate_urgency=0.0,
+                capability_match=True,
+            )
+        return result
+
+    async def _build_candidate_metrics(
         self,
         candidate_keys: list[str],
     ) -> dict[str, CandidateMetrics]:
@@ -439,7 +561,7 @@ class SmartRouter:
                 resource_ids_for_key[key] = [rid]
                 all_resource_ids.add(rid)
                 continue
-            rids = self._known_candidate_quota_resource_ids(candidate_for_key)
+            rids = await self._known_candidate_quota_resource_ids(candidate_for_key)
             resource_ids_for_key[key] = rids
             all_resource_ids.update(rids)
 
@@ -447,7 +569,7 @@ class SmartRouter:
         if self.quota_reservations:
             for rid in all_resource_ids:
                 try:
-                    quota_cache[rid] = self.quota_reservations.snapshot(rid)
+                    quota_cache[rid] = await self.quota_reservations.snapshot(rid)
                 except KeyError:
                     pass
 
@@ -822,7 +944,7 @@ class SmartRouter:
             resource_id = f"model:{route_name}"
             try:
                 reservation_id = uuid.uuid4().hex
-                result = self.quota_reservations.reserve_many(
+                result = await self.quota_reservations.reserve_many(
                     reservation_id=reservation_id,
                     requests=[QuotaReservationRequest(resource_id, amount=1)],
                 )
@@ -840,7 +962,7 @@ class SmartRouter:
         if not candidates:
             # If we had a reservation, release it before returning overloaded
             if reservation_id is not None and resource_id is not None:
-                self.quota_reservations.release(reservation_id)
+                await self.quota_reservations.release(reservation_id)
             return JSONResponse(
                 status_code=503,
                 content={"error": {"type": "overloaded", "message": "all candidates are cooling down or unavailable"}},
@@ -929,12 +1051,10 @@ class SmartRouter:
                 output_tokens = tokens["output_tokens"]
                 total_tokens = tokens["total_tokens"]
                 if total_tokens > 0:
-                    self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
+                    await self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
                 else:
                     # No usage parsed — fall back to 1 request as before
-                    self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
-
-            await self._record_success(candidate, response.status_code)
+                    await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
             elapsed_ms = (time.monotonic() - _start) * 1000
             if self._score_calculator:
                 self._latency_tracker.record(candidate.key, elapsed_ms)
@@ -945,7 +1065,7 @@ class SmartRouter:
             )
         # All candidates failed. Release reservation if held.
         if reservation_id is not None and resource_id is not None:
-            self.quota_reservations.release(reservation_id)
+            await self.quota_reservations.release(reservation_id)
         self.logger.warning("route=%s failover_exhausted reason=%s", route_name, last_failure or "unknown")
         return JSONResponse(
             status_code=503,
@@ -988,7 +1108,7 @@ class SmartRouter:
                 # no stream was opened, so we cannot know actual token usage.
                 # Record the attempt and reconcile with a safe default.
                 if reservation_id is not None and resource_id is not None:
-                    self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                    await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
                 await self._record_usage_attempt(
                     request_id=request_id,
                     attempt_id=attempt_id,
@@ -1033,10 +1153,10 @@ class SmartRouter:
                         tokens = self._get_latest_usage_tokens(attempt_id=attempt_id)
                         total_tokens = tokens["total_tokens"]
                         if total_tokens > 0:
-                            self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
+                            await self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
                         else:
                             # No usage parsed — fall back to 1 request as before
-                            self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                            await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
                 except Exception as exc:
                     # Stream failed; record the failed attempt first
                     # so the ledger has a valid reference for best-effort
@@ -1045,7 +1165,7 @@ class SmartRouter:
                     if self._score_calculator:
                         self._latency_tracker.record(_candidate.key, _elapsed_ms)
                     if reservation_id is not None and resource_id is not None:
-                        self.quota_reservations.release(reservation_id)
+                        await self.quota_reservations.release(reservation_id)
                     await self._record_failure(_candidate, None, _safe_error(exc))
                     await self._record_usage_attempt(
                         request_id=request_id,
@@ -1072,7 +1192,7 @@ class SmartRouter:
             return StreamingResponse(iterator(), status_code=stream.response.status_code, headers=response_headers)
         # All candidates failed. Release reservation if held.
         if reservation_id is not None and resource_id is not None:
-            self.quota_reservations.release(reservation_id)
+            await self.quota_reservations.release(reservation_id)
         self.logger.warning("route=%s stream_failover_exhausted reason=%s", route_name, last_failure or "unknown")
         return JSONResponse(
             status_code=503,
