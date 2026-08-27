@@ -12,3 +12,23 @@ class DriverRegistry:
         if driver_id not in self._registry:
             raise DriverNotFoundError(f"Driver not found: {driver_id}")
         return self._registry[driver_id]
+
+
+def default_driver_registry() -> DriverRegistry:
+    """Return a DriverRegistry pre-registered with the built-in drivers
+    under both their canonical IDs and protocol-alias keys."""
+    from apps.gateway.providers.generic_anthropic import GenericAnthropicDriver
+    from apps.gateway.providers.generic_openai import GenericOpenAIDriver
+    from apps.gateway.providers.generic_gemini import GenericGeminiDriver
+
+    reg = DriverRegistry()
+    # Canonical registrations
+    reg.register(GenericAnthropicDriver.driver_id, GenericAnthropicDriver)
+    reg.register(GenericOpenAIDriver.driver_id, GenericOpenAIDriver)
+    reg.register(GenericGeminiDriver.driver_id, GenericGeminiDriver)
+    # Protocol alias registrations
+    reg.register("anthropic-compatible", GenericAnthropicDriver)
+    reg.register("openai-compatible", GenericOpenAIDriver)
+    reg.register("gemini-compatible", GenericGeminiDriver)
+    return reg
+

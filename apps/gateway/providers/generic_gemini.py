@@ -22,7 +22,16 @@ class GenericGeminiDriver(ProviderDriver):
         return []
 
     def parse_usage(self, response: Any) -> Dict[str, Any]:
-        usage = response.get('usageMetadata', {})
+        """Parse Gemini usage from response body.
+
+        Returns an empty dict when ``usageMetadata`` is absent so callers can
+        distinguish "no usage present" from "usage was zero".
+        """
+        if not isinstance(response, dict):
+            return {}
+        usage = response.get('usageMetadata') or {}
+        if not usage:
+            return {}
         input_tokens = usage.get('promptTokenCount', 0)
         output_tokens = usage.get('candidatesTokenCount', 0)
         return {

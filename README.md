@@ -1990,9 +1990,23 @@ Every implementation step must be recorded in `docs/notes/implementation-progres
 
 ### 31.5 Mandatory `claude-router-review` checks
 
-After analysis and planning, use model `claude-router-review` to review whether the plan is optimized, appropriately scoped, and aligned with the architecture contract in this README before implementation begins.
+This is a **hard gate** for all implementation work. No code changes shall be committed or integrated without passing through the `claude-router-review` model verification at both stages described below. If `claude-router-review` cannot be invoked due to environment constraints (unrecognized model, permission deny, tooling misconfiguration), the block remains in effect until the reviewer becomes available — do not bypass or skip the check under any circumstances.
 
-After each coding step, use model `claude-router-review` again to review whether the code is correct, simple, secure, and architecture-consistent before moving to the next step. Record the review outcome in `docs/notes/implementation-progress.md` together with the normal verification notes.
+#### Pre-implementation plan review
+
+After analysis and planning, use model `claude-router-review` to review whether the plan is optimized, appropriately scoped, and aligned with the architecture contract in this README before implementation begins. The plan review must explicitly confirm:
+
+- correctness of architectural boundaries (core vs driver vs compatibility layer);
+- absence of circular import risk;
+- correct handling of sync/async ledger operations via `inspect.isawaitable`;
+- data-plane safety (no exception from usage parsing or driver resolution can propagate to HTTP response path);
+- test coverage completeness for success, failure, and edge-case scenarios.
+
+Record the outcome in `docs/notes/implementation-progress.md` together with any conditions or required modifications. Do not begin coding until the review returns approved status.
+
+#### Post-implementation code review
+
+After each coding step (not just at milestones), use model `claude-router-review` to verify whether the produced code is correct, simple, secure, and architecture-consistent before moving to the next step. Record the review outcome in `docs/notes/implementation-progress.md` alongside normal verification notes. If `claude-router-review` reports any verified blockers, fix them immediately before proceeding.
 
 A release candidate additionally requires:
 

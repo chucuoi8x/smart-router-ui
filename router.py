@@ -108,6 +108,7 @@ class SmartRouter:
             compiler = LegacyConfigCompiler()
             snapshot = compiler.compile_dict(config)
             self.router_engine = RouterEngine(snapshot, quota_reservations=quota_reservations)
+        self.driver_registry = None
 
     @classmethod
     def from_environment(cls) -> "SmartRouter":
@@ -358,6 +359,237 @@ class SmartRouter:
         state = self.circuits.get(candidate.key)
         return state is None or state.cooldown_until <= time.monotonic()
 
+    def _get_driver_registry(self):
+        """Lazily load and return the default driver registry."""
+        if getattr(self, "driver_registry", None) is None:
+            from apps.gateway.providers.registry import default_driver_registry
+            self.driver_registry = default_driver_registry()
+        return self.driver_registry
+
+    def _resolve_driver(self, candidate):
+        """Resolve the ProviderDriver class for a candidate upstream.
+
+        Resolution order:
+          1. Explicit driver_id in candidate metadata
+          2. driver_id configured in the upstream's config dictionary
+          3. Keyword heuristics on the upstream string ID matched against
+             the default driver registry aliases
+        Returns the Driver class or None if no driver could be resolved.
+        """
+        registry = self._get_driver_registry()
+
+        # 1. Check candidate metadata first
+        driver_id = candidate.metadata.get("driver_id")
+        if driver_id:
+            try:
+                return registry.resolve(driver_id)
+            except Exception:
+                pass
+
+        # 2. Check upstream config section
+        upstream_cfg = self.config.get("upstreams", {}).get(candidate.upstream, {})
+        if isinstance(upstream_cfg, dict):
+            driver_id = upstream_cfg.get("driver_id")
+            if driver_id:
+                try:
+                    return registry.resolve(driver_id)
+                except Exception:
+                    pass
+
+        # 3. Heuristic fallback: keyword matching on upstream ID
+        upstream_lower = candidate.upstream.lower().replace("-", "").replace("_", "")
+        heuristic_map = {
+            "anthropic": "anthropic-compatible",
+            "openai": "openai-compatible",
+            "gemini": "gemini-compatible",
+        }
+        for keyword, alias in heuristic_map.items():
+            if keyword in upstream_lower:
+                try:
+                    return registry.resolve(alias)
+                except Exception:
+                    break  # No partial match on other keywords if this one fails
+        return None
+
+    async def _record_usage_event(
+        self,
+        *,
+        request_id: str,
+        attempt_id: str,
+        candidate: Candidate,
+        response_json: dict[str, Any],
+    ) -> None:
+        """Parse token usage statistics from an upstream response and record them into the usage ledger.
+
+        This method is safe to call even when:
+        - No driver can be resolved for the candidate (logged as debug)
+        - The response body does not contain usage metadata (silently skipped)
+        - The ledger raises an exception (caught and logged, never breaks data-plane)
+        """
+        if self._usage_ledger is None:
+            return
+
+        # Resolve driver lazily; skip if none found
+        driver_cls = self._resolve_driver(candidate)
+        if driver_cls is None:
+            self.logger.debug(
+                "no driver resolved for candidate %s, skipping usage parse",
+                candidate.key,
+            )
+            return
+
+        # Parse usage tokens from upstream JSON
+        parsed: dict[str, Any] | None = None
+        try:
+            driver_instance = driver_cls()
+            parsed = driver_instance.parse_usage(response_json)
+        except Exception:
+            self.logger.warning(
+                "failed to parse usage payload using driver for candidate %s",
+                candidate.key,
+                exc_info=True,
+            )
+
+        # If parse_usage returned empty/None (e.g. provider omitted usage field)
+        if not parsed:
+            return
+
+        # Mitigate zero-fabrication bug: if the driver parses 0 tokens, do not record a fabricated event.
+        if parsed.get("input_tokens") == 0 and parsed.get("output_tokens") == 0:
+            return
+
+        # Build UsageEvent and persist to ledger
+        try:
+            from apps.gateway.usage.ledger import UsageEvent
+
+            credential_id = candidate.metadata.get("credential_id")
+
+            event = UsageEvent.from_parsed_usage(
+                request_id=request_id,
+                attempt_id=attempt_id,
+                provider_connection_id=candidate.upstream,
+                credential_id=credential_id,
+                model_resource_id=candidate.model,
+                usage=parsed,
+            )
+
+            result = self._usage_ledger.record_usage(event)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            self.logger.warning(
+                "failed to create or record UsageEvent for candidate %s",
+                candidate.key,
+                exc_info=True,
+            )
+
+    async def _parse_and_record_stream_usage(
+        self,
+        *,
+        request_id: str,
+        attempt_id: str,
+        candidate: Candidate,
+        sse_buffer: bytearray | None = None,
+    ) -> None:
+        """Best-effort: extract usage metadata from accumulated SSE text and record a UsageEvent.
+
+        Anthropic SSE streams include ``usage`` inside multiple events:
+        ``message_start`` (input tokens, nested under ``message.usage``) and
+        ``message_delta`` (output tokens, at top level).
+
+        OpenAI streams embed usage as top-level ``usage`` on the final chunk.
+
+        This collector parses every ``data:`` line from the buffer, collects
+        all valid JSON objects, and delegates to each driver's ``parse_usage``
+        which returns an empty dict when no usage is found.  Consolidation
+        sums across all payloads; the zero-fabrication guard then discards
+        cases where everything parsed to zeros.
+        """
+        if self._usage_ledger is None:
+            return
+        if not sse_buffer:
+            return
+
+        # Decode accumulated SSE bytes → text
+        text = sse_buffer.decode("utf-8", errors="replace")
+        json_payloads: list[dict[str, Any]] = []
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("data: "):
+                payload_str = stripped[6:].strip()
+            elif stripped == "data:":
+                continue
+            else:
+                continue
+
+            if not payload_str or payload_str == "[DONE]":
+                continue
+
+            try:
+                obj = json.loads(payload_str)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            # Collect all valid JSON objects; let the driver decide whether
+            # it can extract meaningful usage from each one.  Anthropic SSE
+            # spreads input_tokens in ``message_start`` and output_tokens in
+            # ``message_delta`` — filtering on top-level "usage" alone drops
+            # the former entirely.
+            if isinstance(obj, dict):
+                json_payloads.append(obj)
+
+        # Resolve driver lazily; skip if none found
+        driver_cls = self._resolve_driver(candidate)
+        if driver_cls is None:
+            return
+
+        # Consolidate usage tokens across all SSE payloads (e.g. input_tokens in message_start,
+        # output_tokens in message_delta for Anthropic streams).
+        consolidated_input = 0
+        consolidated_output = 0
+        has_parsed_any = False
+
+        try:
+            driver_instance = driver_cls()
+            for payload in json_payloads:
+                parsed = driver_instance.parse_usage(payload)
+                if parsed:
+                    consolidated_input += parsed.get("input_tokens", 0)
+                    consolidated_output += parsed.get("output_tokens", 0)
+                    has_parsed_any = True
+        except Exception:
+            self.logger.warning(
+                "failed to parse streaming usage payload for candidate %s",
+                candidate.key,
+                exc_info=True,
+            )
+
+        if not has_parsed_any or (consolidated_input == 0 and consolidated_output == 0):
+            return
+
+        consolidated_payload = {
+            "usage": {
+                "input_tokens": consolidated_input,
+                "output_tokens": consolidated_output,
+            }
+        }
+        # If the driver is OpenAI, format payload as OpenAI usage fields
+        if getattr(driver_cls, "driver_id", "") == "generic-openai" or "openai" in candidate.upstream.lower():
+            consolidated_payload = {
+                "usage": {
+                    "prompt_tokens": consolidated_input,
+                    "completion_tokens": consolidated_output,
+                }
+            }
+
+        await self._record_usage_event(
+            request_id=request_id,
+            attempt_id=attempt_id,
+            candidate=candidate,
+            response_json=consolidated_payload,
+        )
+
     async def _record_usage_request(self, *, request_id: str, route_name: str) -> None:
         if self._usage_ledger is None:
             return
@@ -507,6 +739,23 @@ class SmartRouter:
                 candidate=candidate,
                 status="success",
             )
+
+            # Parse upstream response JSON and record usage events
+            # Skip /v1/messages/count_tokens — it does not consume any quota or tokens.
+            if path != "/v1/messages/count_tokens":
+                try:
+                    response_json = response.json()
+                except Exception:
+                    response_json = None
+
+                if isinstance(response_json, dict):
+                    await self._record_usage_event(
+                        request_id=request_id,
+                        attempt_id=attempt_id,
+                        candidate=candidate,
+                        response_json=response_json,
+                    )
+
             await self._record_success(candidate, response.status_code)
             return Response(
                 content=response.content,
@@ -564,14 +813,20 @@ class SmartRouter:
             response_headers = _response_headers(stream.response.headers)
             # Capture candidate info for closure
             _candidate = candidate
+            # Accumulate raw SSE bytes so we can parse usage at end-of-stream
+            _sse_buf: bytearray = bytearray()
 
             async def iterator() -> AsyncIterator[bytes]:
                 try:
                     if stream.first_chunk:
                         yield stream.first_chunk
+                        _sse_buf.extend(stream.first_chunk)
                     async for chunk in stream.iterator:
+                        _sse_buf.extend(chunk)
                         yield chunk
-                    # Stream completed successfully
+                    # Stream completed successfully — record the attempt first
+                    # (ledger requires attempt to exist for usage events),
+                    # then parse usage from accumulated SSE text.
                     if reservation_id is not None and resource_id is not None:
                         self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
                     await self._record_success(_candidate, stream.response.status_code)
@@ -581,8 +836,16 @@ class SmartRouter:
                         candidate=_candidate,
                         status="success",
                     )
+                    await self._parse_and_record_stream_usage(
+                        request_id=request_id,
+                        attempt_id=attempt_id,
+                        candidate=_candidate,
+                        sse_buffer=_sse_buf,
+                    )
                 except Exception as exc:
-                    # Stream failed; release reservation
+                    # Stream failed; record the failed attempt first
+                    # so the ledger has a valid reference for best-effort
+                    # usage parsing below.
                     if reservation_id is not None and resource_id is not None:
                         self.quota_reservations.release(reservation_id)
                     await self._record_failure(_candidate, None, _safe_error(exc))
@@ -592,6 +855,18 @@ class SmartRouter:
                         candidate=_candidate,
                         status="failed",
                     )
+                    # Best-effort usage parse: attempt to extract usage
+                    # from any buffered SSE data before raising so
+                    # failover candidates still get accurate token accounting.
+                    try:
+                        await self._parse_and_record_stream_usage(
+                            request_id=request_id,
+                            attempt_id=attempt_id,
+                            candidate=_candidate,
+                            sse_buffer=_sse_buf,
+                        )
+                    except Exception:
+                        pass  # Never let usage parse break failover
                     raise
                 finally:
                     await stream.context_manager.__aexit__(None, None, None)

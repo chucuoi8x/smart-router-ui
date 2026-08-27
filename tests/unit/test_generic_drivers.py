@@ -59,6 +59,28 @@ class GenericDriverTests(unittest.TestCase):
         self.assertEqual(driver.driver_id, 'cliproxy-bridge')
         self.assertTrue(caps.get('supports_streaming'))
 
+    def test_default_registry_resolves_protocol_aliases_and_concrete_ids(self):
+        from apps.gateway.providers.generic_anthropic import GenericAnthropicDriver
+        from apps.gateway.providers.generic_openai import GenericOpenAIDriver
+        from apps.gateway.providers.generic_gemini import GenericGeminiDriver
+        from apps.gateway.providers.registry import default_driver_registry
+
+        registry = default_driver_registry()
+
+        self.assertIs(registry.resolve('anthropic-compatible'), GenericAnthropicDriver)
+        self.assertIs(registry.resolve('generic-anthropic'), GenericAnthropicDriver)
+        self.assertIs(registry.resolve('openai-compatible'), GenericOpenAIDriver)
+        self.assertIs(registry.resolve('generic-openai'), GenericOpenAIDriver)
+        self.assertIs(registry.resolve('gemini-compatible'), GenericGeminiDriver)
+        self.assertIs(registry.resolve('generic-gemini'), GenericGeminiDriver)
+
+    def test_generic_drivers_do_not_fabricate_exact_usage_when_metadata_absent(self):
+        from apps.gateway.providers.generic_openai import GenericOpenAIDriver
+        from apps.gateway.providers.generic_gemini import GenericGeminiDriver
+
+        self.assertEqual({}, GenericOpenAIDriver().parse_usage({'id': 'chatcmpl-123'}))
+        self.assertEqual({}, GenericGeminiDriver().parse_usage({'candidates': []}))
+
 
 if __name__ == '__main__':
     unittest.main()

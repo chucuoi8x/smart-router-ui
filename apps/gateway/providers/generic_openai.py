@@ -22,7 +22,16 @@ class GenericOpenAIDriver(ProviderDriver):
         return []
 
     def parse_usage(self, response: Any) -> Dict[str, Any]:
-        usage = response.get('usage', {})
+        """Parse OpenAI usage from response body.
+
+        Returns an empty dict when ``usage`` is absent so callers can
+        distinguish "no usage present" from "usage was zero".
+        """
+        if not isinstance(response, dict):
+            return {}
+        usage = response.get('usage') or {}
+        if not usage:
+            return {}
         input_tokens = usage.get('prompt_tokens', 0)
         output_tokens = usage.get('completion_tokens', 0)
         return {

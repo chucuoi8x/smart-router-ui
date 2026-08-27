@@ -27,8 +27,27 @@ class GenericAnthropicDriver(ProviderDriver):
         return []
 
     def parse_usage(self, response: Any) -> Dict[str, Any]:
-        """Parse Anthropic usage from response body."""
-        usage = response.get('usage', {})
+        """Parse Anthropic usage from response body.
+
+        In streaming mode usage may appear at different nesting levels:
+          - ``message_start`` puts usage under ``message.usage`` (input tokens)
+          - ``message_delta`` puts usage at top level (output tokens)
+        Non-streaming responses always put usage at the top level.
+
+        When no ``usage`` key is found anywhere, return an empty dict so
+        callers can distinguish "no usage present" from "usage was zero".
+        """
+        if not isinstance(response, dict):
+            return {}
+
+        # Top-level usage (message_delta, non-streaming response)
+        usage = response.get('usage') or {}
+        # Nested usage (message_start)
+        if not usage:
+            usage = (response.get('message') or {}).get('usage') or {}
+        if not usage:
+            return {}
+
         input_tokens = usage.get('input_tokens', 0)
         output_tokens = usage.get('output_tokens', 0)
         return {
