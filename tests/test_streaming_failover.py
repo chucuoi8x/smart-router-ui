@@ -1,11 +1,9 @@
+import inspect
 import sys
 import unittest
 from pathlib import Path
-from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from router import app
 
 
 class StreamingFailoverTests(unittest.TestCase):
@@ -15,8 +13,6 @@ class StreamingFailoverTests(unittest.TestCase):
         Once an upstream output has been sent to the client, the router must
         NOT switch to another model. This test verifies the invariant.
         """
-        client = TestClient(app)
-
         # We test this at the contract level: the router's handle_messages
         # logic must preserve the invariant. Since we can't easily force
         # a stream failover in a unit test, we verify the invariant is
@@ -30,7 +26,6 @@ class StreamingFailoverTests(unittest.TestCase):
         # This is a regression test - it ensures the invariant remains true
         # during refactoring by checking that the code pattern is preserved.
         from router import SmartRouter
-        import inspect
 
         # Verify _stream_messages contains the invariant logic
         source = inspect.getsource(SmartRouter._stream_messages)

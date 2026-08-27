@@ -1839,5 +1839,16 @@ Implemented:
 
 Verification:
 - Focused warning regression tests: `5 passed`.
-- Full regression: `207 passed, 6 skipped, 1 warning`.
-- Remaining warning is the external FastAPI/Starlette TestClient deprecation warning from the installed dependency stack.
+- Full regression before Step 80: `207 passed, 6 skipped, 1 warning`.
+
+## Step 80 — TestClient deprecation cleanup (2026-08-27)
+
+Implemented:
+- Removed all test imports of `fastapi.testclient` / `starlette.testclient`.
+- Rewrote HTTP smoke tests to use `httpx.AsyncClient` with `httpx.ASGITransport(app=app)`.
+- Removed an unused `TestClient(app)` construction from the streaming failover invariant test.
+
+Verification:
+- Confirmed no remaining `TestClient`, `fastapi.testclient`, or `starlette.testclient` references in Python tests.
+- Focused ASGI smoke tests: `13 passed`.
+- Full regression: `207 passed, 6 skipped` with no warnings emitted.
