@@ -1801,7 +1801,8 @@ Implemented:
 - Existing tests/in-memory injection continue to work because `_active_usage_ledger()` falls back to `self._usage_ledger`.
 - Added `_REQUEST_USAGE_EVENTS` request-local cache so quota reconciliation can still read just-recorded token totals when the durable DB repository has no in-memory `_events` list.
 - Hardened DB dependency failure and commit failure paths so usage persistence never breaks data-plane traffic.
+- Follow-up hardening: restructured `get_optional_usage_ledger_repo()` so DB setup failures fail open but endpoint exceptions thrown through the FastAPI yield dependency are not swallowed.
 
 Verification:
-- Added `tests/unit/test_runtime_usage_ledger_context.py` for ContextVar precedence, request-local usage token cache, default-off dependency behavior, and DB-unavailable fallback.
-- Full regression: `205 passed, 6 skipped, 7 warnings`.
+- Added `tests/unit/test_runtime_usage_ledger_context.py` for ContextVar precedence, request-local usage token cache, default-off dependency behavior, DB-unavailable fallback, and endpoint-exception propagation through the yield dependency.
+- Full regression: `206 passed, 6 skipped, 7 warnings`.

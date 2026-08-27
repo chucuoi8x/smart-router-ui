@@ -1611,23 +1611,31 @@ async def get_optional_usage_ledger_repo():
         from apps.gateway.usage.ledger import UsageLedgerRepository
 
         factory = get_async_session_factory()
-        async with factory() as session:
-            repo = UsageLedgerRepository(session)
-            try:
-                yield repo
-            finally:
-                try:
-                    await session.commit()
-                except Exception:
-                    logging.getLogger("smart-router").warning(
-                        "usage ledger commit failed", exc_info=True,
-                    )
+        session_cm = factory()
+        session = await session_cm.__aenter__()
     except Exception:
         logging.getLogger("smart-router").warning(
             "usage ledger DB dependency unavailable; continuing without DB ledger",
             exc_info=True,
         )
         yield None
+        return
+
+    try:
+        yield UsageLedgerRepository(session)
+    finally:
+        try:
+            await session.commit()
+        except Exception:
+            logging.getLogger("smart-router").warning(
+                "usage ledger commit failed", exc_info=True,
+            )
+        try:
+            await session_cm.__aexit__(None, None, None)
+        except Exception:
+            logging.getLogger("smart-router").warning(
+                "usage ledger session close failed", exc_info=True,
+            )
 
 
 @asynccontextmanager

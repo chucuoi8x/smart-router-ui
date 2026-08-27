@@ -82,3 +82,28 @@ class TestRuntimeUsageLedgerContext:
         assert value is None
         with pytest.raises(StopAsyncIteration):
             await anext(dependency)
+
+    @pytest.mark.asyncio
+    async def test_optional_usage_ledger_dependency_does_not_swallow_endpoint_errors(self, monkeypatch):
+        from unittest.mock import AsyncMock
+        from router import get_optional_usage_ledger_repo
+        import apps.gateway.db.session as db_session
+
+        class FakeSessionContext:
+            def __init__(self):
+                self.session = type("Session", (), {"commit": AsyncMock()})()
+
+            async def __aenter__(self):
+                return self.session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        monkeypatch.setenv("USAGE_LEDGER_DB_ENABLED", "true")
+        monkeypatch.setattr(db_session, "get_async_session_factory", lambda: FakeSessionContext)
+
+        dependency = get_optional_usage_ledger_repo()
+        repo = await anext(dependency)
+        assert repo is not None
+        with pytest.raises(ValueError, match="endpoint failed"):
+            await dependency.athrow(ValueError("endpoint failed"))
