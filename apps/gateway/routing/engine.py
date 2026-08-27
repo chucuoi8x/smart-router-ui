@@ -102,7 +102,7 @@ class RouterEngine:
 
         scored_primary = self._quota_rank_sync(primary)
         scored_fallback = self._quota_rank_sync(fallback)
-        combined = list(self._apply_smart_scoring(scored_primary)) + list(self._apply_smart_scoring(scored_fallback))
+        combined = list(self._apply_smart_scoring(scored_primary, route_name)) + list(self._apply_smart_scoring(scored_fallback, route_name))
         return combined
 
     def resolve_route(self, route_name: str) -> List[ResourceCandidate]:
@@ -122,7 +122,7 @@ class RouterEngine:
                 return []
             primary = [c for c in route.candidates if self.circuit_repository.is_available(c.resource_ref)]
             fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
-            return list(self._apply_smart_scoring(primary)) + list(self._apply_smart_scoring(fallback))
+            return list(self._apply_smart_scoring(primary, route_name)) + list(self._apply_smart_scoring(fallback, route_name))
 
         # Running loop detected — create a fresh one for this task
         fresh_loop = asyncio.new_event_loop()
@@ -221,9 +221,18 @@ class RouterEngine:
             f"model:{candidate.resource_ref.model_id}",
         )
 
-    def _apply_smart_scoring(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
+    def _should_apply_smart_scoring(self, route_name: str) -> bool:
+        """Return True when rollout config allows scoring for this route."""
+        if self._scoring_config is None or not self._scoring_config.enabled:
+            return False
+        if self._scoring_config.mode not in {"shadow", "active"}:
+            return False
+        allowlist = getattr(self._scoring_config, "route_allowlist", [])
+        return not allowlist or route_name in allowlist
+
+    def _apply_smart_scoring(self, candidates: list[ResourceCandidate], route_name: str) -> list[ResourceCandidate]:
         """Re-order candidates via smart scoring if enabled and calculator exists."""
-        if self._score_calculator is None or not candidates:
+        if self._score_calculator is None or not candidates or not self._should_apply_smart_scoring(route_name):
             return candidates
         try:
             keys = [c.resource_ref.provider_connection_id + ":" + c.resource_ref.model_id for c in candidates]
@@ -259,6 +268,8 @@ class RouterEngine:
                 candidate_keys=keys,
                 metrics_by_key=metrics,
             )
+            if self._scoring_config and self._scoring_config.mode == "shadow":
+                return candidates
             return [c for c, _ in scored]
         except Exception as exc:
             return candidates  # Graceful degradation

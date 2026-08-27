@@ -229,7 +229,13 @@ logging:
 
 # Smart Scheduler — multi-dimensional candidate scoring (disabled by default)
 smart_scheduler:
+  # Rollout modes:
+  # - disabled: no scoring overhead (default)
+  # - shadow: compute + optionally log scored order, preserve original order
+  # - active: use scored order for routes in route_allowlist (or all routes if empty)
   enabled: false
+  mode: disabled
+  route_allowlist: []
   weights:
     cost_factor: 0.25
     reliability_factor: 0.30

@@ -1781,5 +1781,13 @@ Rollout (operational): Phase 1 disabled=DONE. Phase 2 enabled+logging on single 
    - Shared-group projected usage computed inside Lua for cross-process safety
    - `AsyncQuotaFacade` bridges sync InMemory → async API; auto-wrap in RouterEngine & SmartRouter
    - 193 tests passing (6 skipped without live Redis)
-4. DB-backed quota repository hydration at FastAPI startup for RouterEngine and SmartRouter
-5. Rollout smart_scheduler via phased config enablement (see plan file, phases 1-4)
+4. ~~DB-backed quota repository hydration at FastAPI startup~~ Done (eef9ed0 — Step 74)
+   - `SmartRouter.start()` hydrates quota resources from `QuotaResourceRepository.list_resources()` into the active backend
+   - Works for Redis and InMemory-compatible async facades, skips gracefully when DB is unavailable
+   - 195 tests passing (6 skipped without live Redis)
+5. ~~Rollout smart_scheduler via phased config enablement~~ Done (Step 75)
+   - Added `smart_scheduler.mode`: `disabled | shadow | active`
+   - Added `smart_scheduler.route_allowlist` for route-by-route activation
+   - Shadow mode computes/logs scoring order but preserves original order
+   - RouterEngine and SmartRouter both respect rollout gates
+   - 201 tests passing (6 skipped without live Redis)

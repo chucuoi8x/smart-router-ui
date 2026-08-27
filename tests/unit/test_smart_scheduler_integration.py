@@ -15,9 +15,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 class TestSmartScoringInRouter(unittest.TestCase):
     """Verify _apply_smart_scoring integrates correctly with SmartRouter."""
 
-    def _make_router(self, scoring_enabled: bool = False) -> "SmartRouter":
+    def _make_router(
+        self,
+        scoring_enabled: bool = False,
+        *,
+        mode: str | None = None,
+        route_allowlist: list[str] | None = None,
+    ) -> "SmartRouter":
         from router import SmartRouter
 
+        scheduler_config = {"enabled": scoring_enabled}
+        if mode is not None:
+            scheduler_config["mode"] = mode
+        if route_allowlist is not None:
+            scheduler_config["route_allowlist"] = route_allowlist
         config = {
             "routes": {
                 "test-route": {
@@ -30,7 +41,7 @@ class TestSmartScoringInRouter(unittest.TestCase):
                     "fallback": [],
                 }
             },
-            "smart_scheduler": {"enabled": scoring_enabled},
+            "smart_scheduler": scheduler_config,
         }
         return SmartRouter(config)
 
@@ -66,6 +77,31 @@ class TestSmartScoringInRouter(unittest.TestCase):
         for key in ["a:m1", "b:m2", "c:m3"]:
             self.assertIn(key, result_keys)
 
+    def test_shadow_mode_preserves_original_order(self):
+        router = self._make_router(scoring_enabled=True, mode="shadow")
+        candidates = list(router.routes["test-route"]["candidates"])
+        result = router._apply_smart_scoring(candidates, "test-route")
+        self.assertEqual([c.key for c in result], [c.key for c in candidates])
+
+    def test_route_allowlist_blocks_other_routes(self):
+        router = self._make_router(
+            scoring_enabled=True,
+            mode="active",
+            route_allowlist=["different-route"],
+        )
+        self.assertFalse(router._should_apply_smart_scoring("test-route"))
+        candidates = list(router.routes["test-route"]["candidates"])
+        result = router._apply_smart_scoring(candidates, "test-route")
+        self.assertEqual([c.key for c in result], [c.key for c in candidates])
+
+    def test_route_allowlist_allows_named_route(self):
+        router = self._make_router(
+            scoring_enabled=True,
+            mode="active",
+            route_allowlist=["test-route"],
+        )
+        self.assertTrue(router._should_apply_smart_scoring("test-route"))
+
 
 class TestScoringConfigParsing(unittest.TestCase):
     """Verify YAML config parsing produces correct ScoringConfig."""
@@ -96,6 +132,32 @@ class TestScoringConfigParsing(unittest.TestCase):
 
         cfg = ScoringConfig.from_dict({"min_requests_for_metrics": 10})
         self.assertEqual(cfg.min_requests_for_metrics, 10)
+
+    def test_rollout_mode_defaults_disabled(self):
+        from apps.gateway.routing.scoring import ScoringConfig
+
+        cfg = ScoringConfig.from_dict({})
+        self.assertEqual(cfg.mode, "disabled")
+        self.assertFalse(cfg.enabled)
+
+    def test_rollout_mode_active_when_enabled_without_mode(self):
+        from apps.gateway.routing.scoring import ScoringConfig
+
+        cfg = ScoringConfig.from_dict({"enabled": True})
+        self.assertEqual(cfg.mode, "active")
+        self.assertTrue(cfg.enabled)
+
+    def test_rollout_route_allowlist_parsed(self):
+        from apps.gateway.routing.scoring import ScoringConfig
+
+        cfg = ScoringConfig.from_dict({
+            "enabled": True,
+            "mode": "shadow",
+            "route_allowlist": ["claude-router-main"],
+        })
+        self.assertEqual(cfg.mode, "shadow")
+        self.assertEqual(cfg.route_allowlist, ["claude-router-main"])
+        self.assertTrue(cfg.enabled)
 
 
 if __name__ == "__main__":

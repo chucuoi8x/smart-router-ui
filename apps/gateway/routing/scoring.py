@@ -94,6 +94,8 @@ class ScoringConfig:
     """
 
     enabled: bool = False
+    mode: str = "disabled"  # "disabled" | "shadow" | "active"
+    route_allowlist: list[str] = field(default_factory=list)
     weights: ScoringWeights = field(default_factory=ScoringWeights)
     normalization_window_seconds: int = 300
     max_failure_history: int = 100
@@ -108,8 +110,17 @@ class ScoringConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ScoringConfig":
         """Parse config block from YAML dict (``config['smart_scheduler']``)."""
+        enabled = bool(data.get("enabled", False))
+        raw_mode = str(data.get("mode", "active" if enabled else "disabled")).lower()
+        if raw_mode not in {"disabled", "shadow", "active"}:
+            logger.warning("invalid smart_scheduler.mode=%r; defaulting to disabled", raw_mode)
+            raw_mode = "disabled"
+        raw_allowlist = data.get("route_allowlist", [])
+        route_allowlist = [str(r) for r in raw_allowlist] if isinstance(raw_allowlist, list) else []
         cfg = cls(
-            enabled=bool(data.get("enabled", False)),
+            enabled=enabled and raw_mode != "disabled",
+            mode=raw_mode,
+            route_allowlist=route_allowlist,
             weights=ScoringWeights.from_dict(data.get("weights")),
             normalization_window_seconds=int(data.get("normalization_window_seconds", cls.normalization_window_seconds)),
             max_failure_history=int(data.get("max_failure_history", cls.max_failure_history)),

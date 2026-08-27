@@ -471,6 +471,15 @@ class SmartRouter:
 
     # ── Smart scoring helpers ──────────────────────────────────────────
 
+    def _should_apply_smart_scoring(self, route_name: str) -> bool:
+        """Return True when rollout config allows scoring for this route."""
+        if not self._scoring_config.enabled:
+            return False
+        if self._scoring_config.mode not in {"shadow", "active"}:
+            return False
+        allowlist = getattr(self._scoring_config, "route_allowlist", [])
+        return not allowlist or route_name in allowlist
+
     def _ensure_scoring(self) -> None:
         """Lazy-init the score calculator with catalog and trackers."""
         if self._score_calculator is not None:
@@ -489,7 +498,7 @@ class SmartRouter:
         route_name: str,
     ) -> list[Candidate]:
         """Re-order candidates using multi-dimensional scoring."""
-        if not self._scoring_config.enabled:
+        if not self._should_apply_smart_scoring(route_name):
             return list(candidates)
         self._ensure_scoring()
         if self._score_calculator is None:
@@ -502,6 +511,15 @@ class SmartRouter:
                 candidate_keys=candidate_keys,
                 metrics_by_key=metrics_by_key,
             )
+            if self._scoring_config.mode == "shadow":
+                if self._scoring_config.decision_logging:
+                    self.logger.info(
+                        "smart scoring shadow route=%s original=%s scored=%s",
+                        route_name,
+                        [c.key for c in candidates],
+                        [c.key for c, _ in scored],
+                    )
+                return list(candidates)
             return [c for c, _ in scored]
         except Exception as exc:
             self.logger.warning("smart scoring failed for route=%s: %s, preserving order", route_name, exc)
@@ -513,7 +531,7 @@ class SmartRouter:
         route_name: str,
     ) -> list[Candidate]:
         """Async-aware scoring — queries quota resources for burn-rate urgency."""
-        if not self._scoring_config.enabled:
+        if not self._should_apply_smart_scoring(route_name):
             return list(candidates)
         self._ensure_scoring()
         if self._score_calculator is None:
@@ -526,6 +544,15 @@ class SmartRouter:
                 candidate_keys=candidate_keys,
                 metrics_by_key=metrics_by_key,
             )
+            if self._scoring_config.mode == "shadow":
+                if self._scoring_config.decision_logging:
+                    self.logger.info(
+                        "smart scoring shadow route=%s original=%s scored=%s",
+                        route_name,
+                        [c.key for c in candidates],
+                        [c.key for c, _ in scored],
+                    )
+                return list(candidates)
             return [c for c, _ in scored]
         except Exception as exc:
             self.logger.warning("smart scoring failed for route=%s: %s, preserving order", route_name, exc)
