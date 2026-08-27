@@ -590,6 +590,24 @@ class SmartRouter:
             response_json=consolidated_payload,
         )
 
+    def _get_latest_usage_tokens(self, *, attempt_id: str) -> dict[str, int]:
+        """Return {input_tokens, output_tokens, total_tokens} from the latest UsageEvent for ``attempt_id``.
+
+        Returns zeros when no event was recorded or the ledger is unavailable.
+        """
+        if self._usage_ledger is None:
+            return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        events = getattr(self._usage_ledger, "_events", [])
+        for evt in reversed(events):
+            if getattr(evt, "attempt_id", None) == attempt_id:
+                return {
+                    "input_tokens": getattr(evt, "input_tokens", 0),
+                    "output_tokens": getattr(evt, "output_tokens", 0),
+                    "total_tokens": getattr(evt, "total_tokens", 0),
+                }
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
     async def _record_usage_request(self, *, request_id: str, route_name: str) -> None:
         if self._usage_ledger is None:
             return
@@ -730,9 +748,8 @@ class SmartRouter:
                     status="failed",
                 )
                 continue
-            # Request succeeded (non-failover status). Reconcile quota if reserved.
-            if reservation_id is not None and resource_id is not None:
-                self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+            # Request succeeded. Record attempt, parse + record usage event,
+            # then reconcile with actual token counts (not a hardcoded 1).
             await self._record_usage_attempt(
                 request_id=request_id,
                 attempt_id=attempt_id,
@@ -740,7 +757,8 @@ class SmartRouter:
                 status="success",
             )
 
-            # Parse upstream response JSON and record usage events
+            input_tokens = output_tokens = total_tokens = 0
+            # Parse upstream response JSON and record usage events.
             # Skip /v1/messages/count_tokens — it does not consume any quota or tokens.
             if path != "/v1/messages/count_tokens":
                 try:
@@ -755,6 +773,17 @@ class SmartRouter:
                         candidate=candidate,
                         response_json=response_json,
                     )
+
+            if reservation_id is not None and resource_id is not None:
+                tokens = self._get_latest_usage_tokens(attempt_id=attempt_id)
+                input_tokens = tokens["input_tokens"]
+                output_tokens = tokens["output_tokens"]
+                total_tokens = tokens["total_tokens"]
+                if total_tokens > 0:
+                    self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
+                else:
+                    # No usage parsed — fall back to 1 request as before
+                    self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
 
             await self._record_success(candidate, response.status_code)
             return Response(
@@ -799,7 +828,9 @@ class SmartRouter:
                         status="failed",
                     )
                     continue
-                # Non-failover status: reconcile quota if reserved
+                # Non-failover error Response (e.g. upstream returned 4xx);
+                # no stream was opened, so we cannot know actual token usage.
+                # Record the attempt and reconcile with a safe default.
                 if reservation_id is not None and resource_id is not None:
                     self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
                 await self._record_usage_attempt(
@@ -824,11 +855,8 @@ class SmartRouter:
                     async for chunk in stream.iterator:
                         _sse_buf.extend(chunk)
                         yield chunk
-                    # Stream completed successfully — record the attempt first
-                    # (ledger requires attempt to exist for usage events),
-                    # then parse usage from accumulated SSE text.
-                    if reservation_id is not None and resource_id is not None:
-                        self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                    # Stream completed successfully — record attempt first,
+                    # parse usage, then reconcile with actual token counts.
                     await self._record_success(_candidate, stream.response.status_code)
                     await self._record_usage_attempt(
                         request_id=request_id,
@@ -842,6 +870,14 @@ class SmartRouter:
                         candidate=_candidate,
                         sse_buffer=_sse_buf,
                     )
+                    if reservation_id is not None and resource_id is not None:
+                        tokens = self._get_latest_usage_tokens(attempt_id=attempt_id)
+                        total_tokens = tokens["total_tokens"]
+                        if total_tokens > 0:
+                            self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
+                        else:
+                            # No usage parsed — fall back to 1 request as before
+                            self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
                 except Exception as exc:
                     # Stream failed; record the failed attempt first
                     # so the ledger has a valid reference for best-effort
