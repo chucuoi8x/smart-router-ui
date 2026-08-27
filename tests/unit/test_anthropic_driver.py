@@ -56,6 +56,16 @@ class AnthropicDriverTests(unittest.TestCase):
         self.assertEqual(err_401['kind'], 'AUTH_EXPIRED')
         self.assertFalse(err_401['retryable'])
 
+        # Quota exhaustion must not be flattened into short-lived RATE_LIMIT.
+        err_quota = driver.classify_error(
+            status_code=429,
+            body={'error': {'type': 'insufficient_quota', 'message': 'Monthly quota exhausted'}},
+            headers={'X-Quota-Reset': '2026-09-01T00:00:00Z'},
+        )
+        self.assertEqual(err_quota['kind'], 'QUOTA_EXHAUSTED')
+        self.assertFalse(err_quota['retryable'])
+        self.assertEqual(err_quota['reset_at'], '2026-09-01T00:00:00Z')
+
 
 if __name__ == '__main__':
     unittest.main()

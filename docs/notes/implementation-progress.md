@@ -1865,3 +1865,17 @@ Verification:
 - Non-streaming usage tests: `12 passed`.
 - Streaming usage tests: `3 passed`.
 - Full regression: `209 passed, 6 skipped`.
+
+## Step 82 — Provider error classifier baseline (2026-08-27)
+
+Implemented:
+- Added `apps/gateway/providers/error_classifier.py` as a shared provider error normalization helper.
+- The classifier separates short-lived `RATE_LIMIT` from longer-lived `QUOTA_EXHAUSTED` using status, provider error code/message, and reset headers.
+- It also returns the README Section 17 metadata shape: `scope`, `retryable`, `retry_after`, `reset_at`, `consumption_uncertainty`, `provider_error_code`, `safe_message`, and `status_code`.
+- Generic Anthropic/OpenAI/Gemini drivers and the CLIProxy bridge now delegate `classify_error()` to the shared classifier while preserving their existing call signatures.
+
+Verification:
+- Added `tests/unit/test_error_classifier.py` covering rate-limit metadata, quota exhaustion, context-vs-invalid request, and content-policy-vs-auth 403 classification.
+- Extended Anthropic driver regression coverage so `insufficient_quota` 429 is not flattened into `RATE_LIMIT`.
+- Classifier/driver focused tests: `12 passed`.
+- Full regression: `213 passed, 6 skipped`.

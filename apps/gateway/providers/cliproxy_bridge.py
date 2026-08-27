@@ -1,5 +1,6 @@
 from typing import Any, AsyncIterator, Dict
 from apps.gateway.providers.base import ProviderDriver
+from apps.gateway.providers.error_classifier import classify_provider_error
 
 class CLIProxyBridgeDriver(ProviderDriver):
     driver_id = 'cliproxy-bridge'
@@ -24,11 +25,18 @@ class CLIProxyBridgeDriver(ProviderDriver):
     def parse_usage(self, response: Any) -> Dict[str, Any]:
         return {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}
 
-    def classify_error(self, error_or_response: Any = None, status_code: int = None, body: dict = None) -> Dict[str, Any]:
-        if status_code == 429:
-            return {'kind': 'RATE_LIMIT', 'retryable': True}
-        else:
-            return {'kind': 'UNKNOWN', 'retryable': False}
+    def classify_error(
+        self,
+        error_or_response: Any = None,
+        status_code: int = None,
+        body: dict = None,
+        headers: dict = None,
+    ) -> Dict[str, Any]:
+        if body is None and isinstance(error_or_response, dict):
+            body = error_or_response
+            status_code = status_code or error_or_response.get('status_code')
+            headers = headers or error_or_response.get('headers')
+        return classify_provider_error(status_code=status_code, body=body, headers=headers)
 
     def capabilities(self) -> Dict[str, Any]:
         return {'supports_streaming': True}

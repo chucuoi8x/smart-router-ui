@@ -1,5 +1,6 @@
 from typing import Any, AsyncIterator, Dict, List, Optional
 from apps.gateway.providers.base import ProviderDriver
+from apps.gateway.providers.error_classifier import classify_provider_error
 
 class GenericAnthropicDriver(ProviderDriver):
     driver_id = "generic-anthropic"
@@ -58,33 +59,19 @@ class GenericAnthropicDriver(ProviderDriver):
             'confidence': 'exact'
         }
 
-    def classify_error(self, error_or_response: Any = None, status_code: Optional[int] = None, body: Optional[Dict] = None) -> Dict[str, Any]:
+    def classify_error(
+        self,
+        error_or_response: Any = None,
+        status_code: Optional[int] = None,
+        body: Optional[Dict] = None,
+        headers: Optional[Dict] = None,
+    ) -> Dict[str, Any]:
         """Classify Anthropic error responses."""
-        # Support both positional error_or_response and keyword args
-        if status_code is not None and body is not None:
-            err_type = body.get('error', {}).get('type', '')
-            err_message = body.get('error', {}).get('message', '')
-        else:
-            # Try to parse from error_or_response if provided
-            if isinstance(error_or_response, dict):
-                err_type = error_or_response.get('error', {}).get('type', '')
-                status_code = error_or_response.get('status_code', 500)
-            else:
-                err_type = ''
-                status_code = 500
-
-        if status_code == 429 or 'rate_limit' in err_type.lower():
-            return {'kind': 'RATE_LIMIT', 'retryable': True}
-        elif status_code == 529 or 'overloaded' in err_type.lower():
-            return {'kind': 'OVERLOADED', 'retryable': True}
-        elif status_code == 401 or 'authentication' in err_type.lower() or 'auth' in err_type.lower():
-            return {'kind': 'AUTH_EXPIRED', 'retryable': False}
-        elif status_code == 404 or 'not_found' in err_type.lower():
-            return {'kind': 'MODEL_NOT_FOUND', 'retryable': False}
-        elif status_code >= 500:
-            return {'kind': 'TRANSIENT_NETWORK', 'retryable': True}
-        else:
-            return {'kind': 'UNKNOWN', 'retryable': False}
+        if body is None and isinstance(error_or_response, dict):
+            body = error_or_response
+            status_code = status_code or error_or_response.get('status_code')
+            headers = headers or error_or_response.get('headers')
+        return classify_provider_error(status_code=status_code, body=body, headers=headers)
 
     def capabilities(self) -> Dict[str, Any]:
         """Return driver capabilities."""
