@@ -1791,3 +1791,17 @@ Rollout (operational): Phase 1 disabled=DONE. Phase 2 enabled+logging on single 
    - Shadow mode computes/logs scoring order but preserves original order
    - RouterEngine and SmartRouter both respect rollout gates
    - 201 tests passing (6 skipped without live Redis)
+
+## Step 76 — Runtime DB-backed UsageLedgerRepository binding (2026-08-27)
+
+Implemented:
+- Added per-request `ContextVar` binding in `router.py` so FastAPI handlers can supply a DB-backed `UsageLedgerRepository` without mutating the global `SmartRouter` service.
+- Added `get_optional_usage_ledger_repo()` dependency gated by `USAGE_LEDGER_DB_ENABLED=true`.
+- `/v1/messages` and `/v1/messages/count_tokens` now bind the optional repo for the duration of one request, then reset context tokens in `finally`.
+- Existing tests/in-memory injection continue to work because `_active_usage_ledger()` falls back to `self._usage_ledger`.
+- Added `_REQUEST_USAGE_EVENTS` request-local cache so quota reconciliation can still read just-recorded token totals when the durable DB repository has no in-memory `_events` list.
+- Hardened DB dependency failure and commit failure paths so usage persistence never breaks data-plane traffic.
+
+Verification:
+- Added `tests/unit/test_runtime_usage_ledger_context.py` for ContextVar precedence, request-local usage token cache, default-off dependency behavior, and DB-unavailable fallback.
+- Full regression: `205 passed, 6 skipped, 7 warnings`.

@@ -12,6 +12,7 @@ import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +66,8 @@ def _build_quota_reservations():
 
 
 BASE_DIR = Path(__file__).resolve().parent
+_REQUEST_USAGE_LEDGER: ContextVar[Any | None] = ContextVar("request_usage_ledger", default=None)
+_REQUEST_USAGE_EVENTS: ContextVar[list[Any] | None] = ContextVar("request_usage_events", default=None)
 FAILOVER_STATUSES = {408, 429, 500, 502, 503, 504}
 NON_RETRYABLE_CLIENT_STATUSES = {400, 401, 403}
 HOP_BY_HOP_HEADERS = {
@@ -753,6 +756,10 @@ class SmartRouter:
                     break  # No partial match on other keywords if this one fails
         return None
 
+    def _active_usage_ledger(self):
+        """Return per-request DB ledger when set, else the injected fallback ledger."""
+        return _REQUEST_USAGE_LEDGER.get() or self._usage_ledger
+
     async def _record_usage_event(
         self,
         *,
@@ -768,7 +775,8 @@ class SmartRouter:
         - The response body does not contain usage metadata (silently skipped)
         - The ledger raises an exception (caught and logged, never breaks data-plane)
         """
-        if self._usage_ledger is None:
+        ledger = self._active_usage_ledger()
+        if ledger is None:
             return
 
         # Resolve driver lazily; skip if none found
@@ -815,9 +823,12 @@ class SmartRouter:
                 usage=parsed,
             )
 
-            result = self._usage_ledger.record_usage(event)
+            result = ledger.record_usage(event)
             if inspect.isawaitable(result):
                 await result
+            request_events = _REQUEST_USAGE_EVENTS.get()
+            if request_events is not None:
+                request_events.append(event)
         except Exception:
             self.logger.warning(
                 "failed to create or record UsageEvent for candidate %s",
@@ -847,7 +858,7 @@ class SmartRouter:
         sums across all payloads; the zero-fabrication guard then discards
         cases where everything parsed to zeros.
         """
-        if self._usage_ledger is None:
+        if self._active_usage_ledger() is None:
             return
         if not sse_buffer:
             return
@@ -937,10 +948,14 @@ class SmartRouter:
 
         Returns zeros when no event was recorded or the ledger is unavailable.
         """
-        if self._usage_ledger is None:
-            return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-
-        events = getattr(self._usage_ledger, "_events", [])
+        request_events = _REQUEST_USAGE_EVENTS.get()
+        if request_events is not None:
+            events = request_events
+        else:
+            ledger = self._active_usage_ledger()
+            if ledger is None:
+                return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            events = getattr(ledger, "_events", [])
         for evt in reversed(events):
             if getattr(evt, "attempt_id", None) == attempt_id:
                 return {
@@ -951,11 +966,12 @@ class SmartRouter:
         return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
     async def _record_usage_request(self, *, request_id: str, route_name: str) -> None:
-        if self._usage_ledger is None:
+        ledger = self._active_usage_ledger()
+        if ledger is None:
             return
         record = RequestRecord(request_id=request_id, route_id=route_name, logical_model=route_name)
         try:
-            method = self._usage_ledger.record_request
+            method = ledger.record_request
             params = inspect.signature(method).parameters
             if "request_id" in params:
                 result = method(request_id=request_id, route_id=route_name, logical_model=route_name)
@@ -975,7 +991,8 @@ class SmartRouter:
         candidate: Candidate,
         status: str,
     ) -> None:
-        if self._usage_ledger is None or request_id is None:
+        ledger = self._active_usage_ledger()
+        if ledger is None or request_id is None:
             return
         record = AttemptRecord(
             request_id=request_id,
@@ -985,7 +1002,7 @@ class SmartRouter:
             status=status,
         )
         try:
-            method = self._usage_ledger.record_attempt
+            method = ledger.record_attempt
             params = inspect.signature(method).parameters
             if "request_id" in params:
                 result = method(
@@ -1580,6 +1597,39 @@ async def get_authorized_service(request: Request) -> SmartRouter:
     return service
 
 
+async def get_optional_usage_ledger_repo():
+    """Yield a DB-backed usage ledger when explicitly enabled.
+
+    Runtime DB persistence is opt-in so local/test deployments without a
+    reachable DATABASE_URL keep the existing in-memory/no-ledger behavior.
+    """
+    if os.getenv("USAGE_LEDGER_DB_ENABLED", "false").lower() != "true":
+        yield None
+        return
+    try:
+        from apps.gateway.db.session import get_async_session_factory
+        from apps.gateway.usage.ledger import UsageLedgerRepository
+
+        factory = get_async_session_factory()
+        async with factory() as session:
+            repo = UsageLedgerRepository(session)
+            try:
+                yield repo
+            finally:
+                try:
+                    await session.commit()
+                except Exception:
+                    logging.getLogger("smart-router").warning(
+                        "usage ledger commit failed", exc_info=True,
+                    )
+    except Exception:
+        logging.getLogger("smart-router").warning(
+            "usage ledger DB dependency unavailable; continuing without DB ledger",
+            exc_info=True,
+        )
+        yield None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Router lifecycle ─────────────────────────────────────────────
@@ -1635,25 +1685,45 @@ async def models(service: SmartRouter = Depends(get_authorized_service)) -> dict
 
 
 @app.post("/v1/messages")
-async def messages(request: Request, service: SmartRouter = Depends(get_authorized_service)) -> Response:
+async def messages(
+    request: Request,
+    service: SmartRouter = Depends(get_authorized_service),
+    usage_ledger: Any | None = Depends(get_optional_usage_ledger_repo),
+) -> Response:
     try:
         body = await request.json()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="request body must be JSON") from exc
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="request body must be an object")
-    return await service.handle_messages(body, request.headers, "/v1/messages")
+    ledger_token = _REQUEST_USAGE_LEDGER.set(usage_ledger)
+    events_token = _REQUEST_USAGE_EVENTS.set([])
+    try:
+        return await service.handle_messages(body, request.headers, "/v1/messages")
+    finally:
+        _REQUEST_USAGE_EVENTS.reset(events_token)
+        _REQUEST_USAGE_LEDGER.reset(ledger_token)
 
 
 @app.post("/v1/messages/count_tokens")
-async def count_tokens(request: Request, service: SmartRouter = Depends(get_authorized_service)) -> Response:
+async def count_tokens(
+    request: Request,
+    service: SmartRouter = Depends(get_authorized_service),
+    usage_ledger: Any | None = Depends(get_optional_usage_ledger_repo),
+) -> Response:
     try:
         body = await request.json()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="request body must be JSON") from exc
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="request body must be an object")
-    return await service.handle_messages(body, request.headers, "/v1/messages/count_tokens")
+    ledger_token = _REQUEST_USAGE_LEDGER.set(usage_ledger)
+    events_token = _REQUEST_USAGE_EVENTS.set([])
+    try:
+        return await service.handle_messages(body, request.headers, "/v1/messages/count_tokens")
+    finally:
+        _REQUEST_USAGE_EVENTS.reset(events_token)
+        _REQUEST_USAGE_LEDGER.reset(ledger_token)
 
 
 @app.post("/router/aibox/sync")
