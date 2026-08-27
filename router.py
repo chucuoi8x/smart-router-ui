@@ -249,6 +249,9 @@ class SmartRouter:
             await self.sync_catalog(initial=True)
             self.sync_task = asyncio.create_task(self._sync_loop(), name="aibox-catalog-sync")
         self.logger.info("router started on 127.0.0.1:8320")
+        # Hydrate quota resources from the database so running routers have
+        # fresh quota state on startup (covers Redis and InMemory backends).
+        await self._hydrate_quota_from_db()
 
     async def close(self) -> None:
         if self.sync_task is not None:
@@ -261,6 +264,51 @@ class SmartRouter:
             await client.aclose()
         self.clients.clear()
         self.logger.info("router stopped")
+
+    async def _hydrate_quota_from_db(self) -> None:
+        """Load quota resources from the database into the running backend.
+
+        Opens a one-shot async session via ``get_async_session_factory``,
+        calls ``QuotaResourceRepository.list_resources()``, and adds each
+        resource to ``self.quota_reservations`` (if available).  Gracefully
+        skips when no DB engine has been initialised.
+        """
+        if self.quota_reservations is None:
+            return
+
+        # Determine if the resource ID is an async method so we can await it.
+        _add = getattr(self.quota_reservations, "add_resource", None)
+        needs_await = asyncio.iscoroutinefunction(_add) if _add else False
+
+        try:
+            from apps.gateway.db.session import get_async_session_factory as _get_factory
+            from apps.gateway.quota.reservations import QuotaResourceRepository as _Repo
+
+            factory = _get_factory()
+            async with factory() as session:
+                repo = _Repo(session)
+                resources = await repo.list_resources()
+        except Exception as exc:  # noqa: BLE001
+            # No DB configured or connection failure → skip silently; the
+            # router was already built with in-memory defaults that are
+            # functionally equivalent for single-process use-cases.
+            self.logger.warning(
+                "quota hydrate skipped (%s) – using in-memory defaults", exc,
+            )
+            return
+
+        count = 0
+        for res in resources:
+            try:
+                if needs_await:
+                    await self.quota_reservations.add_resource(res)
+                else:
+                    self.quota_reservations.add_resource(res)
+                count += 1
+            except Exception as exc:
+                self.logger.warning("quota hydrate: skipping %s (%s)", res.resource_id, exc)
+        if count:
+            self.logger.info("quota hydrated %d resource(s) from database", count)
 
     async def _sync_loop(self) -> None:
         interval = max(60, int(self.config.get("aibox_catalog_sync", {}).get("interval_seconds", 21600)))
