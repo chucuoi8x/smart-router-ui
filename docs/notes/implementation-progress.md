@@ -1634,3 +1634,116 @@ Recommended next steps:
 2. Add stream usage event capture when final provider usage metadata is available. (Completed - see Step 67)
 3. Reconcile quota with actual token/request/cost usage instead of the current request-count placeholder.
 4. Wire durable DB sessions into FastAPI dependencies so `UsageLedgerRepository` can be used outside tests.
+## Step 68–70: Streaming usage event capture + Quota reconciliation fix (2026-08-27)
+
+### Bug fix — Anthropic nested `usage` parsing
+**Problem:** `_parse_and_record_stream_usage` chỉ thu thập JSON objects có top-level `"usage"` key. Anthropic `message_start` đặt usage trong `{"message": {"usage": {...}}}` → bị bỏ qua hoàn toàn → input_tokens = 0 cho stream.
+
+**Fix:** 
+1. `_parse_and_record_stream_usage()` không filter theo `"usage" in obj` nữa, thu thập TẤT CẢ valid JSON objects từ SSE buffer → để driver tự parse.
+2. `GenericAnthropicDriver.parse_usage()` kiểm tra thêm `(response.get("message") or {}).get("usage")` khi top-level `usage` vắng mặt. Trả về `{}` thay vì zero-token dict khi không tìm thấy anywhere.
+3. `GenericOpenAIDriver.parse_usage()` và `GenericGeminiDriver.parse_usage()` cũng sửa tương tự để trả về `{}` khi không có metadata.
+4. Đồng thời sửa `test_generic_drivers.py::test_generic_drivers_do_not_fabricate_exact_usage_when_metadata_absent` yêu cầu các driver trả về `{}` khi không có usage.
+
+### Bug fix — Ledger ordering
+**Problem:** `_parse_and_record_stream_usage()` gọi trước `_record_usage_attempt()`. `InMemoryUsageLedger.record_usage(event)` kiểm tra `event.attempt_id in self._attempts` → raise KeyError → swallowed nhưng event không ghi.
+
+**Fix:** Đảo ngược thứ tự trong `_stream_messages` iterator success path:
+1. `_record_success()`
+2. `_record_usage_attempt(status="success")` ← tạo attempt record
+3. `_parse_and_record_stream_usage(...)` ← now has valid attempt_id
+
+Cũng áp dụng tương tự exception handler: record failure/attempt trước rồi mới parse usage.
+
+### Quota reconciliation with actual tokens
+**Problem:** `reconcile(reservation_id, {resource_id: 1})` luôn dùng số cố định là 1 request, bất kể thực tế provider consume bao nhiêu token.
+
+**Fix:**
+1. Thêm `_get_latest_usage_tokens(attempt_id)` — đọc UsageEvent từ ledger, trả về {input_tokens, output_tokens, total_tokens}.
+2. Non-streaming success path: ghi attempt → parse + record usage → reconcile(total_tokens) → fallback về 1 nếu no usage parsed.
+3. Streaming success path: ghi attempt → parse usage → reconcile(total_tokens) → fallback về 1 nếu no usage parsed.
+4. Error Response path (4xx): giữ nguyên fallback về 1 vì không có stream nên không thể parse usage.
+
+### Files changed
+- `router.py`: `_parse_and_record_stream_usage()` rewrite, reorder streaming paths, add `_get_latest_usage_tokens()`, reconcile with token counts
+- `apps/gateway/providers/generic_anthropic.py`: `parse_usage()` read nested `message.usage`
+- `apps/gateway/providers/generic_openai.py`: `parse_usage()` return {} when no usage
+- `apps/gateway/providers/generic_gemini.py`: `parse_usage()` return {} when no usage
+- `tests/unit/test_generic_drivers.py`: update zero-fabrication test expectations
+
+### Verification
+- `pytest tests/unit/ -q` → 117 passed, 0 failed
+
+### Architecture consistency notes
+- Driver-driven approach: core routing chỉ gọi `driver.parse_usage()`, không có điều kiện dành riêng cho provider.
+- Graceful degradation: fallback về 1 request khi không parse được usage (backward compatible).
+- Data-plane safety: tất cả usage/quota operations wrapped in try/except, never leak to failover.
+
+
+## Step 71 — Wire durable DB sessions into FastAPI dependencies
+**Date:** 2026-08-27  
+**Goal:** Allow `UsageLedgerRepository` to be used inside FastAPI route handlers so ledger data persists to PostgreSQL instead of only living in memory during tests.
+
+### Problem addressed
+Before this step:
+- `apps/gateway/db/session.py` had eager module-level `create_async_engine()` calls that would attempt a connection at import time (bad for environments without PG).
+- No FastAPI dependency provided a `UsageLedgerRepository` backed by a real async session.
+- Admin API endpoints existed only for config management (templates, providers, revisions) using in-memory instances.
+- Ledger write path (`router.py`) uses `InMemoryUsageLedger` injected via constructor; production code paths could never reach a durable DB.
+
+### Changes made
+
+#### `apps/gateway/db/session.py` — lazy engine + lifespan pattern
+- All globals (`_engine`, `_async_session_factory`) start as `None`.
+- `init_engine(url=None)` creates engine lazily; idempotent (returns existing engine if URL matches).
+- `dispose_engine()` closes pools and nullifies globals.
+- `get_async_session_factory()` initialises on first access (lazy getter for legacy compat).
+- Removed generator-style `get_session()` yield function (moved to dependencies.py).
+- Import path corrected: `AsyncSession` from `sqlalchemy.ext.asyncio` (not `sqlalchemy.orm`).
+
+#### `apps/gateway/db/dependencies.py` — new FastAPI DI file
+- `get_session()` — yields an `AsyncSession` per request via factory from `session.py`.
+- `get_usage_ledger_repo(session)` — yields `UsageLedgerRepository(session)` with auto-commit on exit.
+- Both usable via `Depends(...)` in any route handler.
+
+#### `router.py` lifespan — dispose engine at shutdown
+- Added `from apps.gateway.db.session import dispose_engine` import.
+- `dispose_engine()` called in finally block after router close (safe no-op if nothing created engine yet).
+- Engine remains lazy: only initialised when a DB-bound route actually requests a session.
+
+#### `apps/gateway/api/admin.py` — ledger query endpoints
+Three new endpoints added under the same auth-guarded admin router:
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/ledger/requests` | GET | List requests with optional `?route_id=...&logical_model=...&limit=...&offset=...` |
+| `/ledger/requests/{request_id}` | GET | Single request detail with embedded attempts and usage events |
+| `/ledger/stats` | GET | Aggregate stats: total tokens, cost breakdown by provider, optional `?start=...&end=...` ISO filters |
+
+All endpoints depend on `Depends(get_session)` for DB-backed SQLAlchemy queries against `RequestLedger`, `AttemptLedger`, and `UsageLedger` ORM models.
+
+#### `tests/unit/test_ledger_endpoints.py` — smoke tests
+- 7 tests verifying: auth guard returns 401, routes exist, graceful 500 degradation when no DB reachable.
+
+### Files changed
+- `apps/gateway/db/session.py` — refactored lazy init + dispose lifecycle
+- `apps/gateway/db/dependencies.py` — **new**: FastAPI DI helpers
+- `apps/gateway/api/admin.py` — added ledger query endpoints
+- `router.py` — lifespan now disposes DB engine at shutdown
+- `tests/unit/test_ledger_endpoints.py` — **new**: smoke tests
+
+### Verification
+- `pytest tests/unit/ -q` → 144 passed, 0 failed (up from 137 after adding 7 new tests)
+- Pre-existing RuntimeWarning about unawaited coroutine in `test_non_streaming_non_json_response_graceful_fallback` is unchanged — pre-existing issue, not introduced here.
+
+### Architecture notes
+- Lazy-first design: no database connection attempted until a ledger route handler runs. This keeps tests and dev setups working without a running PostgreSQL instance.
+- `UsageLedgerRepository` class already supports both `InMemoryUsageLedger` (via `inspect.isawaitable()` duck-typing) and `UsageLedgerRepository(session)` (via direct async method calls). The DI layer bridges these two worlds.
+- Ledger query endpoints are read-only; they do not participate in routing decisions.
+- The admin router continues to share a single auth token (`Bearer test-admin-key`) across all endpoints including new ledger ones.
+
+### Recommended next steps
+1. ~~Wire durable DB sessions into FastAPI dependencies~~ ✅ Done (Step 71)
+2. M5 Smart Scheduler: implement deterministic scoring across capability, budget, burn-rate, retry cost, reliability, and session affinity
+3. Redis distributed atomic reservations (Lua scripts) to replace `threading.Lock` for multi-process safety
+4. DB-backed quota repository hydration at FastAPI startup for `RouterEngine` and `SmartRouter`

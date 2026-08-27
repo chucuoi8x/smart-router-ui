@@ -23,6 +23,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from apps.gateway.api.admin import router as admin_router
+from apps.gateway.db.session import dispose_engine
 from apps.gateway.routing.engine import RouterEngine
 from apps.gateway.config.compiler import LegacyConfigCompiler
 from apps.gateway.usage.ledger import AttemptRecord, RequestRecord
@@ -1219,6 +1220,7 @@ async def get_authorized_service(request: Request) -> SmartRouter:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── Router lifecycle ─────────────────────────────────────────────
     service = SmartRouter.from_environment()
     app.state.router = service
     await service.start()
@@ -1226,6 +1228,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await service.close()
+    # ── Database engine lifecycle ─────────────────────────────────────
+    dispose_engine()  # close pools; no-op if nothing was created
 
 
 app = FastAPI(title="Claude Smart Router", version="1.0.0", lifespan=lifespan)
