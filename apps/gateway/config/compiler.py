@@ -114,4 +114,9 @@ class LegacyConfigCompiler:
         for key in ("quota_resource_id", "quota_resource_ids"):
             if key in item:
                 metadata[key] = item[key]
+        # Smart scoring hints
+        for key in ("session_group", "driver_id"):
+            val = item.get(key)
+            if val is not None:
+                metadata[key] = val
         return metadata

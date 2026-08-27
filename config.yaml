@@ -226,3 +226,24 @@ logging:
   level: "INFO"
   file: "logs/router.log"
   access_log: false
+
+# Smart Scheduler — multi-dimensional candidate scoring (disabled by default)
+smart_scheduler:
+  enabled: false
+  weights:
+    cost_factor: 0.25
+    reliability_factor: 0.30
+    latency_factor: 0.10
+    quota_pressure_factor: 0.15
+    capability_factor: 0.10
+    session_affinity_factor: 0.10
+  normalization_window_seconds: 300
+  max_failure_history: 100
+  max_latency_history: 100
+  session_affinity_ttl_seconds: 3600
+  burn_rate_penalty_threshold: 0.8
+  retry_cost_enabled: true
+  decision_logging: false
+  min_requests_for_metrics: 5
+  fallback_to_weight_on_scoring_failure: true
+

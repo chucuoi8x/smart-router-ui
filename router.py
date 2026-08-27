@@ -27,6 +27,11 @@ from apps.gateway.db.session import dispose_engine
 from apps.gateway.routing.engine import RouterEngine
 from apps.gateway.config.compiler import LegacyConfigCompiler
 from apps.gateway.usage.ledger import AttemptRecord, RequestRecord
+from apps.gateway.routing.scoring import (
+    ScoringConfig, ScoringWeights, SmartScoreCalculator,
+    RollingFailureRateTracker, LatencyTracker, SessionAffinityStore,
+    CandidateMetrics,
+)
 from apps.worker.collectors.aibox_catalog import build_records, select_routes, state_from_records
 
 
@@ -104,11 +109,20 @@ class SmartRouter:
         self.catalog: dict[str, Any] = self._load_catalog()
         self.logger = logging.getLogger("smart-router")
         self._configure_logging()
+        # ── Smart scoring subsystem ──────────────────────────────────────
+        scoring_data = config.get("smart_scheduler", {})
+        self._scoring_config = ScoringConfig.from_dict(scoring_data) if scoring_data else ScoringConfig()
+        self._failure_tracker = RollingFailureRateTracker(self._scoring_config.max_failure_history)
+        self._latency_tracker = LatencyTracker(self._scoring_config.max_latency_history)
+        self._session_store = SessionAffinityStore(self._scoring_config.session_affinity_ttl_seconds)
+        self._score_calculator: SmartScoreCalculator | None = None
         self.router_engine = None
         if os.getenv("USE_ROUTER_ENGINE", "false").lower() == "true":
             compiler = LegacyConfigCompiler()
             snapshot = compiler.compile_dict(config)
-            self.router_engine = RouterEngine(snapshot, quota_reservations=quota_reservations)
+            self.router_engine = RouterEngine(
+                snapshot, quota_reservations=quota_reservations, scoring_config=self._scoring_config,
+            )
         self.driver_registry = None
 
     @classmethod
@@ -296,7 +310,10 @@ class SmartRouter:
             fallback = self._quota_available_candidates(
                 [c for c in route.get("fallback", []) if self._is_available(c)]
             )
-            return ordered + fallback
+            ordered = ordered + fallback
+        # Apply smart scoring as an optimization layer (graceful no-op when disabled)
+        ordered = self._apply_smart_scoring(ordered, route_name)
+        return ordered
 
     def _quota_available_candidates(self, candidates: list[Candidate]) -> list[Candidate]:
         if self.quota_reservations is None:
@@ -359,6 +376,133 @@ class SmartRouter:
     def _is_available(self, candidate: Candidate) -> bool:
         state = self.circuits.get(candidate.key)
         return state is None or state.cooldown_until <= time.monotonic()
+
+    # ── Smart scoring helpers ──────────────────────────────────────────
+
+    def _ensure_scoring(self) -> None:
+        """Lazy-init the score calculator with catalog and trackers."""
+        if self._score_calculator is not None:
+            return
+        self._score_calculator = SmartScoreCalculator(
+            config=self._scoring_config,
+            failure_tracker=self._failure_tracker,
+            latency_tracker=self._latency_tracker,
+            session_store=self._session_store,
+            catalog=self.catalog,
+        )
+
+    def _apply_smart_scoring(
+        self,
+        candidates: list[Candidate],
+        route_name: str,
+    ) -> list[Candidate]:
+        """Re-order candidates using multi-dimensional scoring."""
+        if not self._scoring_config.enabled:
+            return list(candidates)
+        self._ensure_scoring()
+        if self._score_calculator is None:
+            return list(candidates)
+        try:
+            candidate_keys = [c.key for c in candidates]
+            metrics_by_key = self._build_candidate_metrics(candidate_keys)
+            scored = self._score_calculator.compute_scores(
+                candidates=candidates,
+                candidate_keys=candidate_keys,
+                metrics_by_key=metrics_by_key,
+            )
+            return [c for c, _ in scored]
+        except Exception as exc:
+            self.logger.warning("smart scoring failed for route=%s: %s, preserving order", route_name, exc)
+            return list(candidates)
+
+    def _build_candidate_metrics(
+        self,
+        candidate_keys: list[str],
+    ) -> dict[str, CandidateMetrics]:
+        """Build CandidateMetrics per candidate. Batches quota snapshots by resource_id."""
+        prices = self.catalog.get("prices", {})
+        resource_ids_for_key: dict[str, list[str]] = {}
+        all_resource_ids: set[str] = set()
+        for key in candidate_keys:
+            parts = key.split(":", 1)
+            model_id = parts[1] if len(parts) > 1 else ""
+            candidate_for_key = None
+            for rname, route in self.routes.items():
+                for c in route["candidates"]:
+                    if c.key == key:
+                        candidate_for_key = c
+                        break
+                if candidate_for_key:
+                    break
+            if candidate_for_key is None:
+                rid = f"model:{model_id}"
+                resource_ids_for_key[key] = [rid]
+                all_resource_ids.add(rid)
+                continue
+            rids = self._known_candidate_quota_resource_ids(candidate_for_key)
+            resource_ids_for_key[key] = rids
+            all_resource_ids.update(rids)
+
+        quota_cache: dict[str, Any] = {}
+        if self.quota_reservations:
+            for rid in all_resource_ids:
+                try:
+                    quota_cache[rid] = self.quota_reservations.snapshot(rid)
+                except KeyError:
+                    pass
+
+        metrics_by_key: dict[str, CandidateMetrics] = {}
+        for key in candidate_keys:
+            parts = key.split(":", 1)
+            model_id = parts[1] if len(parts) > 1 else ""
+            price_info = prices.get(model_id, {})
+            fail_rate, total_attempts, total_successes = self._failure_tracker.failure_rate(key)
+            p50, p99, mean = self._latency_tracker.percentiles(key)
+            latency_count = self._latency_tracker.count(key)
+            effective_remaining = 0
+            limit = 0
+            safety_buffer = 0
+            burn_urgency = 0.0
+            for rid in resource_ids_for_key.get(key, []):
+                res = quota_cache.get(rid)
+                if res is not None:
+                    eff = getattr(res, "effective_remaining", 0)
+                    lim = getattr(res, "limit", 0)
+                    sb = getattr(res, "safety_buffer", 0)
+                    if eff < effective_remaining or effective_remaining == 0:
+                        effective_remaining = eff
+                    if lim > limit:
+                        limit = lim
+                    if sb > safety_buffer:
+                        safety_buffer = sb
+            if limit > 0 and effective_remaining >= 0:
+                burn_urgency = 1.0 - (effective_remaining / limit)
+            cb_state = self.circuits.get(key)
+            cb_status = "closed"
+            consecutive_failures = 0
+            if cb_state:
+                consecutive_failures = cb_state.consecutive_failures
+                if cb_state.cooldown_until > time.monotonic():
+                    cb_status = "open"
+            metrics_by_key[key] = CandidateMetrics(
+                price_per_million_input=price_info.get("input_per_million"),
+                price_per_million_output=price_info.get("output_per_million"),
+                rolling_failure_rate=fail_rate,
+                circuit_breaker_state=cb_status,
+                consecutive_failures=consecutive_failures,
+                total_attempts=total_attempts,
+                total_successes=total_successes,
+                p50_latency_ms=p50,
+                p99_latency_ms=p99,
+                mean_latency_ms=mean,
+                request_count=latency_count,
+                effective_remaining=effective_remaining,
+                limit=limit,
+                safety_buffer=safety_buffer,
+                burn_rate_urgency=burn_urgency,
+                capability_match=True,
+            )
+        return metrics_by_key
 
     def _get_driver_registry(self):
         """Lazily load and return the default driver registry."""
@@ -725,11 +869,15 @@ class SmartRouter:
             attempt_id = uuid.uuid4().hex
             request_body = dict(body)
             request_body["model"] = candidate.model
+            _start = time.monotonic()
             try:
                 headers = self._upstream_headers(candidate.upstream, incoming_headers)
                 client = self.clients[candidate.upstream]
                 response = await client.post(self._url(candidate.upstream, path), headers=headers, json=request_body)
             except (httpx.RequestError, RouterConfigurationError) as exc:
+                elapsed_ms = (time.monotonic() - _start) * 1000
+                if self._score_calculator:
+                    self._latency_tracker.record(candidate.key, elapsed_ms)
                 last_failure = _safe_error(exc)
                 await self._record_failure(candidate, None, last_failure)
                 await self._record_usage_attempt(
@@ -787,6 +935,9 @@ class SmartRouter:
                     self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
 
             await self._record_success(candidate, response.status_code)
+            elapsed_ms = (time.monotonic() - _start) * 1000
+            if self._score_calculator:
+                self._latency_tracker.record(candidate.key, elapsed_ms)
             return Response(
                 content=response.content,
                 status_code=response.status_code,
@@ -817,8 +968,12 @@ class SmartRouter:
             attempt_id = uuid.uuid4().hex
             request_body = dict(body)
             request_body["model"] = candidate.model
+            _stream_start = time.monotonic()
             opened = await self._open_stream(candidate, request_body, incoming_headers, path)
             if isinstance(opened, Response):
+                _elapsed_ms = (time.monotonic() - _stream_start) * 1000
+                if self._score_calculator:
+                    self._latency_tracker.record(candidate.key, _elapsed_ms)
                 if opened.status_code in FAILOVER_STATUSES:
                     last_failure = f"upstream returned {opened.status_code}"
                     await self._record_failure(candidate, opened.status_code, last_failure)
@@ -859,6 +1014,9 @@ class SmartRouter:
                     # Stream completed successfully — record attempt first,
                     # parse usage, then reconcile with actual token counts.
                     await self._record_success(_candidate, stream.response.status_code)
+                    _elapsed_ms = (time.monotonic() - _stream_start) * 1000
+                    if self._score_calculator:
+                        self._latency_tracker.record(_candidate.key, _elapsed_ms)
                     await self._record_usage_attempt(
                         request_id=request_id,
                         attempt_id=attempt_id,
@@ -883,6 +1041,9 @@ class SmartRouter:
                     # Stream failed; record the failed attempt first
                     # so the ledger has a valid reference for best-effort
                     # usage parsing below.
+                    _elapsed_ms = (time.monotonic() - _stream_start) * 1000
+                    if self._score_calculator:
+                        self._latency_tracker.record(_candidate.key, _elapsed_ms)
                     if reservation_id is not None and resource_id is not None:
                         self.quota_reservations.release(reservation_id)
                     await self._record_failure(_candidate, None, _safe_error(exc))
@@ -953,6 +1114,9 @@ class SmartRouter:
             state.last_error = None
             state.last_event = _now()
         self.logger.info("upstream=%s model=%s status=%s failover=false", candidate.upstream, candidate.model, status)
+        # Record for smart scoring (non-blocking)
+        if self._score_calculator is not None:
+            self._score_calculator.record_success(candidate.key)
 
     async def _record_failure(self, candidate: Candidate, status: int | None, error: str) -> None:
         if status in NON_RETRYABLE_CLIENT_STATUSES:
@@ -981,6 +1145,9 @@ class SmartRouter:
             status,
             cooldown,
         )
+        # Record for smart scoring (non-blocking)
+        if self._score_calculator is not None:
+            self._score_calculator.record_failure(candidate.key)
 
     def status_payload(self) -> dict[str, Any]:
         now = time.monotonic()

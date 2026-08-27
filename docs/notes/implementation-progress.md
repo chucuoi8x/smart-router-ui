@@ -1760,3 +1760,22 @@ See plan file: `resilient-snuggling-hamming.md`
 2. M5 Smart Scheduler: implement deterministic scoring across capability, budget, burn-rate, retry cost, reliability, and session affinity
 3. Redis distributed atomic reservations (Lua scripts) to replace `threading.Lock` for multi-process safety
 4. DB-backed quota repository hydration at FastAPI startup for `RouterEngine` and `SmartRouter`
+## Step 72 - M5 Smart Scheduler COMPLETED (2026-08-27)
+
+Implemented:
+- apps/gateway/routing/scoring.py - Core scoring engine (~350 lines): ScoringWeights, ScoringConfig.from_dict(), CandidateMetrics, rolling failure/latency/session trackers, SmartScoreCalculator.compute_scores() returning sorted list never raising.
+- router.py integration: trackers initialized in __init__, _apply_smart_scoring() in _candidate_order(), latency timing added to both streaming and non-streaming paths, _record_success/_failure call tracker.record().
+- engine.py RouterEngine receives same ScoringConfig via constructor injection, _apply_smart_scoring() after _quota_rank().
+- config.yaml appended smart_scheduler block (enabled: false by default).
+- compiler.py extended metadata parsing for session_group / driver_id.
+- Tests: test_smart_scorer.py (32 unit tests), test_smart_scheduler_integration.py (6 integration tests).
+- Verification: pytest -q -> 182 passed (144 pre-existing + 32 scorer + 6 integration).
+
+Rollout (operational): Phase 1 disabled=DONE. Phase 2 enabled+logging on single route. Phase 3 enable 1 route, tune weights. Phase 4 gradual all routes.
+
+## Recommended next steps
+1. ~~Wire durable DB sessions into FastAPI dependencies~~ Done (Step 71)
+2. ~~M5 Smart Scheduler: implement deterministic scoring~~ Done (Step 72)
+3. Redis distributed atomic reservations (Lua scripts) to replace threading.Lock for multi-process safety
+4. DB-backed quota repository hydration at FastAPI startup for RouterEngine and SmartRouter
+5. Rollout smart_scheduler via phased config enablement (see plan file, phases 1-4)

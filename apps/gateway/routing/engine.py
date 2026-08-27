@@ -4,6 +4,7 @@ from typing import Any, List, Optional
 
 from apps.gateway.routing.models import ResourceRef, ResourceCandidate
 from apps.gateway.config.snapshot import RuntimeConfigSnapshot
+from apps.gateway.routing.scoring import ScoringConfig
 
 class InMemoryCircuitRepository:
     def __init__(self):
@@ -27,10 +28,16 @@ class RouterEngine:
         snapshot: RuntimeConfigSnapshot,
         circuit_repository: Optional[InMemoryCircuitRepository] = None,
         quota_reservations: Optional[Any] = None,
+        scoring_config: Optional[ScoringConfig] = None,
     ):
         self.snapshot = snapshot
         self.circuit_repository = circuit_repository or InMemoryCircuitRepository()
         self.quota_reservations = quota_reservations
+        self._scoring_config = scoring_config
+        self._score_calculator: Any | None = None
+        if scoring_config and scoring_config.enabled:
+            from apps.gateway.routing.scoring import SmartScoreCalculator
+            self._score_calculator = SmartScoreCalculator(config=scoring_config)
 
     def select_candidates(self, route_name: str) -> List[ResourceCandidate]:
         route = self.snapshot.routes.get(route_name)
@@ -43,7 +50,7 @@ class RouterEngine:
         # Filter available fallback candidates
         fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
 
-        return self._quota_rank(primary) + self._quota_rank(fallback)
+        return self._apply_smart_scoring(self._quota_rank(primary)) + self._apply_smart_scoring(self._quota_rank(fallback))
 
     def resolve_route(self, route_name: str) -> List[ResourceCandidate]:
         # Returns all candidates matching criteria (even fallbacks)
@@ -126,3 +133,45 @@ class RouterEngine:
             "quota_resource_id",
             f"model:{candidate.resource_ref.model_id}",
         )
+
+    def _apply_smart_scoring(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
+        """Re-order candidates via smart scoring if enabled and calculator exists."""
+        if self._score_calculator is None or not candidates:
+            return candidates
+        try:
+            keys = [c.resource_ref.provider_connection_id + ":" + c.resource_ref.model_id for c in candidates]
+            # Build minimal metrics dict from catalog/quota data
+            from apps.gateway.routing.scoring import CandidateMetrics
+            metrics: dict[str, CandidateMetrics] = {}
+            prices = getattr(self.snapshot, "_prices", {}) or {}
+            for key in keys:
+                model_part = key.split(":", 1)[-1]
+                price_info = prices.get(model_part, {})
+                eff_remaining = 0
+                lim = 0
+                burn_urgency = 0.0
+                # Try quota snapshot for each candidate
+                rid = f"model:{model_part}"
+                if self.quota_reservations:
+                    try:
+                        res = self.quota_reservations.snapshot(rid)
+                        eff_remaining = getattr(res, "effective_remaining", 0)
+                        lim = getattr(res, "limit", 0)
+                    except KeyError:
+                        pass
+                if lim > 0 and eff_remaining >= 0:
+                    burn_urgency = 1.0 - (eff_remaining / lim)
+                metrics[key] = CandidateMetrics(
+                    price_per_million_output=price_info.get("output_per_million"),
+                    effective_remaining=eff_remaining,
+                    limit=lim,
+                    burn_rate_urgency=burn_urgency,
+                )
+            scored = self._score_calculator.compute_scores(
+                candidates=candidates,
+                candidate_keys=keys,
+                metrics_by_key=metrics,
+            )
+            return [c for c, _ in scored]
+        except Exception as exc:
+            return candidates  # Graceful degradation
