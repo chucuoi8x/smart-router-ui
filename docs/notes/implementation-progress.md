@@ -1742,7 +1742,20 @@ All endpoints depend on `Depends(get_session)` for DB-backed SQLAlchemy queries 
 - Ledger query endpoints are read-only; they do not participate in routing decisions.
 - The admin router continues to share a single auth token (`Bearer test-admin-key`) across all endpoints including new ledger ones.
 
-### Recommended next steps
+### Step 72 — M5 Smart Scheduler: Multi-Dimensional Deterministic Scoring
+**Date:** 2026-08-27 (plan approved by review)  
+**Goal:** Implement deterministic multi-dimensional candidate scoring replacing binary "filter then order" with "score then rank". Integrates into both routing paths (`SmartRouter` default + `RouterEngine`). Graceful degradation guarantees zero overhead when disabled.
+
+### Design decisions from reviewer feedback
+- `compute_scores()` never raises to callers — returns original list on any dimension error for true zero-overhead fallback
+- Quota snapshot batched per-route (not per-candidate) with 2s TTL cache to eliminate N×M lock contention
+- `ScoringConfig` singleton created at `SmartRouter.__init__`, injected into `RouterEngine` constructor via same YAML source (no duplicate parsing)
+- Weight auto-normalization on init with warning log if sum ≠ 1.0
+
+### Implementation approach (confirmed, not yet coded)
+See plan file: `resilient-snuggling-hamming.md`
+
+## Recommended next steps
 1. ~~Wire durable DB sessions into FastAPI dependencies~~ ✅ Done (Step 71)
 2. M5 Smart Scheduler: implement deterministic scoring across capability, budget, burn-rate, retry cost, reliability, and session affinity
 3. Redis distributed atomic reservations (Lua scripts) to replace `threading.Lock` for multi-process safety
