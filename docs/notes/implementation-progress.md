@@ -1852,3 +1852,16 @@ Verification:
 - Confirmed no remaining `TestClient`, `fastapi.testclient`, or `starlette.testclient` references in Python tests.
 - Focused ASGI smoke tests: `13 passed`.
 - Full regression: `207 passed, 6 skipped` with no warnings emitted.
+
+## Step 81 — Usage cost provenance from catalog pricing (2026-08-27)
+
+Implemented:
+- Added `SmartRouter._with_usage_cost()` to enrich parsed usage with estimated USD cost when catalog pricing has the candidate model's input and output token prices.
+- The enrichment is best-effort and non-fabricating: if a non-zero token side lacks a price, the `UsageEvent` remains token-only with `actual_cost=None` and no currency.
+- `_record_usage_event()` now applies this enrichment before constructing `UsageEvent`, so both non-streaming responses and consolidated streaming usage share the same cost path.
+
+Verification:
+- Added non-streaming regression tests for catalog-priced cost calculation and missing-price fallback.
+- Non-streaming usage tests: `12 passed`.
+- Streaming usage tests: `3 passed`.
+- Full regression: `209 passed, 6 skipped`.

@@ -266,6 +266,57 @@ async def test_non_streaming_failover_records_exactly_one_usage_event():
 
 
 @pytest.mark.asyncio
+async def test_non_streaming_usage_event_includes_catalog_cost_estimate():
+    router, ledger = _make_router(
+        "sonnet",
+        [{"upstream": "anthropic-svc", "model": "claude-3-5-sonnet"}],
+        {"anthropic-svc": _make_upstream_config("https://api.anthropic.com", "generic-anthropic")},
+    )
+    router.catalog = {
+        "prices": {
+            "claude-3-5-sonnet": {
+                "input_per_million": 3.0,
+                "output_per_million": 15.0,
+            }
+        }
+    }
+
+    resp = _build_mock_response(200, {"usage": {"input_tokens": 1000, "output_tokens": 2000}})
+    _setup_client(router, "anthropic-svc", resp)
+
+    body = {"model": "sonnet", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {}, "/v1/messages")
+
+    assert response.status_code == 200
+    assert len(ledger._events) == 1
+    evt = ledger._events[0]
+    assert evt.actual_cost == pytest.approx(0.033)
+    assert evt.currency == "USD"
+
+
+@pytest.mark.asyncio
+async def test_non_streaming_usage_cost_stays_unknown_when_price_missing():
+    router, ledger = _make_router(
+        "sonnet",
+        [{"upstream": "anthropic-svc", "model": "claude-3-5-sonnet"}],
+        {"anthropic-svc": _make_upstream_config("https://api.anthropic.com", "generic-anthropic")},
+    )
+    router.catalog = {"prices": {}}
+
+    resp = _build_mock_response(200, {"usage": {"input_tokens": 1000, "output_tokens": 2000}})
+    _setup_client(router, "anthropic-svc", resp)
+
+    body = {"model": "sonnet", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {}, "/v1/messages")
+
+    assert response.status_code == 200
+    assert len(ledger._events) == 1
+    evt = ledger._events[0]
+    assert evt.actual_cost is None
+    assert evt.currency is None
+
+
+@pytest.mark.asyncio
 async def test_count_tokens_endpoint_skips_usage_event():
     """/v1/messages/count_tokens does not record a UsageEvent."""
     router, ledger = _make_router(

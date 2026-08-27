@@ -760,6 +760,27 @@ class SmartRouter:
         """Return per-request DB ledger when set, else the injected fallback ledger."""
         return _REQUEST_USAGE_LEDGER.get() or self._usage_ledger
 
+    def _with_usage_cost(self, candidate: Candidate, usage: dict[str, Any]) -> dict[str, Any]:
+        """Attach estimated USD cost when catalog prices cover observed token usage."""
+        if usage.get("actual_cost") is not None:
+            return usage
+
+        prices = self.catalog.get("prices", {}) if isinstance(self.catalog, dict) else {}
+        price_info = prices.get(candidate.model) or prices.get(candidate.model.lower()) or {}
+        input_price = price_info.get("input_per_million")
+        output_price = price_info.get("output_per_million")
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+
+        if (input_tokens > 0 and input_price is None) or (output_tokens > 0 and output_price is None):
+            return usage
+
+        cost = (input_tokens * float(input_price or 0) + output_tokens * float(output_price or 0)) / 1_000_000
+        enriched = dict(usage)
+        enriched["actual_cost"] = cost
+        enriched.setdefault("currency", price_info.get("currency") or "USD")
+        return enriched
+
     async def _record_usage_event(
         self,
         *,
@@ -807,6 +828,8 @@ class SmartRouter:
         # Mitigate zero-fabrication bug: if the driver parses 0 tokens, do not record a fabricated event.
         if parsed.get("input_tokens") == 0 and parsed.get("output_tokens") == 0:
             return
+
+        parsed = self._with_usage_cost(candidate, parsed)
 
         # Build UsageEvent and persist to ledger
         try:
