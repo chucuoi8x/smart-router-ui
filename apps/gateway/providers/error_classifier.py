@@ -31,7 +31,7 @@ _CONTENT_POLICY_TERMS = (
 
 
 def _headers_lookup(headers: Mapping[str, Any] | None, name: str) -> str | None:
-    if not headers:
+    if not headers or not isinstance(headers, Mapping):
         return None
     needle = name.lower()
     for key, value in headers.items():

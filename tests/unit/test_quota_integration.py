@@ -433,3 +433,83 @@ async def test_rejected_requests_record_request_ledger_metadata(monkeypatch):
     req = next(iter(ledger._requests.values()))
     assert req.metadata["status"] == "rejected"
     assert req.metadata["reason"] == "quota_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_upstream_503_attempt_status_uses_error_classifier(monkeypatch):
+    """Transient provider failures should persist normalized attempt status."""
+    from apps.gateway.usage.ledger import InMemoryUsageLedger
+
+    ledger = InMemoryUsageLedger()
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "fast-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+    router = SmartRouter(config, usage_ledger=ledger)
+    monkeypatch.setenv("PRIMARY_TOKEN", "test-primary-token")
+
+    fail_response = AsyncMock()
+    fail_response.status_code = 503
+    fail_response.content = b'{"error":{"message":"down"}}'
+    fail_response.headers = {}
+    primary_client = AsyncMock()
+    primary_client.post.return_value = fail_response
+    monkeypatch.setattr(router, "clients", {"primary": primary_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {"authorization": "Bearer test-key"}, "/v1/messages")
+
+    assert response.status_code == 503
+    attempt = next(iter(ledger._attempts.values()))
+    assert attempt.status == "TRANSIENT_NETWORK"
+
+
+@pytest.mark.asyncio
+async def test_upstream_quota_429_attempt_status_is_quota_exhausted(monkeypatch):
+    """Provider quota exhaustion should not be flattened into RATE_LIMIT."""
+    from apps.gateway.usage.ledger import InMemoryUsageLedger
+
+    ledger = InMemoryUsageLedger()
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "fast-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+    router = SmartRouter(config, usage_ledger=ledger)
+    monkeypatch.setenv("PRIMARY_TOKEN", "test-primary-token")
+
+    quota_response = AsyncMock()
+    quota_response.status_code = 429
+    quota_response.content = b'{"error":{"type":"insufficient_quota","message":"Monthly quota exhausted"}}'
+    quota_response.headers = {"X-Quota-Reset": "2026-09-01T00:00:00Z"}
+    primary_client = AsyncMock()
+    primary_client.post.return_value = quota_response
+    monkeypatch.setattr(router, "clients", {"primary": primary_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {"authorization": "Bearer test-key"}, "/v1/messages")
+
+    assert response.status_code == 429
+    attempt = next(iter(ledger._attempts.values()))
+    assert attempt.status == "QUOTA_EXHAUSTED"

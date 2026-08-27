@@ -1878,4 +1878,18 @@ Verification:
 - Added `tests/unit/test_error_classifier.py` covering rate-limit metadata, quota exhaustion, context-vs-invalid request, and content-policy-vs-auth 403 classification.
 - Extended Anthropic driver regression coverage so `insufficient_quota` 429 is not flattened into `RATE_LIMIT`.
 - Classifier/driver focused tests: `12 passed`.
-- Full regression: `213 passed, 6 skipped`.
+- Full regression before Step 83: `213 passed, 6 skipped`.
+
+## Step 83 — Runtime classified failure recording (2026-08-27)
+
+Implemented:
+- Wired provider error classification into `SmartRouter._non_stream_messages()` and streaming pre-output error paths.
+- `AttemptRecord.status` now stores normalized provider failure kinds (`TRANSIENT_NETWORK`, `QUOTA_EXHAUSTED`, etc.) for upstream HTTP failures instead of flattening every failure to `failed`.
+- Non-retryable provider errors return the original upstream status/body to the caller instead of being converted into generic 503 failover exhaustion.
+- Added safe JSON/body extraction for response classification, including sync/awaitable `.json()` handling and fallback bytes parsing.
+- Hardened classifier header lookup so test doubles or unusual response header objects are ignored unless they are real mappings.
+
+Verification:
+- Added runtime regression tests for 503 -> `TRANSIENT_NETWORK` and 429 `insufficient_quota` -> `QUOTA_EXHAUSTED` attempt statuses.
+- Focused runtime classifier tests: `3 passed`.
+- Full regression: `215 passed, 6 skipped`.

@@ -781,6 +781,41 @@ class SmartRouter:
         enriched.setdefault("currency", price_info.get("currency") or "USD")
         return enriched
 
+    async def _response_json_or_none(self, response: Any) -> dict[str, Any] | None:
+        try:
+            response_json = response.json()
+            if inspect.isawaitable(response_json):
+                response_json = await response_json
+            if isinstance(response_json, dict):
+                return response_json
+        except Exception:
+            pass
+
+        content = getattr(response, "body", None)
+        if not isinstance(content, (bytes, bytearray)):
+            content = getattr(response, "content", None)
+        if not isinstance(content, (bytes, bytearray)):
+            return None
+        try:
+            parsed = json.loads(bytes(content).decode("utf-8"))
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    async def _classify_provider_response(self, candidate: Candidate, response: Any) -> dict[str, Any]:
+        body = await self._response_json_or_none(response)
+        status_code = getattr(response, "status_code", None)
+        headers = getattr(response, "headers", None)
+        driver_cls = self._resolve_driver(candidate)
+        if driver_cls is not None:
+            try:
+                return driver_cls().classify_error(status_code=status_code, body=body, headers=headers)
+            except Exception:
+                self.logger.debug("driver error classifier failed for candidate %s", candidate.key, exc_info=True)
+        from apps.gateway.providers.error_classifier import classify_provider_error
+
+        return classify_provider_error(status_code=status_code, body=body, headers=headers)
+
     async def _record_usage_event(
         self,
         *,
@@ -1155,16 +1190,26 @@ class SmartRouter:
                     status="failed",
                 )
                 continue
-            if response.status_code in FAILOVER_STATUSES:
-                last_failure = f"upstream returned {response.status_code}"
+            if response.status_code >= 400:
+                classification = await self._classify_provider_response(candidate, response)
+                attempt_status = str(classification.get("kind") or "UNKNOWN")
+                last_failure = f"upstream returned {response.status_code} ({attempt_status})"
                 await self._record_failure(candidate, response.status_code, last_failure)
                 await self._record_usage_attempt(
                     request_id=request_id,
                     attempt_id=attempt_id,
                     candidate=candidate,
-                    status="failed",
+                    status=attempt_status,
                 )
-                continue
+                if response.status_code in FAILOVER_STATUSES and classification.get("retryable", True):
+                    continue
+                if reservation_id is not None and resource_id is not None:
+                    await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=_response_headers(response.headers),
+                )
             # Request succeeded. Record attempt, parse + record usage event,
             # then reconcile with actual token counts (not a hardcoded 1).
             await self._record_usage_attempt(
@@ -1178,14 +1223,8 @@ class SmartRouter:
             # Parse upstream response JSON and record usage events.
             # Skip /v1/messages/count_tokens — it does not consume any quota or tokens.
             if path != "/v1/messages/count_tokens":
-                try:
-                    response_json = response.json()
-                    if inspect.isawaitable(response_json):
-                        response_json = await response_json
-                except Exception:
-                    response_json = None
-
-                if isinstance(response_json, dict):
+                response_json = await self._response_json_or_none(response)
+                if response_json is not None:
                     await self._record_usage_event(
                         request_id=request_id,
                         attempt_id=attempt_id,
@@ -1242,28 +1281,24 @@ class SmartRouter:
                 _elapsed_ms = (time.monotonic() - _stream_start) * 1000
                 if self._score_calculator:
                     self._latency_tracker.record(candidate.key, _elapsed_ms)
-                if opened.status_code in FAILOVER_STATUSES:
-                    last_failure = f"upstream returned {opened.status_code}"
+                if opened.status_code >= 400:
+                    classification = await self._classify_provider_response(candidate, opened)
+                    attempt_status = str(classification.get("kind") or "UNKNOWN")
+                    last_failure = f"upstream returned {opened.status_code} ({attempt_status})"
                     await self._record_failure(candidate, opened.status_code, last_failure)
                     await self._record_usage_attempt(
                         request_id=request_id,
                         attempt_id=attempt_id,
                         candidate=candidate,
-                        status="failed",
+                        status=attempt_status,
                     )
-                    continue
-                # Non-failover error Response (e.g. upstream returned 4xx);
-                # no stream was opened, so we cannot know actual token usage.
-                # Record the attempt and reconcile with a safe default.
-                if reservation_id is not None and resource_id is not None:
-                    await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
-                await self._record_usage_attempt(
-                    request_id=request_id,
-                    attempt_id=attempt_id,
-                    candidate=candidate,
-                    status="success",
-                )
-                return opened
+                    if opened.status_code in FAILOVER_STATUSES and classification.get("retryable", True):
+                        continue
+                    # Non-retryable error Response (e.g. invalid request);
+                    # no stream was opened, so we cannot know actual token usage.
+                    if reservation_id is not None and resource_id is not None:
+                        await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                    return opened
             stream = opened
             response_headers = _response_headers(stream.response.headers)
             # Capture candidate info for closure
