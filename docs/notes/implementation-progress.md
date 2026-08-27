@@ -1776,6 +1776,10 @@ Rollout (operational): Phase 1 disabled=DONE. Phase 2 enabled+logging on single 
 ## Recommended next steps
 1. ~~Wire durable DB sessions into FastAPI dependencies~~ Done (Step 71)
 2. ~~M5 Smart Scheduler: implement deterministic scoring~~ Done (Step 72)
-3. Redis distributed atomic reservations (Lua scripts) to replace threading.Lock for multi-process safety
+3. ~~Redis distributed atomic reservations (Lua scripts)~~ Done (b58e138 — Step 73)
+   - `RedisQuotaReservations` with 4 Lua scripts: check_many, reserve_many, reconcile, release
+   - Shared-group projected usage computed inside Lua for cross-process safety
+   - `AsyncQuotaFacade` bridges sync InMemory → async API; auto-wrap in RouterEngine & SmartRouter
+   - 193 tests passing (6 skipped without live Redis)
 4. DB-backed quota repository hydration at FastAPI startup for RouterEngine and SmartRouter
 5. Rollout smart_scheduler via phased config enablement (see plan file, phases 1-4)
