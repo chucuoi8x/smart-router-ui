@@ -1929,3 +1929,10 @@ Implemented:
 Verification:
 - Added comprehensive unit and integration tests across `tests/test_router.py`, `tests/unit/test_error_classifier.py`, `tests/unit/test_quota_integration.py`, and `tests/unit/test_router_engine.py`.
 - Verified HTTP 408 transient network classification, provider-agnostic rate limit and overload cooldowns, circuit breaker exclusion for request-scoped errors, candidate quota exhaustion propagation, and dual circuit tripping in RouterEngine.
+- Re-ran full regression after the Step 84/85 progress update and whitespace cleanup: `231 passed, 6 skipped`.
+- Ran `git diff --check` successfully after removing trailing EOF blank lines; remaining output was LF-to-CRLF warnings on touched files only.
+
+Outcome:
+- Step 84 Quota Graph and Step 85 Runtime Classified Failure Effects were committed together as `e2fcb4a hoàn thiện quota graph và xử lý lỗi runtime`.
+- Working tree was clean immediately after the commit.
+- Runtime classification is now deployed in code: classified rate limits, quota exhaustion, request-scoped errors, transient network failures, and RouterEngine circuit synchronization have behavior-level tests.
