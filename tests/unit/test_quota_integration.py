@@ -513,3 +513,194 @@ async def test_upstream_quota_429_attempt_status_is_quota_exhausted(monkeypatch)
     assert response.status_code == 429
     attempt = next(iter(ledger._attempts.values()))
     assert attempt.status == "QUOTA_EXHAUSTED"
+
+
+@pytest.mark.asyncio
+async def test_upstream_quota_exhaustion_updates_candidate_quota_resource(monkeypatch):
+    reservations = InMemoryQuotaReservations()
+    reservations.add_resource(QuotaResource("account:primary", "account", "requests", 5, 60))
+
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "fast-model", "quota_resource_id": "account:primary"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+    router = SmartRouter(config, quota_reservations=reservations)
+    monkeypatch.setenv("PRIMARY_TOKEN", "test-primary-token")
+
+    quota_response = AsyncMock()
+    quota_response.status_code = 429
+    quota_response.content = b'{"error":{"type":"insufficient_quota","message":"Monthly quota exhausted"}}'
+    quota_response.headers = {"X-Quota-Reset": "2026-09-01T00:00:00Z"}
+    primary_client = AsyncMock()
+    primary_client.post.return_value = quota_response
+    monkeypatch.setattr(router, "clients", {"primary": primary_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {"authorization": "Bearer test-key"}, "/v1/messages")
+
+    assert response.status_code == 429
+    observed = await router.quota_reservations.snapshot("account:primary")
+    assert observed.used == observed.limit
+    assert observed.effective_remaining == 0
+    assert observed.source == "provider_error"
+    assert observed.confidence == "inferred"
+
+
+@pytest.mark.asyncio
+async def test_upstream_quota_exhaustion_excludes_candidate_on_next_request(monkeypatch):
+    reservations = InMemoryQuotaReservations()
+    reservations.add_resource(QuotaResource("account:primary", "account", "requests", 5, 60))
+    reservations.add_resource(QuotaResource("model:fallback-model", "model", "requests", 10, 60))
+
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "fast-model", "quota_resource_id": "account:primary"}],
+                "fallback": [{"upstream": "backup", "model": "fallback-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+            "backup": {
+                "base_url": "https://backup.example",
+                "auth": {"mode": "bearer", "token_env": "BACKUP_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+    router = SmartRouter(config, quota_reservations=reservations)
+    monkeypatch.setenv("PRIMARY_TOKEN", "test-primary-token")
+    monkeypatch.setenv("BACKUP_TOKEN", "test-backup-token")
+
+    quota_response = AsyncMock()
+    quota_response.status_code = 429
+    quota_response.content = b'{"error":{"type":"insufficient_quota","message":"Monthly quota exhausted"}}'
+    quota_response.headers = {}
+    success_response = AsyncMock()
+    success_response.status_code = 200
+    success_response.content = b'{"result":"fallback"}'
+    success_response.headers = {}
+    primary_client = AsyncMock()
+    primary_client.post.return_value = quota_response
+    backup_client = AsyncMock()
+    backup_client.post.return_value = success_response
+    monkeypatch.setattr(router, "clients", {"primary": primary_client, "backup": backup_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    headers = {"authorization": "Bearer test-key"}
+    response1 = await router.handle_messages(body, headers, "/v1/messages")
+    response2 = await router.handle_messages(body, headers, "/v1/messages")
+
+    assert response1.status_code == 200
+    assert response2.status_code == 200
+    assert primary_client.post.call_count == 1
+    assert backup_client.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_upstream_rate_limit_uses_retry_after_and_uses_fallback(monkeypatch):
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "fast-model"}],
+                "fallback": [{"upstream": "backup", "model": "fallback-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+            "backup": {
+                "base_url": "https://backup.example",
+                "auth": {"mode": "bearer", "token_env": "BACKUP_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+    router = SmartRouter(config)
+    monkeypatch.setenv("PRIMARY_TOKEN", "test-primary-token")
+    monkeypatch.setenv("BACKUP_TOKEN", "test-backup-token")
+
+    rate_limit_response = AsyncMock()
+    rate_limit_response.status_code = 429
+    rate_limit_response.content = b'{"error":{"type":"rate_limit_error","message":"Too many requests"}}'
+    rate_limit_response.headers = {"Retry-After": "33"}
+    success_response = AsyncMock()
+    success_response.status_code = 200
+    success_response.content = b'{"result":"fallback"}'
+    success_response.headers = {}
+    primary_client = AsyncMock()
+    primary_client.post.return_value = rate_limit_response
+    backup_client = AsyncMock()
+    backup_client.post.return_value = success_response
+    monkeypatch.setattr(router, "clients", {"primary": primary_client, "backup": backup_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {"authorization": "Bearer test-key"}, "/v1/messages")
+
+    assert response.status_code == 200
+    primary_client.post.assert_called_once()
+    backup_client.post.assert_called_once()
+    remaining = router.circuits["primary:fast-model"].cooldown_until - asyncio.get_running_loop().time()
+    assert remaining > 25
+    assert router.circuits["primary:fast-model"].last_kind == "RATE_LIMIT"
+
+
+@pytest.mark.asyncio
+async def test_request_scoped_error_does_not_use_fallback(monkeypatch):
+    config = {
+        "routes": {
+            "chat": {
+                "strategy": "priority",
+                "candidates": [{"upstream": "primary", "model": "fast-model"}],
+                "fallback": [{"upstream": "backup", "model": "fallback-model"}],
+            }
+        },
+        "upstreams": {
+            "primary": {
+                "base_url": "https://primary.example",
+                "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"},
+            },
+            "backup": {
+                "base_url": "https://backup.example",
+                "auth": {"mode": "bearer", "token_env": "BACKUP_TOKEN"},
+            },
+        },
+        "logging": {"level": "CRITICAL"},
+    }
+    router = SmartRouter(config)
+    monkeypatch.setenv("PRIMARY_TOKEN", "test-primary-token")
+    monkeypatch.setenv("BACKUP_TOKEN", "test-backup-token")
+
+    invalid_response = AsyncMock()
+    invalid_response.status_code = 400
+    invalid_response.content = b'{"error":{"message":"bad schema"}}'
+    invalid_response.headers = {}
+    primary_client = AsyncMock()
+    primary_client.post.return_value = invalid_response
+    backup_client = AsyncMock()
+    monkeypatch.setattr(router, "clients", {"primary": primary_client, "backup": backup_client})
+
+    body = {"model": "chat", "messages": [{"role": "user", "content": "hello"}]}
+    response = await router.handle_messages(body, {"authorization": "Bearer test-key"}, "/v1/messages")
+
+    assert response.status_code == 400
+    backup_client.post.assert_not_called()
+    assert "primary:fast-model" not in router.circuits

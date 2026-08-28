@@ -1893,3 +1893,39 @@ Verification:
 - Added runtime regression tests for 503 -> `TRANSIENT_NETWORK` and 429 `insufficient_quota` -> `QUOTA_EXHAUSTED` attempt statuses.
 - Focused runtime classifier tests: `3 passed`.
 - Full regression: `215 passed, 6 skipped`.
+
+## Step 84 — M3 Quota Graph hoàn tất (2026-08-28)
+
+Implemented:
+- Added `QuotaResource.parent_id` so quota resources can model parent/child constraint chains.
+- Added `apps/gateway/quota/store.py` with the async `QuotaStore` contract and `InMemoryQuotaStore` implementation.
+- Added `apps/gateway/quota/graph.py` to load quota resources, build parent/group indexes, compute effective remaining capacity, and perform non-mutating graph admission checks.
+- Updated Redis quota backend Lua paths (`check_many`, `reserve_many`, `reconcile`, `release`) for shared-group and parent-chain semantics with safe key ID validation.
+- Updated `RouterEngine` to build a quota graph for candidate admission, filter parent-chain exhausted candidates, deduplicate shared-group constraints, and rank near-limit candidates after healthier peers.
+- Added `tests/unit/test_quota_store.py` and `tests/unit/test_router_engine_quota_graph.py` for parent-chain, shared-group, effective remaining, and RouterEngine integration coverage.
+
+Verification:
+- Ran targeted compile and quota/router regression suite through the project virtualenv.
+- Targeted result: `89 passed, 6 skipped`.
+
+Outcome:
+- Tasks #30 through #34 are complete.
+- M3 Quota Graph now has in-memory, Redis, and RouterEngine coverage for parent-chain and shared-group quota admission semantics.
+
+## Step 85 — Runtime classified failure effects policy (2026-08-27)
+
+Implemented:
+- Extended `CircuitState` in `router.py` with `last_kind`, `last_scope`, `retry_after`, and `reset_at`.
+- Implemented `_failure_runtime_decision()` to map classification metadata and `has_next` into explicit runtime directives (`try_next`, `record_circuit`, `cooldown_seconds`, `quota_observation`, `reservation_finalization`).
+- Decoupled provider-level `retryable` metadata from router-level candidate failover eligibility (`try_next`), ensuring provider non-retryable errors like `QUOTA_EXHAUSTED` and `AUTH_EXPIRED` still fail over to alternative candidates when available.
+- Request-scoped errors (`INVALID_REQUEST`, `CONTENT_POLICY`, `CONTEXT_TOO_LARGE`) bypass circuit breaker recording, avoid health penalties, release quota reservations, and do not trigger candidate failover.
+- Provider-agnostic backoff and bounded `Retry-After` / `reset_at` header parsing for rate limits, overload, and transient failures, eliminating legacy hardcoded `aibox` vs non-`aibox` cooldown logic.
+- Implemented `_apply_quota_exhaustion_observation()` to convert provider `QUOTA_EXHAUSTED` into runtime `QuotaObservation` on candidate request-metric quota resources when present.
+- Synchronized circuit breaker tripping to `router_engine.circuit_repository` when `USE_ROUTER_ENGINE=true`.
+- Added `_finalize_error_reservation()` to release reservations for request-scoped errors (`consumption_uncertainty == "none"`) and minimal reconcile (`1` token) for uncertain upstream failures.
+- Synthesized stream-open transport failures as `TRANSIENT_NETWORK` without double-recording circuit failures in `_open_stream()`.
+- Updated HTTP 408 response classification in `error_classifier.py` as `TRANSIENT_NETWORK` (`retryable=True`, `scope="connection"`).
+
+Verification:
+- Added comprehensive unit and integration tests across `tests/test_router.py`, `tests/unit/test_error_classifier.py`, `tests/unit/test_quota_integration.py`, and `tests/unit/test_router_engine.py`.
+- Verified HTTP 408 transient network classification, provider-agnostic rate limit and overload cooldowns, circuit breaker exclusion for request-scoped errors, candidate quota exhaustion propagation, and dual circuit tripping in RouterEngine.

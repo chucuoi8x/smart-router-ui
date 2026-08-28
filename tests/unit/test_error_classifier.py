@@ -54,3 +54,11 @@ def test_content_policy_and_auth_revoked_are_separate_403s():
     assert policy["scope"] == "request/provider"
     assert auth["kind"] == "AUTH_REVOKED"
     assert auth["scope"] == "credential"
+
+
+def test_408_is_transient_network_retryable():
+    result = classify_provider_error(status_code=408, body={"error": {"message": "request timeout"}})
+
+    assert result["kind"] == "TRANSIENT_NETWORK"
+    assert result["retryable"] is True
+    assert result["scope"] == "connection"

@@ -148,6 +148,16 @@ def classify_provider_error(
             headers=headers,
         )
 
+    if status_code == 408:
+        return _result(
+            "TRANSIENT_NETWORK",
+            retryable=True,
+            scope="connection",
+            status_code=status_code,
+            body=body,
+            headers=headers,
+        )
+
     if status_code == 529 or "overloaded" in combined:
         return _result(
             "OVERLOADED",

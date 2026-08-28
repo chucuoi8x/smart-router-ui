@@ -162,9 +162,20 @@ class TestQuotaFactoryWiring:
     def test_redis_quotas_class_importable(self):
         """RedisQuotaReservations should be importable when redis package exists."""
         try:
-            from apps.gateway.quota.redis_backend import RedisQuotaReservations  # noqa: F401
+            from apps.gateway.quota.redis_backend import RedisQuotaReservations, RedisQuotaStore  # noqa: F401
         except ImportError:
             pytest.skip("redis package not installed")
+
+    def test_redis_store_validates_ids_before_key_creation(self):
+        try:
+            from apps.gateway.quota.redis_backend import RedisQuotaStore
+        except ImportError:
+            pytest.skip("redis package not installed")
+
+        with pytest.raises(ValueError, match="invalid resource_id"):
+            RedisQuotaStore._validate_resource_id("bad id with spaces")
+        with pytest.raises(ValueError, match="invalid reservation_id"):
+            RedisQuotaStore._validate_reservation_id("../escape")
 
 
 # ---------------------------------------------------------------------------
@@ -235,9 +246,9 @@ class TestRedisQuotaLive:
         batch = await self.rr.reserve_many(
             reservation_id="live-b1", requests=reqs
         )
-        assert batch.all_succeeded
-        assert len(batch.results) == 1
-        assert batch.results[0].success is True
+        assert batch.accepted is True
+        assert len(batch.requests) == 1
+        assert batch.remaining_by_resource["live:r2"] == 45
 
     async def test_reserve_many_all_or_nothing_exhaustion(self):
         await self.rr.add_resource(
@@ -251,8 +262,8 @@ class TestRedisQuotaLive:
         batch = await self.rr.reserve_many(
             reservation_id="live-b2", requests=reqs
         )
-        # Should reject ALL since one request would exceed
-        assert not batch.all_succeeded
+        # Should reject ALL since the aggregate would exceed the resource limit.
+        assert batch.accepted is False
 
     async def test_reconcile_frees_remaining_capacity(self):
         await self.rr.add_resource(
@@ -264,7 +275,8 @@ class TestRedisQuotaLive:
         )
         # Consume actual usage of 3
         result = await self.rr.reconcile("live-b3", {"live:r4": 3})
-        assert result.status == "finalised"
+        assert result.reserved_by_resource == {"live:r4": 8}
+        assert result.released_by_resource == {"live:r4": 5}
         # Remaining capacity: 10 - 3 = 7
         snap = await self.rr.snapshot("live:r4")
         assert snap.remaining == 7

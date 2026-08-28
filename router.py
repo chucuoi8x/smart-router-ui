@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -112,6 +113,22 @@ class CircuitState:
     last_status: int | None = None
     last_error: str | None = None
     last_event: str | None = None
+    last_kind: str | None = None
+    last_scope: str | None = None
+    retry_after: str | None = None
+    reset_at: str | None = None
+
+
+@dataclass(frozen=True)
+class FailureRuntimeDecision:
+    kind: str
+    scope: str | None
+    record_circuit: bool
+    record_scoring_failure: bool
+    cooldown_seconds: float | None
+    try_next: bool
+    quota_observation: bool
+    reservation_finalization: str
 
 
 @dataclass
@@ -375,7 +392,10 @@ class SmartRouter:
 
     async def _candidate_order(self, route_name: str) -> list[Candidate]:
         if self.router_engine is not None:
-            resource_candidates = self.router_engine.select_candidates(route_name)
+            if getattr(self.router_engine, "quota_reservations", None) is not None:
+                resource_candidates = await self.router_engine.select_candidates_async(route_name)
+            else:
+                resource_candidates = self.router_engine.select_candidates(route_name)
             return self._convert_resource_candidates(resource_candidates)
         async with self.state_lock:
             route = self.routes.get(route_name)
@@ -803,6 +823,9 @@ class SmartRouter:
         return parsed if isinstance(parsed, dict) else None
 
     async def _classify_provider_response(self, candidate: Candidate, response: Any) -> dict[str, Any]:
+        preset = getattr(response, "_smart_router_classification", None)
+        if isinstance(preset, dict):
+            return preset
         body = await self._response_json_or_none(response)
         status_code = getattr(response, "status_code", None)
         headers = getattr(response, "headers", None)
@@ -1168,7 +1191,8 @@ class SmartRouter:
         request_id: str | None = None,
     ) -> Response:
         last_failure: str | None = None
-        for candidate in candidates:
+        for index, candidate in enumerate(candidates):
+            has_next = index < len(candidates) - 1
             attempt_id = uuid.uuid4().hex
             request_body = dict(body)
             request_body["model"] = candidate.model
@@ -1182,29 +1206,49 @@ class SmartRouter:
                 if self._score_calculator:
                     self._latency_tracker.record(candidate.key, elapsed_ms)
                 last_failure = _safe_error(exc)
-                await self._record_failure(candidate, None, last_failure)
+                classification = {
+                    "kind": "TRANSIENT_NETWORK",
+                    "retryable": True,
+                    "scope": "connection",
+                    "retry_after": None,
+                    "reset_at": None,
+                    "consumption_uncertainty": "none",
+                    "status_code": None,
+                }
+                decision = self._failure_runtime_decision(None, classification, has_next=has_next)
+                await self._record_failure(candidate, None, last_failure, classification, decision)
                 await self._record_usage_attempt(
                     request_id=request_id,
                     attempt_id=attempt_id,
                     candidate=candidate,
-                    status="failed",
+                    status="TRANSIENT_NETWORK",
                 )
-                continue
+                if decision.try_next:
+                    continue
+                break
             if response.status_code >= 400:
                 classification = await self._classify_provider_response(candidate, response)
                 attempt_status = str(classification.get("kind") or "UNKNOWN")
+                quota_observed = False
+                if attempt_status == "QUOTA_EXHAUSTED":
+                    quota_observed = await self._apply_quota_exhaustion_observation(candidate, classification)
+                decision = self._failure_runtime_decision(
+                    response.status_code,
+                    classification,
+                    has_next=has_next,
+                    quota_observed=quota_observed,
+                )
                 last_failure = f"upstream returned {response.status_code} ({attempt_status})"
-                await self._record_failure(candidate, response.status_code, last_failure)
+                await self._record_failure(candidate, response.status_code, last_failure, classification, decision)
                 await self._record_usage_attempt(
                     request_id=request_id,
                     attempt_id=attempt_id,
                     candidate=candidate,
                     status=attempt_status,
                 )
-                if response.status_code in FAILOVER_STATUSES and classification.get("retryable", True):
+                if decision.try_next:
                     continue
-                if reservation_id is not None and resource_id is not None:
-                    await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                await self._finalize_error_reservation(reservation_id, resource_id, classification, decision)
                 return Response(
                     content=response.content,
                     status_code=response.status_code,
@@ -1271,7 +1315,8 @@ class SmartRouter:
         request_id: str | None = None,
     ) -> Response:
         last_failure: str | None = None
-        for candidate in candidates:
+        for index, candidate in enumerate(candidates):
+            has_next = index < len(candidates) - 1
             attempt_id = uuid.uuid4().hex
             request_body = dict(body)
             request_body["model"] = candidate.model
@@ -1284,20 +1329,28 @@ class SmartRouter:
                 if opened.status_code >= 400:
                     classification = await self._classify_provider_response(candidate, opened)
                     attempt_status = str(classification.get("kind") or "UNKNOWN")
+                    quota_observed = False
+                    if attempt_status == "QUOTA_EXHAUSTED":
+                        quota_observed = await self._apply_quota_exhaustion_observation(candidate, classification)
+                    decision = self._failure_runtime_decision(
+                        opened.status_code,
+                        classification,
+                        has_next=has_next,
+                        quota_observed=quota_observed,
+                    )
                     last_failure = f"upstream returned {opened.status_code} ({attempt_status})"
-                    await self._record_failure(candidate, opened.status_code, last_failure)
+                    await self._record_failure(candidate, opened.status_code, last_failure, classification, decision)
                     await self._record_usage_attempt(
                         request_id=request_id,
                         attempt_id=attempt_id,
                         candidate=candidate,
                         status=attempt_status,
                     )
-                    if opened.status_code in FAILOVER_STATUSES and classification.get("retryable", True):
+                    if decision.try_next:
                         continue
                     # Non-retryable error Response (e.g. invalid request);
                     # no stream was opened, so we cannot know actual token usage.
-                    if reservation_id is not None and resource_id is not None:
-                        await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                    await self._finalize_error_reservation(reservation_id, resource_id, classification, decision)
                     return opened
             stream = opened
             response_headers = _response_headers(stream.response.headers)
@@ -1388,9 +1441,18 @@ class SmartRouter:
             client = self.clients[candidate.upstream]
             context_manager = client.stream("POST", self._url(candidate.upstream, path), headers=headers, json=body)
             response = await context_manager.__aenter__()
-        except (httpx.RequestError, RouterConfigurationError) as exc:
-            await self._record_failure(candidate, None, _safe_error(exc))
-            return JSONResponse(status_code=503, content={"error": {"type": "upstream_unavailable", "message": "connection failed"}})
+        except (httpx.RequestError, RouterConfigurationError):
+            response = JSONResponse(status_code=503, content={"error": {"type": "upstream_unavailable", "message": "connection failed"}})
+            response._smart_router_classification = {
+                "kind": "TRANSIENT_NETWORK",
+                "retryable": True,
+                "scope": "connection",
+                "retry_after": None,
+                "reset_at": None,
+                "consumption_uncertainty": "none",
+                "status_code": None,
+            }
+            return response
 
         if response.status_code >= 400:
             content = await response.aread()
@@ -1402,11 +1464,206 @@ class SmartRouter:
             first = await anext(iterator)
         except StopAsyncIteration:
             first = b""
-        except httpx.RequestError as exc:
+        except httpx.RequestError:
             await context_manager.__aexit__(None, None, None)
-            await self._record_failure(candidate, None, _safe_error(exc))
-            return JSONResponse(status_code=503, content={"error": {"type": "upstream_unavailable", "message": "stream failed before output"}})
+            response = JSONResponse(status_code=503, content={"error": {"type": "upstream_unavailable", "message": "stream failed before output"}})
+            response._smart_router_classification = {
+                "kind": "TRANSIENT_NETWORK",
+                "retryable": True,
+                "scope": "connection",
+                "retry_after": None,
+                "reset_at": None,
+                "consumption_uncertainty": "none",
+                "status_code": None,
+            }
+            return response
         return OpenStream(context_manager, response, iterator, first, candidate)
+
+    def _classification_kind(self, classification: dict[str, Any] | None, status: int | None) -> str:
+        if classification and classification.get("kind"):
+            return str(classification["kind"])
+        if status in FAILOVER_STATUSES or (status is not None and status >= 500):
+            return "TRANSIENT_NETWORK"
+        return "UNKNOWN"
+
+    def _parse_retry_delay_seconds(self, retry_after: Any, reset_at: Any, *, max_seconds: float = 86_400.0) -> float | None:
+        def _bounded(value: float | None) -> float | None:
+            if value is None or value < 0:
+                return None
+            return min(value, max_seconds)
+
+        if retry_after:
+            retry_text = str(retry_after).strip()
+            try:
+                return _bounded(float(retry_text))
+            except ValueError:
+                try:
+                    dt = parsedate_to_datetime(retry_text)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return _bounded((dt - datetime.now(timezone.utc)).total_seconds())
+                except Exception:
+                    pass
+
+        if reset_at:
+            reset_text = str(reset_at).strip()
+            try:
+                numeric = float(reset_text)
+                if numeric > 1_000_000_000:
+                    return _bounded(numeric - datetime.now(timezone.utc).timestamp())
+                return _bounded(numeric)
+            except ValueError:
+                try:
+                    iso_text = reset_text.replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(iso_text)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return _bounded((dt - datetime.now(timezone.utc)).total_seconds())
+                except Exception:
+                    return None
+        return None
+
+    def _default_cooldown_seconds(self, kind: str, consecutive_failures: int) -> float | None:
+        attempts = max(0, consecutive_failures - 1)
+        if kind == "RATE_LIMIT":
+            return min(120.0, 15.0 * (2 ** attempts))
+        if kind in {"OVERLOADED", "TRANSIENT_NETWORK"}:
+            return min(120.0, 15.0 * (2 ** attempts))
+        if kind in {"QUOTA_EXHAUSTED", "AUTH_EXPIRED", "AUTH_REVOKED", "MODEL_NOT_FOUND"}:
+            return 3_600.0
+        if kind == "UNKNOWN":
+            return min(120.0, 15.0 * (2 ** attempts))
+        return None
+
+    def _failure_runtime_decision(
+        self,
+        status: int | None,
+        classification: dict[str, Any] | None,
+        *,
+        has_next: bool,
+        consecutive_failures: int = 1,
+        quota_observed: bool = False,
+    ) -> FailureRuntimeDecision:
+        kind = self._classification_kind(classification, status)
+        scope = str(classification.get("scope")) if classification and classification.get("scope") else None
+        retry_after = classification.get("retry_after") if classification else None
+        reset_at = classification.get("reset_at") if classification else None
+        parsed_delay = self._parse_retry_delay_seconds(retry_after, reset_at)
+
+        request_scoped = {"INVALID_REQUEST", "CONTENT_POLICY", "CONTEXT_TOO_LARGE"}
+        suppression = {"QUOTA_EXHAUSTED", "AUTH_EXPIRED", "AUTH_REVOKED", "MODEL_NOT_FOUND"}
+        transient = {"RATE_LIMIT", "OVERLOADED", "TRANSIENT_NETWORK"}
+
+        if kind in request_scoped:
+            return FailureRuntimeDecision(kind, scope, False, False, None, False, False, "release")
+
+        if kind == "QUOTA_EXHAUSTED":
+            cooldown = None if quota_observed else (parsed_delay or self._default_cooldown_seconds(kind, consecutive_failures))
+            return FailureRuntimeDecision(kind, scope, True, False, cooldown, has_next, not quota_observed, "reconcile_minimal")
+
+        if kind in {"AUTH_EXPIRED", "AUTH_REVOKED", "MODEL_NOT_FOUND"}:
+            return FailureRuntimeDecision(
+                kind,
+                scope,
+                True,
+                False,
+                parsed_delay or self._default_cooldown_seconds(kind, consecutive_failures),
+                has_next,
+                False,
+                "reconcile_minimal",
+            )
+
+        if kind in transient:
+            return FailureRuntimeDecision(
+                kind,
+                scope,
+                True,
+                True,
+                parsed_delay or self._default_cooldown_seconds(kind, consecutive_failures),
+                has_next,
+                False,
+                "reconcile_minimal",
+            )
+
+        compatible_transient = status in FAILOVER_STATUSES or (status is not None and status >= 500)
+        return FailureRuntimeDecision(
+            kind,
+            scope,
+            compatible_transient,
+            compatible_transient,
+            self._default_cooldown_seconds("UNKNOWN", consecutive_failures) if compatible_transient else None,
+            bool(has_next and compatible_transient),
+            False,
+            "reconcile_minimal" if compatible_transient else "release",
+        )
+
+    async def _apply_quota_exhaustion_observation(self, candidate: Candidate, classification: dict[str, Any] | None) -> bool:
+        if self.quota_reservations is None:
+            return False
+        try:
+            from apps.gateway.quota.reservations import QuotaObservation
+        except Exception:
+            return False
+
+        observed = False
+        seen: set[str] = set()
+        for resource_id in self._candidate_quota_resource_ids(candidate):
+            if resource_id in seen:
+                continue
+            seen.add(resource_id)
+            try:
+                resource = await self.quota_reservations.snapshot(resource_id)
+                if resource.metric != "requests":
+                    continue
+                observation = QuotaObservation(
+                    resource_id=resource.resource_id,
+                    limit=resource.limit,
+                    used=resource.limit,
+                    source="provider_error",
+                    confidence="inferred",
+                    safety_buffer=resource.safety_buffer,
+                    hard_limit=True,
+                )
+                await self.quota_reservations.apply_observation(observation)
+                observed = True
+            except (KeyError, ValueError, TypeError):
+                continue
+            except Exception:
+                self.logger.warning(
+                    "quota observation skipped for upstream=%s model=%s",
+                    candidate.upstream,
+                    candidate.model,
+                    exc_info=True,
+                )
+        return observed
+
+    def _trip_router_engine_circuit(self, candidate: Candidate, cooldown_seconds: float | None) -> None:
+        if self.router_engine is None or cooldown_seconds is None or cooldown_seconds <= 0:
+            return
+        try:
+            from apps.gateway.routing.models import ResourceRef
+
+            ref = ResourceRef(candidate.upstream, candidate.upstream, candidate.model)
+            self.router_engine.circuit_repository.trip(ref, cooldown_seconds)
+        except Exception:
+            self.logger.debug("router engine circuit update skipped for candidate %s", candidate.key, exc_info=True)
+
+    async def _finalize_error_reservation(
+        self,
+        reservation_id: str | None,
+        resource_id: str | None,
+        classification: dict[str, Any] | None,
+        decision: FailureRuntimeDecision,
+    ) -> None:
+        if reservation_id is None or resource_id is None:
+            return
+        try:
+            if decision.reservation_finalization == "release" or (classification or {}).get("consumption_uncertainty") == "none":
+                await self.quota_reservations.release(reservation_id)
+            else:
+                await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+        except Exception:
+            self.logger.warning("quota reservation finalization skipped", exc_info=True)
 
     async def _record_success(self, candidate: Candidate, status: int | None) -> None:
         async with self.state_lock:
@@ -1416,40 +1673,61 @@ class SmartRouter:
             state.last_status = status
             state.last_error = None
             state.last_event = _now()
+            state.last_kind = None
+            state.last_scope = None
+            state.retry_after = None
+            state.reset_at = None
         self.logger.info("upstream=%s model=%s status=%s failover=false", candidate.upstream, candidate.model, status)
         # Record for smart scoring (non-blocking)
         if self._score_calculator is not None:
             self._score_calculator.record_success(candidate.key)
 
-    async def _record_failure(self, candidate: Candidate, status: int | None, error: str) -> None:
-        if status in NON_RETRYABLE_CLIENT_STATUSES:
+    async def _record_failure(
+        self,
+        candidate: Candidate,
+        status: int | None,
+        error: str,
+        classification: dict[str, Any] | None = None,
+        decision: FailureRuntimeDecision | None = None,
+    ) -> None:
+        if classification is None:
+            from apps.gateway.providers.error_classifier import classify_provider_error
+
+            classification = classify_provider_error(status_code=status)
+        decision = decision or self._failure_runtime_decision(status, classification, has_next=True)
+        if not decision.record_circuit:
             return
+
         async with self.state_lock:
             state = self.circuits.setdefault(candidate.key, CircuitState())
-            state.consecutive_failures += 1
+            if decision.record_scoring_failure:
+                state.consecutive_failures += 1
+            else:
+                state.consecutive_failures = max(state.consecutive_failures, 1)
             state.last_status = status
             state.last_error = error[:240]
             state.last_event = _now()
-            if candidate.upstream == "aibox":
-                if status == 429:
-                    cooldown = 300
-                else:
-                    cooldown = min(120, 30 * (2 ** max(0, state.consecutive_failures - 1)))
+            state.last_kind = decision.kind
+            state.last_scope = decision.scope
+            state.retry_after = str(classification.get("retry_after")) if classification.get("retry_after") is not None else None
+            state.reset_at = str(classification.get("reset_at")) if classification.get("reset_at") is not None else None
+            cooldown = decision.cooldown_seconds
+            if cooldown is not None and cooldown > 0:
+                state.cooldown_until = time.monotonic() + cooldown
             else:
-                if status == 429:
-                    cooldown = 120
-                else:
-                    cooldown = min(120, 15 * (2 ** max(0, state.consecutive_failures - 1)))
-            state.cooldown_until = time.monotonic() + cooldown
+                state.cooldown_until = max(state.cooldown_until, 0.0)
+        self._trip_router_engine_circuit(candidate, cooldown)
         self.logger.warning(
-            "upstream=%s model=%s status=%s cooldown=%ss failover=true",
+            "upstream=%s model=%s status=%s kind=%s cooldown=%ss failover=%s",
             candidate.upstream,
             candidate.model,
             status,
-            cooldown,
+            decision.kind,
+            cooldown or 0,
+            decision.try_next,
         )
         # Record for smart scoring (non-blocking)
-        if self._score_calculator is not None:
+        if decision.record_scoring_failure and self._score_calculator is not None:
             self._score_calculator.record_failure(candidate.key)
 
     def status_payload(self) -> dict[str, Any]:
@@ -1473,6 +1751,10 @@ class SmartRouter:
                         "last_status": state.last_status,
                         "last_error": state.last_error,
                         "last_event": state.last_event,
+                        "last_kind": state.last_kind,
+                        "last_scope": state.last_scope,
+                        "retry_after": state.retry_after,
+                        "reset_at": state.reset_at,
                     }
                 )
         return {"routes": routes, "catalog_last_successful_sync": self.catalog.get("last_successful_sync")}

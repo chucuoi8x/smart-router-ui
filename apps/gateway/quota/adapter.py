@@ -69,6 +69,12 @@ class AsyncQuotaFacade:
     async def release(self, reservation_id: str) -> bool:
         return self._backend.release(reservation_id)
 
+    async def list_resources(self) -> list[QuotaResource]:
+        if hasattr(self._backend, "list_resources"):
+            return self._backend.list_resources()
+        resources = getattr(self._backend, "_resources", {})
+        return list(resources.values())
+
     @classmethod
     async def from_repository(cls, repository: Any) -> "AsyncQuotaFacade":  # type: ignore[name-defined]
         from .reservations import InMemoryQuotaReservations

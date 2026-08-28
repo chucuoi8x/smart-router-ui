@@ -419,6 +419,69 @@ routes:
 
         self.assertEqual([candidate.resource_ref], [selected.resource_ref for selected in engine.select_candidates("chat")])
 
+    def test_router_engine_ranks_near_limit_candidate_after_healthier_peer(self):
+        from apps.gateway.config.snapshot import RouteConfig, RuntimeConfigSnapshot
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+        from apps.gateway.routing.engine import RouterEngine
+        from apps.gateway.routing.models import ResourceCandidate, ResourceRef
+
+        nearly_exhausted = ResourceCandidate(
+            ResourceRef("primary", "primary", "near-limit"),
+            driver_id="anthropic-compatible",
+        )
+        healthy = ResourceCandidate(
+            ResourceRef("secondary", "secondary", "healthy"),
+            driver_id="anthropic-compatible",
+        )
+        snapshot = RuntimeConfigSnapshot(
+            routes={
+                "chat": RouteConfig(
+                    route_name="chat",
+                    strategy="priority",
+                    candidates=[nearly_exhausted, healthy],
+                )
+            }
+        )
+        quota = InMemoryQuotaReservations()
+        quota.add_resource(QuotaResource("model:near-limit", "model", "requests", 10, 60, used=9))
+        quota.add_resource(QuotaResource("model:healthy", "model", "requests", 10, 60, used=1))
+
+        engine = RouterEngine(snapshot, quota_reservations=quota)
+        candidates = engine.select_candidates("chat")
+
+        self.assertEqual([healthy.resource_ref, nearly_exhausted.resource_ref], [candidate.resource_ref for candidate in candidates])
+
+    def test_smart_router_engine_mode_uses_async_quota_filter_without_nested_loop_error(self):
+        import asyncio
+        import os
+        from unittest.mock import patch
+
+        from apps.gateway.quota.reservations import InMemoryQuotaReservations, QuotaResource
+        from router import SmartRouter
+
+        config = {
+            "routes": {
+                "chat": {
+                    "strategy": "priority",
+                    "candidates": [{"upstream": "primary", "model": "blocked"}],
+                    "fallback": [{"upstream": "backup", "model": "fallback"}],
+                }
+            },
+            "upstreams": {
+                "primary": {"base_url": "https://primary", "auth": {"mode": "bearer", "token_env": "PRIMARY_TOKEN"}},
+                "backup": {"base_url": "https://backup", "auth": {"mode": "bearer", "token_env": "BACKUP_TOKEN"}},
+            },
+            "logging": {"level": "CRITICAL"},
+        }
+        quota = InMemoryQuotaReservations()
+        quota.add_resource(QuotaResource("model:blocked", "model", "requests", 0, 60))
+        quota.add_resource(QuotaResource("model:fallback", "model", "requests", 10, 60))
+
+        with patch.dict(os.environ, {"USE_ROUTER_ENGINE": "true"}):
+            router = SmartRouter(config, quota_reservations=quota)
+            candidates = asyncio.run(router._candidate_order("chat"))
+
+        self.assertEqual(["backup:fallback"], [candidate.key for candidate in candidates])
 
     def test_smart_router_uses_router_engine_when_enabled(self):
         import asyncio
@@ -468,6 +531,43 @@ routes:
 
         # Clean up env var
         os.environ.pop('USE_ROUTER_ENGINE', None)
+
+    def test_smart_router_record_failure_trips_router_engine_circuit(self):
+        import asyncio
+        import os
+        from router import Candidate, SmartRouter
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {'USE_ROUTER_ENGINE': 'true'}):
+            config = {
+                'routes': {
+                    'test-route': {
+                        'strategy': 'priority',
+                        'candidates': [
+                            {'upstream': 'primary', 'model': 'model-a'},
+                            {'upstream': 'secondary', 'model': 'model-b'},
+                        ],
+                    }
+                },
+                'upstreams': {
+                    'primary': {'base_url': 'https://primary', 'auth': {'mode': 'bearer', 'token_env': 'PRIMARY_TOKEN'}},
+                    'secondary': {'base_url': 'https://secondary', 'auth': {'mode': 'bearer', 'token_env': 'SECONDARY_TOKEN'}},
+                },
+                'logging': {'level': 'CRITICAL'},
+            }
+            router = SmartRouter(config)
+            classification = {
+                'kind': 'RATE_LIMIT',
+                'scope': 'credential/model/connection',
+                'retry_after': '60',
+                'reset_at': None,
+                'consumption_uncertainty': 'unknown',
+            }
+
+            asyncio.run(router._record_failure(Candidate('primary', 'model-a'), 429, 'rate limited', classification))
+            candidates = router.router_engine.select_candidates('test-route')
+
+            self.assertEqual(['secondary'], [c.resource_ref.provider_connection_id for c in candidates])
 
 if __name__ == '__main__':
     unittest.main()

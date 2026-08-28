@@ -11,19 +11,25 @@ from .reservations import (
     ReservationResult,
     ReconciliationResult,
 )
+from .store import QuotaStore, InMemoryQuotaStore
+from .graph import QuotaGraph
 
 try:
-    from .redis_backend import RedisQuotaReservations  # noqa: F401
+    from .redis_backend import RedisQuotaReservations, RedisQuotaStore  # noqa: F401
 
     __all__ = [
         "InMemoryQuotaReservations",
+        "InMemoryQuotaStore",
         "QuotaAdmissionResult",
+        "QuotaGraph",
         "QuotaObservation",
         "QuotaReservationRequest",
         "QuotaResource",
         "QuotaResourceRepository",
+        "QuotaStore",
         "QuotaReservations",
         "RedisQuotaReservations",
+        "RedisQuotaStore",
         "ReservationBatchResult",
         "ReservationResult",
         "ReconciliationResult",
@@ -31,11 +37,14 @@ try:
 except ImportError:
     __all__ = [
         "InMemoryQuotaReservations",
+        "InMemoryQuotaStore",
         "QuotaAdmissionResult",
+        "QuotaGraph",
         "QuotaObservation",
         "QuotaReservationRequest",
         "QuotaResource",
         "QuotaResourceRepository",
+        "QuotaStore",
         "ReservationBatchResult",
         "ReservationResult",
         "ReconciliationResult",

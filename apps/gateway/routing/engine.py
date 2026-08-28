@@ -47,6 +47,35 @@ class RouterEngine:
             from apps.gateway.routing.scoring import SmartScoreCalculator
             self._score_calculator = SmartScoreCalculator(config=scoring_config)
 
+    def _run_coro_sync(self, coro: Any) -> Any:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+        result: list[Any] = []
+        error: list[BaseException] = []
+
+        def runner():
+            loop = asyncio.new_event_loop()
+            try:
+                result.append(loop.run_until_complete(coro))
+            except BaseException as exc:
+                error.append(exc)
+            finally:
+                loop.close()
+
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+        thread.join(timeout=10)
+        if error:
+            raise error[0]
+        return result[0] if result else None
+
     def _quota_snap(self, resource_id: str) -> Any:
         """Sync-friendly snapshot that works with both sync and async backends.
 
@@ -56,37 +85,7 @@ class RouterEngine:
         """
         snap = self.quota_reservations.snapshot  # type: ignore[union-attr]
         if asyncio.iscoroutinefunction(snap):
-            try:
-                _loop = asyncio.get_running_loop()
-            except RuntimeError:
-                _loop = None
-            if _loop is not None:
-                # Nested-loop-safe executor: run an inner fresh loop in a thread
-                _result: list[Any] = []
-                _error: list[BaseException] = []
-
-                def _runner():
-                    _inner = asyncio.new_event_loop()
-                    try:
-                        coro = snap(resource_id)
-                        _result.append(_inner.run_until_complete(coro))
-                    except BaseException as exc:
-                        _error.append(exc)
-                    finally:
-                        _inner.close()
-
-                t = threading.Thread(target=_runner, daemon=True)
-                t.start()
-                t.join(timeout=10)
-                if _error:
-                    raise _error[0]
-                return _result[0] if _result else None
-            # No running loop — just create one for this call
-            _fresh = asyncio.new_event_loop()
-            try:
-                return _fresh.run_until_complete(snap(resource_id))
-            finally:
-                _fresh.close()
+            return self._run_coro_sync(snap(resource_id))
         return snap(resource_id)
 
     def select_candidates(self, route_name: str) -> List[ResourceCandidate]:
@@ -94,16 +93,28 @@ class RouterEngine:
         if route is None:
             return []
 
-        # Filter available primary candidates
         primary = [c for c in route.candidates if self.circuit_repository.is_available(c.resource_ref)]
-
-        # Filter available fallback candidates
         fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
 
         scored_primary = self._quota_rank_sync(primary)
         scored_fallback = self._quota_rank_sync(fallback)
-        combined = list(self._apply_smart_scoring(scored_primary, route_name)) + list(self._apply_smart_scoring(scored_fallback, route_name))
-        return combined
+        return list(self._apply_smart_scoring(scored_primary, route_name)) + list(
+            self._apply_smart_scoring(scored_fallback, route_name)
+        )
+
+    async def select_candidates_async(self, route_name: str) -> List[ResourceCandidate]:
+        route = self.snapshot.routes.get(route_name)
+        if route is None:
+            return []
+
+        primary = [c for c in route.candidates if self.circuit_repository.is_available(c.resource_ref)]
+        fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
+
+        scored_primary = await self._quota_rank(primary)
+        scored_fallback = await self._quota_rank(fallback)
+        return list(self._apply_smart_scoring(scored_primary, route_name)) + list(
+            self._apply_smart_scoring(scored_fallback, route_name)
+        )
 
     def resolve_route(self, route_name: str) -> List[ResourceCandidate]:
         """Return candidates matching criteria (even fallbacks).
@@ -124,52 +135,66 @@ class RouterEngine:
             fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
             return list(self._apply_smart_scoring(primary, route_name)) + list(self._apply_smart_scoring(fallback, route_name))
 
-        # Running loop detected — create a fresh one for this task
-        fresh_loop = asyncio.new_event_loop()
-        try:
-            return fresh_loop.run_until_complete(self.select_candidates(route_name))  # type: ignore[return-value]
-        finally:
-            fresh_loop.close()
+        return self._run_coro_sync(self.select_candidates_async(route_name))
 
     def _quota_rank_sync(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
         """Sync entry-point that delegates to async ``_quota_rank`` via a short-lived loop."""
         if self.quota_reservations is None:
             return candidates
-        import asyncio
-        fresh_loop = asyncio.new_event_loop()
-        try:
-            ranked = fresh_loop.run_until_complete(self._quota_rank(candidates))
-            return list(ranked)
-        finally:
-            fresh_loop.close()
+        return list(self._run_coro_sync(self._quota_rank(candidates)))
 
     async def _quota_rank(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
         if self.quota_reservations is None:
             return candidates
 
-        ranked: list[tuple[int, int, ResourceCandidate]] = []
+        quota_graph = await self._build_quota_graph()
+        ranked: list[tuple[int, int, int, ResourceCandidate]] = []
         for index, candidate in enumerate(candidates):
-            quota_candidate = await self._check_candidate_quota(candidate)
+            quota_candidate = await self._check_candidate_quota(candidate, quota_graph=quota_graph)
             if quota_candidate is None:
                 continue
             pressure = sum(
                 quota_candidate.metadata.get("quota_soft_pressure_by_resource", {}).values()
             )
-            ranked.append((pressure, index, quota_candidate))
+            remaining_values = list(
+                quota_candidate.metadata.get("quota_remaining_by_resource", {}).values()
+            )
+            min_remaining = min(remaining_values) if remaining_values else None
+            low_quota_pressure = 1 if min_remaining is not None and min_remaining <= 1 else 0
+            ranked.append((pressure, low_quota_pressure, index, quota_candidate))
 
-        return [candidate for _, _, candidate in sorted(ranked, key=lambda item: (item[0], item[1]))]
+        return [candidate for _, _, _, candidate in sorted(ranked, key=lambda item: (item[0], item[1], item[2]))]
 
-    async def _check_candidate_quota(self, candidate: ResourceCandidate) -> ResourceCandidate | None:
+    async def _build_quota_graph(self) -> Any | None:
+        if self.quota_reservations is None or not hasattr(self.quota_reservations, "list_resources"):
+            return None
+        try:
+            from apps.gateway.quota.graph import QuotaGraph
+
+            graph = QuotaGraph(self.quota_reservations)
+            await graph.load()
+            return graph
+        except Exception:
+            return None
+
+    async def _check_candidate_quota(self, candidate: ResourceCandidate, *, quota_graph: Any | None = None) -> ResourceCandidate | None:
         from apps.gateway.quota.reservations import QuotaReservationRequest
 
-        resource_ids = self._known_quota_resource_ids(self._quota_resource_ids(candidate))
+        resource_ids = self._known_quota_resource_ids(
+            self._quota_resource_ids(candidate),
+            quota_graph=quota_graph,
+        )
         if not resource_ids:
             return candidate
 
-        admission = await self.quota_reservations.check_many([
+        requests = [
             QuotaReservationRequest(resource_id, amount=1)
             for resource_id in resource_ids
-        ])
+        ]
+        if quota_graph is not None:
+            admission = quota_graph.check_many(requests)
+        else:
+            admission = await self.quota_reservations.check_many(requests)
 
         if not admission.accepted:
             return None
@@ -187,13 +212,15 @@ class RouterEngine:
 
         return replace(candidate, metadata=metadata)
 
-    def _known_quota_resource_ids(self, resource_ids: list[str]) -> list[str]:
+    def _known_quota_resource_ids(self, resource_ids: list[str], *, quota_graph: Any | None = None) -> list[str]:
         known: list[str] = []
         seen_groups: set[str] = set()
         for resource_id in resource_ids:
             try:
-                resource = self._quota_snap(resource_id)
+                resource = quota_graph.get_resource(resource_id) if quota_graph is not None else self._quota_snap(resource_id)
             except (KeyError, TypeError, ValueError):
+                continue
+            if resource.metric != "requests":
                 continue
             group_key = resource.shared_group_id or resource.resource_id
             if group_key in seen_groups:

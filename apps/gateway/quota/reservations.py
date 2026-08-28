@@ -18,6 +18,7 @@ class QuotaResource:
     source: str = "configured"
     confidence: str = "high"
     shared_group_id: str | None = None
+    parent_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.limit < 0:
@@ -220,6 +221,10 @@ class InMemoryQuotaReservations:
     def snapshot(self, resource_id: str) -> QuotaResource:
         with self._lock:
             return self._resource(resource_id)
+
+    def list_resources(self) -> list[QuotaResource]:
+        with self._lock:
+            return list(self._resources.values())
 
     def apply_observation(self, observation: QuotaObservation) -> QuotaResource:
         with self._lock:
