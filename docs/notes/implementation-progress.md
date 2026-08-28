@@ -1912,6 +1912,18 @@ Outcome:
 - Tasks #30 through #34 are complete.
 - M3 Quota Graph now has in-memory, Redis, and RouterEngine coverage for parent-chain and shared-group quota admission semantics.
 
+## Step 86 — CLIProxy bridge discovery and quota fetching (2026-08-28)
+
+Implemented:
+- Added `discover_models()` to `CLIProxyBridgeDriver` that calls `GET /models` and returns list of models from CLIProxy service.
+- Added `fetch_quota()` that calls `GET /quota` and returns list of quota observations.
+- Both methods handle errors, timeouts, and malformed responses gracefully, returning empty lists on failure.
+- Updated tests in `tests/unit/test_cliproxy_bridge.py` with real mocks for success, error, and timeout cases.
+- Installed `respx` dependency for test mocking.
+- Verified with `pytest tests/unit/test_cliproxy_bridge.py -q`: 26 passed.
+
+This completes Tasks #1 and #2 for M4 (CLIProxy Bridge) — model discovery and quota fetching are now functional.
+
 ## Step 85 — Runtime classified failure effects policy (2026-08-27)
 
 Implemented:
