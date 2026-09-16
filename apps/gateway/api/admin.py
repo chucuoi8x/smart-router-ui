@@ -293,6 +293,25 @@ def list_provider_credentials(connection_id: str) -> dict[str, Any]:
     return {"items": items, "total": len(items), "connection_id": connection_id}
 
 
+@router.delete("/providers/{connection_id}/credentials/{credential_id}")
+def delete_provider_credential(connection_id: str, credential_id: str) -> dict[str, Any]:
+    if connection_id not in _provider_connections:
+        raise HTTPException(status_code=404, detail="provider not found")
+    creds = _provider_credentials.get(connection_id, [])
+    target = None
+    for c in creds:
+        if c.get("credential_id") == credential_id:
+            target = c
+            break
+    if target is None:
+        raise HTTPException(status_code=404, detail="credential not found")
+    alias = target.get("alias", "")
+    creds.remove(target)
+    _provider_credentials[connection_id] = creds
+    _audit_events.append({"action": "credential.deleted", "connection_id": connection_id, "credential_id": credential_id, "alias": alias, "created_at": datetime.now(UTC).isoformat()})
+    return {"deleted": True, "credential_id": credential_id}
+
+
 @router.get("/routes")
 def list_routes() -> dict[str, Any]:
     """List routes from active immutable configuration revision."""
