@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 149 (497p) — simulation paid-fallback policy awareness AC-10
+- Last completed: Step 150 (501p) — runtime quota state AC-07
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 150 — simulation remaining ACs / docs hardening
+- Next suggested: Step 151 — tiep AC-08/AC-10 hardening hoac resource health view
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2610,3 +2610,10 @@ Follow-up risks / TODOs:
 - Them snapshot policy effective-scope trong `apps/gateway/api/admin.py:simulate_route_endpoint`: lay `_policies["paid-fallback"]`, chi coi `paid_fallback_enabled=true` khi `enabled=true` va (`project_id is None` hoac trung `payload.project_id`); giam rach cua project scope. Gan `policy:{paid_fallback_enabled,requires_budget,project_id}` vao ca normal response va `project_budget_exhausted` early-return (ke truoc compile snapshot) de UI van thay policy ngay khi budget het.
 - Test `tests/unit/test_m6_simulation_paid_policy.py` 2 tests: disabled (default) tra `paid_fallback_enabled=false, requires_budget=true`, enabled+budget project tra `paid_fallback_enabled=true, project_id` dung; dam bao policy hien o ca hai nhanh.
 - Ket qua: targeted `2 passed`, full `497 passed, 6 skipped`.
+
+## Step 150 — Runtime quota state AC-07
+
+- Van de: classifier phan biet `RATE_LIMIT` (ngan han, retryable) va `QUOTA_EXHAUSTED` (dai han, chan cho toi replenishment) nhung chua co helper domain dung chung cho status API/telemetry; AC-07 yeu cau runtime bieu dien 2 trang thai khac nhau.
+- Them `apps/gateway/quota/runtime.py:describe_runtime_state(kind, reset_at, retry_after, scope)` tra metadata on dinh: `RATE_LIMIT -> {state:"rate_limited", retryable:true, is_long_term:false}` vs `QUOTA_EXHAUSTED -> {state:"quota_exhausted", retryable:false, is_long_term:true}`; giu `reset_at` tu provider header. Khong doi `router.py` classification/cooldown hien co (RATE_LIMIT 15s, QUOTA_EXHAUSTED 3600s).
+- Test `tests/unit/test_m6_quota_runtime_state.py` 4 tests: rate_limited short-term, quota_exhausted long-term, cooldown quota > rate_limit, va distinct trong `_failure_runtime_decision` (scoring/quota_observation khac nhau).
+- Ket qua: targeted `4 passed`, full `501 passed, 6 skipped`.
