@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 135 (450p) — quota views AC-05/06
+- Last completed: Step 136 (453p) — health/readiness uptime AC-15
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 136 — health/readiness endpoint AC-15 M7 (uptime + dependency checks)
+- Next suggested: Step 137 — structured metrics endpoint M7
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2521,3 +2521,9 @@ Follow-up risks / TODOs:
 - Tạo `tests/unit/test_m6_quota_views.py` 4 tests: auth 401 khi thiếu token, create+list quota resources, validation (empty id, negative limit), detail 404 cho unknown.
 - Implement trong `apps/gateway/api/admin.py`: store `_quota_resources`, helper `_serialize_quota_resource` (remaining = limit - used - safety_buffer), endpoints POST /quota/resources (201, 400/409), GET /quota/resources (filter scope/metric), GET /quota/resources/{resource_id} (404), audit `quota.resource.created`, không lộ secret.
 - Kết quả: targeted 4 passed, full `450 passed, 6 skipped`.
+
+## Step 136 — Health/readiness uptime + dependency checks AC-15 (M7)
+- Vấn đề: health endpoints cũ chỉ trả `status/service/upstream_count`; thiếu version, uptime và dependency check contract cho production readiness.
+- Cập nhật `router.py`: thêm `_STARTED_AT_MONO`; `/health/live` trả version + `uptime_seconds`; `/health/ready` trả version + uptime + checks `upstreams/database/redis`; `/healthz` giữ backward compatibility và không crash khi app chưa có router state.
+- Test `tests/unit/test_m6_health_uptime.py` 3 tests; test cũ `tests/test_health_and_request_id.py` vẫn pass.
+- Kết quả: targeted mới 3 passed, backward compatibility 3 passed, full `453 passed, 6 skipped`.

@@ -69,6 +69,7 @@ def _build_quota_reservations():
 
 
 BASE_DIR = Path(__file__).resolve().parent
+_STARTED_AT_MONO = time.monotonic()
 _REQUEST_USAGE_LEDGER: ContextVar[Any | None] = ContextVar("request_usage_ledger", default=None)
 _REQUEST_USAGE_EVENTS: ContextVar[list[Any] | None] = ContextVar("request_usage_events", default=None)
 FAILOVER_STATUSES = {408, 429, 500, 502, 503, 504}
@@ -2763,20 +2764,43 @@ async def request_id_middleware(request: Request, call_next):
 
 @app.get("/health/live")
 async def health_live() -> dict[str, Any]:
-    return {"status": "ok", "service": "smart-router"}
+    return {
+        "status": "ok",
+        "service": "smart-router",
+        "version": app.version,
+        "uptime_seconds": int(time.monotonic() - _STARTED_AT_MONO),
+    }
 
 
 @app.get("/health/ready")
 async def health_ready(request: Request) -> dict[str, Any]:
     service = getattr(request.app.state, "router", None)
     upstream_count = len(service.clients) if service is not None else 0
-    return {"status": "ok", "service": "smart-router", "upstream_count": upstream_count}
+    return {
+        "status": "ok",
+        "service": "smart-router",
+        "version": app.version,
+        "uptime_seconds": int(time.monotonic() - _STARTED_AT_MONO),
+        "upstream_count": upstream_count,
+        "checks": {
+            "upstreams": {"status": "ok", "count": upstream_count},
+            "database": {"status": "unknown"},
+            "redis": {"status": "unknown"},
+        },
+    }
 
 
 @app.get("/healthz")
 async def healthz(request: Request) -> dict[str, Any]:
-    service: SmartRouter = request.app.state.router
-    return {"status": "ok", "service": "smart-router", "upstream_count": len(service.clients)}
+    service = getattr(request.app.state, "router", None)
+    upstream_count = len(service.clients) if service is not None and hasattr(service, "clients") else 0
+    return {
+        "status": "ok",
+        "service": "smart-router",
+        "version": app.version,
+        "uptime_seconds": int(time.monotonic() - _STARTED_AT_MONO),
+        "upstream_count": upstream_count,
+    }
 
 
 @app.get("/version")
