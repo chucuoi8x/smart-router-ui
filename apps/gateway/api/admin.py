@@ -393,6 +393,37 @@ def create_revision(payload: dict[str, Any] = Body(...)) -> dict[str, str]:
     return {"revision_id": revision_id}
 
 
+@router.post("/revisions/{revision_id}/rollback")
+def rollback_revision(revision_id: str) -> dict[str, Any]:
+    """Activate a prior immutable revision with an explicit rollback audit event."""
+    target = None
+    for revision in _revision_manager.list_revisions():
+        if revision.get("revision_id") == revision_id:
+            target = revision
+            break
+    if target is None:
+        raise HTTPException(status_code=404, detail="revision not found")
+    current = _revision_manager.get_active_revision()
+    if current is not None and current.get("revision_id") == revision_id:
+        raise HTTPException(status_code=400, detail="revision is already active")
+    previous_id = current.get("revision_id") if current else None
+    valid, errors = _revision_manager.validate(revision_id)
+    if not valid:
+        raise HTTPException(status_code=400, detail=errors)
+    _revision_manager.activate(revision_id)
+    _audit_events.append(
+        {
+            "action": "revision.rolled_back",
+            "revision_id": revision_id,
+            "from_revision_id": previous_id,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    result = _serialize_revision(_ensure_active_revision())
+    result["rolled_back_from"] = previous_id
+    return result
+
+
 @router.post("/revisions/{revision_id}/activate")
 def activate_revision(revision_id: str) -> dict[str, Any]:
     valid, errors = _revision_manager.validate(revision_id)

@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 126 (416p) — version 1.0.0
+- Last completed: Step 127 (420p) — revision rollback AC-13
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 127 — 1.0 release notes — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 128 — 1.0 release notes — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2463,3 +2463,10 @@ Follow-up risks / TODOs:
 - Sửa `admin.py`: thêm `GET /api/admin/v1/version` authenticated trả cùng payload.
 - Test `tests/unit/test_version.py` 3 tests: `/version` public, `/api/admin/v1/version` auth, `/openapi.json` info.version == 1.0.0.
 - Kết quả: targeted 3 passed, full `416 passed, 6 skipped`.
+
+## Step 127 — Revision rollback cho Control Plane AC-13 (M6)
+- Vấn đề: Control Plane có `POST /revisions/{id}/activate` nhưng thiếu rollback tường minh — không phân biệt activate thường và rollback, audit khó truy vết.
+- Sửa `admin.py`: thêm `POST /revisions/{revision_id}/rollback` kiểm tra tồn tại (404), chặn rollback về revision đang active (400), validate, activate atomically, ghi audit `revision.rolled_back` với `revision_id` + `from_revision_id`, trả active đã serialize + `rolled_back_from`.
+- Không lộ secret: chỉ serialize revision metadata.
+- Test `tests/unit/test_m6_revision_rollback.py` 4 tests: auth guard 401, unknown 404, rollback reactivate audit và verify routes/active, rollback về active hiện tại 400.
+- Kết quả: targeted 4 passed, full `420 passed, 6 skipped`.
