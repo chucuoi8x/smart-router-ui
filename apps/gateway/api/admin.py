@@ -102,6 +102,11 @@ def list_templates() -> dict[str, dict[str, Any]]:
     }
 
 
+@router.get("/version")
+def admin_version(request: Request) -> dict[str, Any]:
+    return {"service": "smart-router", "version": request.app.version}
+
+
 @router.get("/providers")
 def list_providers() -> dict[str, object]:
     items = [_serialize_provider(record) for record in _provider_connections.values()]

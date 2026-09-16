@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 125 (413p) — credential delete AC-03
+- Last completed: Step 126 (416p) — version 1.0.0
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 126 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 127 — 1.0 release notes — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2456,3 +2456,10 @@ Follow-up risks / TODOs:
 - Fix regression: list credentials thiếu `return` sau khi chèn endpoint import/delete, gây 500 sau deletion.
 - Test `tests/unit/test_m6_credential_delete.py` 5 tests + multi-credential regression 5 tests.
 - Kết quả: targeted 10 passed, full `413 passed, 6 skipped`.
+
+## Step 126 — Version endpoints 1.0.0 (M7)
+- Vấn đề: bản 1.0 đã có `pyproject version=1.0.0` và `FastAPI version=1.0.0` nhưng thiếu endpoints runtime để ops/UI verify version đã deploy.
+- Sửa `router.py`: thêm `GET /version` public trả `{service, version}` từ `app.version`.
+- Sửa `admin.py`: thêm `GET /api/admin/v1/version` authenticated trả cùng payload.
+- Test `tests/unit/test_version.py` 3 tests: `/version` public, `/api/admin/v1/version` auth, `/openapi.json` info.version == 1.0.0.
+- Kết quả: targeted 3 passed, full `416 passed, 6 skipped`.

@@ -2779,6 +2779,11 @@ async def healthz(request: Request) -> dict[str, Any]:
     return {"status": "ok", "service": "smart-router", "upstream_count": len(service.clients)}
 
 
+@app.get("/version")
+async def version() -> dict[str, Any]:
+    return {"service": "smart-router", "version": app.version}
+
+
 @app.get("/v1/models")
 async def models(service: SmartRouter = Depends(get_authorized_service)) -> dict[str, Any]:
     data = [
