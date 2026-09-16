@@ -11,7 +11,9 @@ from typing import Any
 
 from apps.gateway.config.snapshot import RuntimeConfigSnapshot
 from apps.gateway.routing.models import ResourceCandidate
-from apps.gateway.routing.presets import PolicyPreset, get_preset_or_default
+from apps.gateway.routing.presets import (
+    PolicyPreset, filter_candidates_for_policy, get_preset_or_default,
+)
 from apps.gateway.routing.scoring import CandidateMetrics, ScoringConfig, SmartScoreCalculator
 
 
@@ -33,6 +35,7 @@ def _eligibility_for_candidate(
     candidate: ResourceCandidate,
     preset: PolicyPreset,
     is_fallback: bool,
+    required_capabilities: dict[str, Any] | None = None,
 ) -> tuple[bool, list[str]]:
     meta = getattr(candidate, "metadata", {}) or {}
     failed: list[str] = []
@@ -77,6 +80,20 @@ def _eligibility_for_candidate(
                     failed.append(f"min_quota_headroom {min(ratios):.4f} < {constraints.min_quota_headroom}")
             except Exception:
                 pass
+
+    # Capability eligibility: reuse filter_candidates_for_policy to stay consistent
+    caps = required_capabilities if isinstance(required_capabilities, dict) else {}
+    if caps and any(v for v in caps.values()):
+        try:
+            ok = filter_candidates_for_policy(
+                [candidate], preset,
+                is_fallback=is_fallback,
+                required_capabilities=caps,
+            )
+            if not ok:
+                failed.append("capability_eligibility_failed")
+        except Exception:
+            pass
 
     return (len(failed) == 0, failed)
 
@@ -170,7 +187,9 @@ def simulate_route(
     rows: list[dict[str, Any]] = []
     eligible_keys: list[str] = []
     for (candidate, is_fallback), key in zip(all_candidates, keys):
-        eligible, failed = _eligibility_for_candidate(candidate, preset, is_fallback)
+        eligible, failed = _eligibility_for_candidate(
+            candidate, preset, is_fallback, required_capabilities=capabilities,
+        )
         if eligible:
             eligible_keys.append(key)
         score = score_by_key.get(key, {"composite": 0.0})

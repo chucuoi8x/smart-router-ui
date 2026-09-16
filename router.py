@@ -461,15 +461,22 @@ class SmartRouter:
         except Exception:
             pass
 
-    async def _candidate_order(self, route_name: str, conversation_thread: str | None = None) -> list[Candidate]:
+    async def _candidate_order(
+        self,
+        route_name: str,
+        conversation_thread: str | None = None,
+        required_capabilities: dict[str, Any] | None = None,
+    ) -> list[Candidate]:
         if self.router_engine is not None:
             if getattr(self.router_engine, "quota_reservations", None) is not None:
                 resource_candidates = await self.router_engine.select_candidates_async(
-                    route_name, conversation_thread=conversation_thread
+                    route_name, conversation_thread=conversation_thread,
+                    required_capabilities=required_capabilities,
                 )
             else:
                 resource_candidates = self.router_engine.select_candidates(
-                    route_name, conversation_thread=conversation_thread
+                    route_name, conversation_thread=conversation_thread,
+                    required_capabilities=required_capabilities,
                 )
             return self._convert_resource_candidates(resource_candidates)
         async with self.state_lock:
@@ -487,8 +494,12 @@ class SmartRouter:
             )
         # Policy constraints: hard filter per group (primary vs fallback have
         # different paid-fallback semantics). No-op when scheduler disabled.
-        primary = self._apply_policy_constraints(primary, route_name, is_fallback=False)
-        fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True)
+        primary = self._apply_policy_constraints(
+            primary, route_name, is_fallback=False, required_capabilities=required_capabilities
+        )
+        fallback = self._apply_policy_constraints(
+            fallback, route_name, is_fallback=True, required_capabilities=required_capabilities
+        )
         if route["strategy"] == "smooth_weighted_rr" and len(primary) >= 2:
             async with self.state_lock:
                 current = self.rr_current.setdefault(route_name, {})
@@ -585,12 +596,64 @@ class SmartRouter:
         allowlist = getattr(self._scoring_config, "route_allowlist", [])
         return not allowlist or route_name in allowlist
 
+    def _required_capabilities_from_body(self, body: dict[str, Any] | None) -> dict[str, Any]:
+        """Suy ra yêu cầu capability từ payload — không đọc secret, chỉ đọc cấu trúc."""
+        if not isinstance(body, dict):
+            return {}
+        caps: dict[str, Any] = {}
+        tools = body.get("tools")
+        if isinstance(tools, list) and len(tools) > 0:
+            caps["tools"] = True
+        elif tools:
+            caps["tools"] = True
+        if body.get("tool_choice"):
+            caps["tools"] = True
+        messages = body.get("messages")
+        if isinstance(messages, list):
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        t = block.get("type")
+                        if t in ("image", "image_url"):
+                            caps["vision"] = True
+                            break
+                        if t == "image" and isinstance(block.get("source"), dict):
+                            caps["vision"] = True
+                            break
+                    if caps.get("vision"):
+                        break
+        # Context window: ước lượng thô từ body + max_tokens
+        max_tokens = body.get("max_tokens")
+        if max_tokens is None:
+            max_tokens = body.get("max_output_tokens")
+        try:
+            import json as _json
+
+            txt = _json.dumps(body, ensure_ascii=False)
+            est_input = max(0, len(txt) // 4)
+            needed = est_input
+            if max_tokens is not None:
+                needed += int(max_tokens) + 1000
+            else:
+                needed += 4000
+            if needed > 30000 and needed > 0:
+                caps["min_context_tokens"] = needed
+        except Exception:
+            pass
+        return caps
+
     def _apply_policy_constraints(
         self,
         candidates: list[Candidate],
         route_name: str,
         *,
         is_fallback: bool,
+        required_capabilities: dict[str, Any] | None = None,
     ) -> list[Candidate]:
         """Lọc hard constraints theo preset, không branch theo provider."""
         if not self._should_apply_smart_scoring(route_name):
@@ -599,7 +662,9 @@ class SmartRouter:
             from apps.gateway.routing.presets import filter_candidates_for_policy
 
             policy = self._scoring_config.effective_preset_for_route(route_name)
-            return filter_candidates_for_policy(candidates, policy, is_fallback=is_fallback)
+            return filter_candidates_for_policy(
+                candidates, policy, is_fallback=is_fallback, required_capabilities=required_capabilities
+            )
         except Exception:
             return candidates  # Policy lỗi không được chặn data plane
 
@@ -1298,8 +1363,13 @@ class SmartRouter:
 
         # Session hint: chỉ lấy ID để scoring affinity — không đụng payload/secret
         conversation_thread = self._conversation_thread_hint(body, incoming_headers)
+        required_capabilities = self._required_capabilities_from_body(body)
 
-        candidates = await self._candidate_order(route_name, conversation_thread=conversation_thread)
+        candidates = await self._candidate_order(
+            route_name,
+            conversation_thread=conversation_thread,
+            required_capabilities=required_capabilities,
+        )
         if not candidates:
             # If we had a reservation, release it before returning overloaded
             if reservation_id is not None and resource_id is not None:

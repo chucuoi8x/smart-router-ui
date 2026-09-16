@@ -527,7 +527,9 @@ routes:
             self.assertEqual(len(candidates), 1)
             self.assertEqual(candidates[0].upstream, 'primary')
             self.assertEqual(candidates[0].model, 'model-a')
-            router.router_engine.select_candidates.assert_called_once_with('test-route', conversation_thread=None)
+            router.router_engine.select_candidates.assert_called_once_with(
+                'test-route', conversation_thread=None, required_capabilities=None
+            )
 
         # Clean up env var
         os.environ.pop('USE_ROUTER_ENGINE', None)

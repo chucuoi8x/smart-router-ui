@@ -2085,3 +2085,27 @@ Outcome:
 Follow-up risks / TODOs:
 - Telemetry persistence cho scoring features và quota/burn-rate live wiring vẫn là slice M5 còn lại theo README §18–§20.
 - Endpoint hiện đọc snapshot từ config dict; khi DB revision active, cần compile từ `RuntimeConfigSnapshot` đã publish thay vì chỉ `config.yaml`.
+
+## Step 93 — M5 capability eligibility: tools/vision/context (2026-09-16)
+
+Implemented:
+- `apps/gateway/routing/presets.py`: `filter_candidates_for_policy(..., required_capabilities)` thêm nhánh capability (5). Mode `none` không lọc; `auto` chỉ loại khi candidate khai báo rõ `False` hoặc `max_context_tokens` nhỏ hơn yêu cầu; `strict` loại khi thiếu metadata hoặc không đủ context window. Hỗ trợ `tools`/`vision` generic và `min_context_tokens` (đọc `capabilities.max_context_tokens` rồi fallback `max_context_tokens`/`context_window`). Provider-agnostic, chỉ đọc metadata.
+- `apps/gateway/routing/engine.py`: `_apply_policy_constraints(..., required_capabilities)` và `select_candidates*()` truyền `required_capabilities` xuống filter; giữ fail-open và không làm hỏng data-plane khi policy lỗi.
+- `apps/gateway/config/compiler.py`: `_candidate_metadata()` giữ `capabilities`/`max_context_tokens`/`context_window` để routing core nhận đủ dữ liệu capability.
+- `router.py`: thêm `_required_capabilities_from_body()` suy ra yêu cầu `tools`/`vision`/`min_context_tokens` từ payload (tools/tool_choice, image blocks, ước lượng input + max_tokens) mà không đọc secret/header nhạy cảm. `_apply_policy_constraints()` và `_candidate_order(..., required_capabilities)` truyền qua cả RouterEngine path và legacy fallback path. `handle_messages()` trích một lần và truyền vào candidate ordering.
+- `apps/gateway/routing/simulation.py`: dùng chung `filter_candidates_for_policy` cho diagnostics; `_eligibility_for_candidate(..., required_capabilities)` và `simulate_route(..., capabilities)` trả `failed_constraints` gồm `capability_eligibility_failed` khi không đủ capability, giữ dry-run provider-agnostic.
+- Thêm `tests/unit/test_m5_capability_eligibility.py` (5 tests: strict tools/vision, auto fail-open, none never filter, context window strict) và cập nhật `tests/unit/test_router_engine.py:527` assertion signature `required_capabilities=None`.
+
+Verification:
+- RED: 5 tests fail `TypeError: filter_candidates_for_policy() got an unexpected keyword argument 'required_capabilities'` trước implement.
+- Sau implement: `pytest tests/unit/test_m5_capability_eligibility.py tests/unit/test_m5_policy_constraints.py` → `9 passed`; targeted `... + test_m5_route_simulation + test_router_engine` → `27 passed` rồi `28 passed` sau sửa assertion; `pytest -q --tb=short` full → `313 passed, 6 skipped, 1 warning`.
+- `git diff --check` sạch (chỉ cảnh báo CRLF). Quét secret trong `presets.py`/`engine.py`/`router.py` 0 match; metadata chỉ dùng fixture `no-tools`/`vision`/context values.
+- `compiler.py` giữ metadata mới dạng dict/int, không chứa secret; simulation không gọi upstream.
+
+Outcome:
+- Capability eligibility đã là hard filter theo preset và yêu cầu thực tế của request: `critical` (strict) chặn thiếu capability, `auto-free`/`coding` fail-open khi thiếu dữ liệu, `none` bỏ qua hoàn toàn — đúng README §6.1/§18.2 và không nhánh theo provider-name.
+- Data-plane và simulation dùng chung filter nên dry-run phản ánh đúng eligibility thực tế.
+
+Follow-up risks / TODOs:
+- Budget/concurrency và retry-cost live wiring cho scoring vẫn là slice M5 còn lại theo README §18–§20.
+- Cần thêm integration test end-to-end cho vision/tools qua gateway (hiện chỉ unit cho filter và candidate ordering).

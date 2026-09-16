@@ -263,6 +263,7 @@ def filter_candidates_for_policy(
     policy: PolicyPreset | PolicyConstraints,
     *,
     is_fallback: bool = False,
+    required_capabilities: dict | None = None,
 ) -> list:
     """Lọc candidate dựa trên policy constraints của preset.
 
@@ -310,6 +311,70 @@ def filter_candidates_for_policy(
                 if overall_ratio < constraints.min_quota_headroom:
                     continue
             # Thiếu data quota → giữ lại (không chặn)
+
+        # 5. Capability eligibility: kiểm tra tools/vision/context theo require_capabilities
+        #    - none: không lọc gì
+        #    - auto: chỉ lọc khi candidate khai báo rõ là không hỗ trợ (False / thiếu headroom)
+        #    - strict: loại khi thiếu metadata hoặc không đủ context window
+        if required_capabilities:
+            mode = getattr(constraints, "require_capabilities", "auto") or "auto"
+            if mode != "none":
+                # Lọc các capability yêu cầu là truthy (True / >0)
+                caps = meta.get("capabilities") if isinstance(meta.get("capabilities"), dict) else {}
+                should_reject = False
+                for req_key, req_val in required_capabilities.items():
+                    if req_val is None or req_val is False or req_val == 0:
+                        continue
+                    # Context window: yêu cầu min_context_tokens
+                    if req_key == "min_context_tokens":
+                        try:
+                            needed = int(req_val)
+                        except (TypeError, ValueError):
+                            continue
+                        if needed <= 0:
+                            continue
+                        max_ctx = caps.get("max_context_tokens") if isinstance(caps, dict) else None
+                        if max_ctx is None:
+                            max_ctx = meta.get("max_context_tokens")
+                        if max_ctx is None:
+                            max_ctx = meta.get("context_window")
+                        if mode == "auto":
+                            # Thiếu data → fail-open
+                            if max_ctx is None:
+                                continue
+                            try:
+                                if int(max_ctx) < needed:
+                                    should_reject = True
+                                    break
+                            except (TypeError, ValueError):
+                                continue
+                        elif mode == "strict":
+                            if max_ctx is None:
+                                should_reject = True
+                                break
+                            try:
+                                if int(max_ctx) < needed:
+                                    should_reject = True
+                                    break
+                            except (TypeError, ValueError):
+                                should_reject = True
+                                break
+                    else:
+                        # Generic boolean capability: tools, vision, etc.
+                        has = caps.get(req_key) if isinstance(caps, dict) else None
+                        # Fallback: metadata flat key cũng được chấp nhận
+                        if has is None and req_key in meta:
+                            has = meta.get(req_key)
+                        if mode == "auto":
+                            if has is False:
+                                should_reject = True
+                                break
+                        elif mode == "strict":
+                            if has is not True:
+                                should_reject = True
+                                break
+                if should_reject:
+                    continue
 
         accepted.append(c)
 

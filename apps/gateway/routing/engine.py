@@ -95,6 +95,7 @@ class RouterEngine:
         route_name: str,
         *,
         is_fallback: bool,
+        required_capabilities: dict[str, Any] | None = None,
     ) -> list[ResourceCandidate]:
         """Lọc hard policy constraints khi Smart Scheduler đang active.
 
@@ -105,33 +106,46 @@ class RouterEngine:
             return candidates
         try:
             preset = self._scoring_config.effective_preset_for_route(route_name)  # type: ignore[union-attr]
-            return filter_candidates_for_policy(candidates, preset, is_fallback=is_fallback)
+            return filter_candidates_for_policy(
+                candidates, preset, is_fallback=is_fallback,
+                required_capabilities=required_capabilities,
+            )
         except Exception:
             return candidates  # Policy lỗi không được làm hỏng data plane
 
-    def select_candidates(self, route_name: str, conversation_thread: str | None = None) -> List[ResourceCandidate]:
+    def select_candidates(
+        self,
+        route_name: str,
+        conversation_thread: str | None = None,
+        required_capabilities: dict[str, Any] | None = None,
+    ) -> List[ResourceCandidate]:
         route = self.snapshot.routes.get(route_name)
         if route is None:
             return []
         primary = [c for c in route.candidates if self.circuit_repository.is_available(c.resource_ref)]
         fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
-        primary = self._apply_policy_constraints(primary, route_name, is_fallback=False)
-        fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True)
+        primary = self._apply_policy_constraints(primary, route_name, is_fallback=False, required_capabilities=required_capabilities)
+        fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True, required_capabilities=required_capabilities)
         scored_primary = self._quota_rank_sync(primary)
         scored_fallback = self._quota_rank_sync(fallback)
         return list(self._apply_smart_scoring(scored_primary, route_name, conversation_thread=conversation_thread)) + list(
             self._apply_smart_scoring(scored_fallback, route_name, conversation_thread=conversation_thread)
         )
 
-    async def select_candidates_async(self, route_name: str, conversation_thread: str | None = None) -> List[ResourceCandidate]:
+    async def select_candidates_async(
+        self,
+        route_name: str,
+        conversation_thread: str | None = None,
+        required_capabilities: dict[str, Any] | None = None,
+    ) -> List[ResourceCandidate]:
         route = self.snapshot.routes.get(route_name)
         if route is None:
             return []
 
         primary = [c for c in route.candidates if self.circuit_repository.is_available(c.resource_ref)]
         fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
-        primary = self._apply_policy_constraints(primary, route_name, is_fallback=False)
-        fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True)
+        primary = self._apply_policy_constraints(primary, route_name, is_fallback=False, required_capabilities=required_capabilities)
+        fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True, required_capabilities=required_capabilities)
 
         scored_primary = await self._quota_rank(primary)
         scored_fallback = await self._quota_rank(fallback)
