@@ -1227,11 +1227,19 @@ async def control_plane_overview(
     except Exception:
         pass  # DB unavailable → leave stats=None
 
+    # 4. Policies and budgets (AC-10 visibility, no secrets)
+    budgets_snapshot = {"items": [dict(v) for v in _project_budgets.values()], "total": len(_project_budgets)}
+    policies_snapshot = {
+        "paid_fallback": dict(_policies.get("paid-fallback", {"policy": "paid-fallback", "enabled": False, "requires_budget": True, "project_id": None})),
+    }
+
     return {
         "providers": providers,
         "active_revision": active,
         "revisions": {"active": active},
         "usage": stats,
+        "policies": policies_snapshot,
+        "budgets": budgets_snapshot,
         "status": "ok",
     }
 

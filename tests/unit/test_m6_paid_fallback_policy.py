@@ -20,6 +20,10 @@ async def test_policy_endpoint_requires_auth():
 @pytest.mark.asyncio
 async def test_paid_fallback_default_is_disabled():
     async with _client() as c:
+        # Module-level Control Plane state persists across ASGI tests; restore
+        # the documented safe default before asserting it.
+        reset = await c.put("/api/admin/v1/policies/paid-fallback", json={"enabled": False}, headers=AUTH)
+        assert reset.status_code == 200, reset.text
         r = await c.get("/api/admin/v1/policies/paid-fallback", headers=AUTH)
     assert r.status_code == 200, r.text
     data = r.json()

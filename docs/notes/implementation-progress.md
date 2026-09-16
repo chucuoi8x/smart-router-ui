@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 146 (490p) — paid fallback policy AC-10
+- Last completed: Step 147 (492p) — overview policy/budget visibility
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 147 — routing-aware policy + budget integration M7
+- Next suggested: Step 148 — quota/batch reconciliation + reservation transfer verify M5
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2590,3 +2590,10 @@ Follow-up risks / TODOs:
 - Them `_policies` store + `GET/PUT /policies/paid-fallback` trong `apps/gateway/api/admin.py`: mac dinh disabled, `requires_budget=True`; PUT enable yeu cau budget ton tai va allow_paid_fallback=true (tuong ung project hoac global gate), danh git audit, disable luon cho phep.
 - Test `tests/unit/test_m6_paid_fallback_policy.py` 4 tests: auth 401, default disabled, enable denied without budget va enabled when budget exists, disable cho phep du luc.
 - Ket qua: targeted 4 passed, full `490 passed, 6 skipped`.
+
+## Step 147 — Overview paid-fallback/budget visibility AC-10/13 (M7)
+- Van de: overview chi co providers/revision/usage; thieu tong quan chinh sach paid fallback va budget de UI hien thi gate.
+- Bo sung `policies` (paid_fallback) va `budgets` snapshot (items/total) vao `GET /api/admin/v1/overview`; khong lo secret (chi id/currency/ceiling/used/remaining).
+- Test `tests/unit/test_m6_overview_budget_policy.py` 2 tests: overview phan anh policy enabled + budget remaining, va redaction guard.
+- Fix state leak giua full suite: test default policy reset ve disabled truoc khi assert.
+- Ket qua: targeted 2 passed, step146 fixed, full `492 passed, 6 skipped`.
