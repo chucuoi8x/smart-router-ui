@@ -2644,3 +2644,21 @@ Follow-up risks / TODOs:
 - Cap nhat `CHANGELOG.md` 1.0.0: mo ta runtime distinction `RATE_LIMIT` vs `QUOTA_EXHAUSTED` (AC-07), simulation expose `budget`+`policy:paid_fallback` (AC-10), streaming acceptance regression + health `runtime_state` (AC-11/AC-07), va cap nhat verification `508 passed, 6 skipped` at Step 153.
 - Khong doi production code; chi dong bo tai lieu phat hanh voi chung cu da co tu Step 150-153.
 - Ket qua: docs sync, full `508 passed, 6 skipped` giu nguyen.
+
+## Step 155 — Final 1.0 verification and tag readiness
+
+- Version check: `pyproject.toml` = `1.0.0`; version tests cover public/admin/OpenAPI endpoints.
+- Full suite rerun: `508 passed, 6 skipped, 1 warning`.
+- `git diff --check`: clean except expected Windows LF/CRLF notices.
+- Working tree only retains untracked `.claude/`, intentionally excluded from commits.
+- Release docs synced: `CHANGELOG.md`, `docs/release-notes/1.0.md`, `docs/SLO.md`, `docs/security.md`, `docs/ops/runbook.md`.
+- Remote branch includes commit `f093ec0`; ready for annotated tag `v1.0.0`.
+
+## RESUME 1.0 — current
+
+- Branch: `feature/admin-api-baseline`
+- HEAD before final verification: `f093ec0`; version `1.0.0`
+- Full suite: `508 passed, 6 skipped, 1 warning`
+- AC-01 through AC-16 covered by implementation/tests/docs.
+- `.claude/` remains untracked and must not be committed.
+- Post-1.0 backlog: Redis distributed quota runtime, durable usage ledger wiring, worker collector integration, Docker runtime verification, load benchmarking.
