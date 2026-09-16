@@ -311,6 +311,62 @@ async def usage_stats(
     }
 
 
+@router.get("/overview")
+async def control_plane_overview(
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Aggregate Control Plane overview — no secrets exposed (AC-13)."""
+    # 1. Provider connections
+    providers = {
+        "count": len(_provider_connections),
+        "items": [
+            {
+                "connection_id": c["connection_id"],
+                "name": c["name"],
+                "template_id": c["template_id"],
+                "credential_present": c["credential_present"],
+            }
+            for c in _provider_connections.values()
+        ],
+    }
+
+    # 2. Active revision
+    active = None
+    try:
+        rev = _ensure_active_revision()
+        active = {
+            "revision_id": rev["revision_id"],
+            "created_at": rev["created_at"].isoformat() if isinstance(rev.get("created_at"), datetime) else None,
+        }
+    except Exception:
+        pass
+
+    # 3. Usage stats (graceful degradation if DB unavailable)
+    stats = None
+    try:
+        stmt = (
+            select(
+                func.sum(UsageLedger.total_tokens).label("total_tokens"),
+                func.count(UsageLedger.id).label("event_count"),
+            )
+        )
+        row = (await db.execute(stmt)).one()
+        stats = {
+            "total_tokens": int(row.total_tokens or 0),
+            "event_count": int(row.event_count or 0),
+        }
+    except Exception:
+        pass  # DB unavailable → leave stats=None
+
+    return {
+        "providers": providers,
+        "active_revision": active,
+        "revisions": {"active": active},
+        "usage": stats,
+        "status": "ok",
+    }
+
+
 @router.post("/routes/simulate")
 async def simulate_route_endpoint(
     request: Request,

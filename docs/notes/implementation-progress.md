@@ -2329,3 +2329,9 @@ Follow-up risks / TODOs:
 - Đính kèm vào 5 vị trí trong `_non_stream_messages`, `_stream_messages`, `_non_stream_chat`, `_stream_chat`, `_chat`: sau mỗi decision.retry_continue/break.
 - Test `tests/unit/test_m5_reservation_transfer.py`: primary `account:primary` 2 reqs → 503 triggers failover → backup `account:backup` gọi thành công 200 → `primary.used==0`, `backup.used==1`.
 - Kết quả: targeted `1 passed`, full `348 passed, 6 skipped` (cùng count như sau Step106).
+## Step 108 — Control Plane Overview API (M6)
+- Vấn đề: Control Plane thiếu endpoint tổng quan cho Overview panel (AC-13); chưa có cách liệt kê providers/revisions/usage thống nhất, thiếu auth guard và redaction.
+- Thêm `GET /api/admin/v1/overview` trong `apps/gateway/api/admin.py` — yêu cầu `require_admin_auth`, trả về `{providers:{count,items[]}, active_revision, revisions:{active}, usage:{total_tokens,event_count}|null, status:"ok"}`; graceful degradation khi DB không khả dụng.
+- Không lộ secret: chỉ trả `credential_present` boolean, không trả `api_key`.
+- Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
+- Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
