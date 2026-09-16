@@ -2286,3 +2286,8 @@ Outcome:
 Follow-up risks / TODOs:
 - TPM reservation hiện chỉ input tokens; output tokens chưa cộng vào required (cần max_output_tokens khi có).
 - Cần wiring reconcile với actual usage cho multi-resource batch (hiện reconcile 1 resource chính).
+## Step 103 — Reservation cộng output tokens + batch reconcile (M5)
+- Vấn đề: TPM reservation mới cộng `estimated_input_tokens` nhưng chưa cộng `max_tokens` nên request `input ~23 + output 10` vượt limit `30` không bị chặn; batch reservation `quota_resource_ids=[requests, tokens]` chỉ reconcile `rids[0]` (latent `ValueError` khi candidate đa resource).
+- Sửa `router.py`: thêm `_quota_request_amount(resource, input, output)` và `_reconcile_reservation_usage(reservation_id, resource_id, total_tokens)` (metric-aware, split `resource_id` dạng `",".join(rids)`); tính `_estimated_output_for_quota = body.get("max_tokens")`; reservation amount = input+output cho metric `tokens/tpm`, giữ `1` cho `requests`; reconcile tất cả resource trong batch theo metric (tokens→`total_tokens`, requests→`1`).
+- Test `tests/unit/test_m5_reservation_reconciliation.py`: (1) `tpm:primary` limit 30, request input 23 + max_tokens 10 → 503 `quota_exhausted` (chứng minh cộng output); (2) candidate `quota_resource_ids=[account:primary, tpm:primary]` → sau 200 cả hai resource `used==1` (chứng minh batch reconcile).
+- Kết quả: targeted `3 passed`, full `340 passed, 6 skipped` (warnings: StarletteDeprecationWarning).

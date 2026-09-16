@@ -563,11 +563,37 @@ class SmartRouter:
             known.append(resource_id)
         return known
 
-    def _quota_request_amount(self, resource: object, estimated_input_tokens: int) -> int:
+    def _quota_request_amount(
+        self,
+        resource: object,
+        estimated_input_tokens: int,
+        estimated_output_tokens: int = 0,
+    ) -> int:
         metric = str(getattr(resource, "metric", "") or "").lower()
         if metric in {"tokens", "input_tokens", "tpm", "tokens_per_minute", "tpm_tokens"}:
-            return max(1, int(estimated_input_tokens))
+            return max(1, int(estimated_input_tokens) + max(0, int(estimated_output_tokens)))
         return 1
+
+    async def _reconcile_reservation_usage(
+        self,
+        reservation_id: str | None,
+        resource_id: str | None,
+        *,
+        total_tokens: int,
+    ) -> None:
+        """Reconcile every resource in batch reservation, metric-aware."""
+        if reservation_id is None or resource_id is None or self.quota_reservations is None:
+            return
+        resource_ids = [rid for rid in resource_id.split(",") if rid]
+        actual: dict[str, int] = {}
+        for rid in resource_ids:
+            try:
+                resource = await self.quota_reservations.snapshot(rid)
+                metric = str(getattr(resource, "metric", "") or "").lower()
+                actual[rid] = total_tokens if metric in {"tokens", "input_tokens", "tpm", "tokens_per_minute", "tpm_tokens"} else 1
+            except Exception:
+                actual[rid] = total_tokens if len(resource_ids) == 1 else 1
+        await self.quota_reservations.reconcile(reservation_id, actual)
 
     def _candidate_quota_resource_ids(self, candidate: Candidate) -> list[str]:
         resource_ids = candidate.metadata.get("quota_resource_ids")
@@ -1404,7 +1430,11 @@ class SmartRouter:
                         for _rid in rids:
                             try:
                                 _r = await self.quota_reservations.snapshot(_rid)
-                                _amt = self._quota_request_amount(_r, self._estimate_input_tokens(body))
+                                _amt = self._quota_request_amount(
+                                    _r,
+                                    self._estimate_input_tokens(body),
+                                    int(body.get("max_tokens", 0) or 0),
+                                )
                             except Exception:
                                 _amt = 1
                             _check_reqs.append(QuotaReservationRequest(_rid, amount=_amt))
@@ -1435,6 +1465,10 @@ class SmartRouter:
             )
         # Estimated tokens for TPM/token quota (README §15.8) — compute before reservation
         _estimated_for_quota = self._estimate_input_tokens(body)
+        try:
+            _estimated_output_for_quota = max(0, int(body.get("max_tokens", 0) or 0))
+        except (TypeError, ValueError):
+            _estimated_output_for_quota = 0
         if self.quota_reservations is not None:
             from apps.gateway.quota.reservations import QuotaReservationRequest
             reserved = False
@@ -1459,7 +1493,11 @@ class SmartRouter:
                 for rid in rids:
                     try:
                         _res = await self.quota_reservations.snapshot(rid)
-                        amt = self._quota_request_amount(_res, _estimated_for_quota)
+                        amt = self._quota_request_amount(
+                            _res,
+                            _estimated_for_quota,
+                            _estimated_output_for_quota,
+                        )
                     except Exception:
                         amt = 1
                     reqs.append(QuotaReservationRequest(rid, amount=amt))
@@ -1474,7 +1512,7 @@ class SmartRouter:
                     break
                 if res.accepted:
                     reservation_id = tmp_id
-                    resource_id = rids[0]
+                    resource_id = ",".join(rids)
                     reserved = True
                     if idx != 0:
                         candidates = [cand] + candidates[:idx] + candidates[idx+1:]
@@ -1629,9 +1667,13 @@ class SmartRouter:
                     output_tokens = tokens["output_tokens"]
                     total_tokens = tokens["total_tokens"]
                     if total_tokens > 0:
-                        await self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
+                        await self._reconcile_reservation_usage(
+                            reservation_id, resource_id, total_tokens=total_tokens,
+                        )
                     else:
-                        await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                        await self._reconcile_reservation_usage(
+                            reservation_id, resource_id, total_tokens=1,
+                        )
                 elapsed_ms = (time.monotonic() - _start) * 1000
                 if self._score_calculator:
                     self._latency_tracker.record(candidate.key, elapsed_ms)
@@ -1761,9 +1803,13 @@ class SmartRouter:
                 output_tokens = tokens["output_tokens"]
                 total_tokens = tokens["total_tokens"]
                 if total_tokens > 0:
-                    await self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
+                    await self._reconcile_reservation_usage(
+                            reservation_id, resource_id, total_tokens=total_tokens,
+                        )
                 else:
-                    await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                    await self._reconcile_reservation_usage(
+                            reservation_id, resource_id, total_tokens=1,
+                        )
             elapsed_ms = (time.monotonic() - _start) * 1000
             if self._score_calculator:
                 self._latency_tracker.record(candidate.key, elapsed_ms)
@@ -1881,10 +1927,14 @@ class SmartRouter:
                         tokens = self._get_latest_usage_tokens(attempt_id=attempt_id)
                         total_tokens = tokens["total_tokens"]
                         if total_tokens > 0:
-                            await self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
+                            await self._reconcile_reservation_usage(
+                            reservation_id, resource_id, total_tokens=total_tokens,
+                        )
                         else:
                             # No usage parsed — fall back to 1 request as before
-                            await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                            await self._reconcile_reservation_usage(
+                            reservation_id, resource_id, total_tokens=1,
+                        )
                 except Exception as exc:
                     # Stream failed; record the failed attempt first
                     # so the ledger has a valid reference for best-effort
@@ -2174,7 +2224,9 @@ class SmartRouter:
             if decision.reservation_finalization == "release" or (classification or {}).get("consumption_uncertainty") == "none":
                 await self.quota_reservations.release(reservation_id)
             else:
-                await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                await self._reconcile_reservation_usage(
+                            reservation_id, resource_id, total_tokens=1,
+                        )
         except Exception:
             self.logger.warning("quota reservation finalization skipped", exc_info=True)
 
