@@ -663,6 +663,10 @@ class SmartRouter:
                 limit=0,
                 safety_buffer=0,
                 burn_rate_urgency=0.0,
+                expiry_urgency=0.0,
+                scarcity=0.0,
+                retry_expected_cost=0.0,
+                uncertainty=0.0,
                 capability_match=True,
             )
         return result
@@ -736,6 +740,15 @@ class SmartRouter:
                 consecutive_failures = cb_state.consecutive_failures
                 if cb_state.cooldown_until > time.monotonic():
                     cb_status = "open"
+            # M5: lấy 4 chiều mở rộng từ metadata (fail-open, provider-agnostic).
+            cand_meta = {}
+            for rname, route in self.routes.items():
+                for c in route["candidates"]:
+                    if c.key == key:
+                        cand_meta = c.metadata or {}
+                        break
+                if cand_meta:
+                    break
             metrics_by_key[key] = CandidateMetrics(
                 price_per_million_input=price_info.get("input_per_million"),
                 price_per_million_output=price_info.get("output_per_million"),
@@ -752,6 +765,10 @@ class SmartRouter:
                 limit=limit,
                 safety_buffer=safety_buffer,
                 burn_rate_urgency=burn_urgency,
+                expiry_urgency=float(cand_meta.get("expiry_urgency", 0.0) or 0.0),
+                scarcity=float(cand_meta.get("scarcity", 0.0) or 0.0),
+                retry_expected_cost=float(cand_meta.get("retry_expected_cost_per_request", 0.0) or 0.0),
+                uncertainty=float(cand_meta.get("uncertainty_score", 0.0) or 0.0),
                 capability_match=True,
             )
         return metrics_by_key

@@ -2016,3 +2016,26 @@ Follow-up risks / TODOs:
 - `expiry_urgency`, `scarcity`, `retry_cost`, `uncertainty`, session/cache affinity và route simulation chưa được đưa đầy đủ vào `CandidateMetrics`/score composite.
 - `min_quota_headroom` chỉ enforce khi metadata có cả remaining và limit; thiếu telemetry thì fail-open có chủ đích.
 - Cần commit/push Step 89 sau khi kiểm tra diff và secret scan.
+
+## Step 90 — M5 scoring mở rộng: expiry, scarcity, retry cost, uncertainty (2026-09-16)
+
+Implemented:
+- `apps/gateway/routing/scoring.py`: mở rộng `ScoringWeights` thêm `expiry_urgency_factor`, `scarcity_factor`, `retry_cost_factor`, `uncertainty_factor` (mặc định 0 giữ tương thích cũ). Thêm vào `CandidateMetrics` các field `expiry_urgency`, `scarcity`, `retry_expected_cost`, `uncertainty` với 4 scorer riêng đưa vào composite và route-level resolve qua preset.
+- `apps/gateway/routing/presets.py`: mỗi preset đã có weights cho 4 chiều mới; `preset_to_scoring_weights()` map đủ 10 chiều và chuẩn hóa về 1.0.
+- `apps/gateway/routing/engine.py` + `router.py`: builder metrics hydrate 4 chiều từ `candidate.metadata` (fail-open nếu thiếu), không branch theo tên provider.
+- `apps/gateway/config/compiler.py`: giữ 4 key metadata để routing core nhận đủ dữ liệu.
+- Thêm `tests/unit/test_m5_feature_scoring.py` (6 tests cho từng chiều + composite).
+
+Verification:
+- RED tests `test_m5_feature_scoring.py` trước code fail do thiếu field/scorer.
+- Sau implement: `pytest tests/unit/test_m5_feature_scoring.py tests/unit/test_smart_scorer.py` → `38 passed`.
+- `test_smart_scheduler_integration.py::test_defaults_when_no_data` ban đầu fail do expectation cũ (cost 0.3226 / reliability 0.1774); đã cập nhật expectation theo normalize 10 chiều (cost 0.2222 / reliability 0.1222) và assert 4 factor mới >0.
+- Full suite: `299 passed, 6 skipped`; `git diff --check` không lỗi; secret-like grep chỉ `retry_expected_cost_per_request` role metadata.
+
+Outcome:
+- README §18.3 slice đạt: expiry, scarcity, retry cost, uncertainty tham gia scoring và route metadata, có thể re-order candidate khi preset yêu cầu.
+- M5 pipeline: policy → quota → expiry/scarcity/retry/uncertainty → scoring composite.
+
+Follow-up risks / TODOs:
+- `compiler._candidate_metadata` hiện giữ 4 chiều mới dạng float; chưa có validation range [0,1] cho scarcity/uncertainty.
+- Session/cache affinity wiring vẫn stub (engine/router hydrate 0.0); cần wiring đầy đủ cho session affinity §20.

@@ -112,8 +112,15 @@ class TestScoringConfigParsing(unittest.TestCase):
         cfg = ScoringConfig.from_dict({})
         self.assertFalse(cfg.enabled)
         self.assertEqual(cfg.preset, "auto-free")
-        self.assertAlmostEqual(cfg.weights.cost_factor, 0.3226, places=3)
-        self.assertAlmostEqual(cfg.weights.reliability_factor, 0.1774, places=3)
+        # auto-free nạp 10 chiều (6 cũ + 4 mới) rồi normalize về tổng 1.0
+        self.assertAlmostEqual(cfg.weights.cost_factor, 0.2222, places=3)
+        self.assertAlmostEqual(cfg.weights.reliability_factor, 0.1222, places=3)
+        # 4 chiều M5 phải có trọng số >0 khi preset auto-free được nạp
+        self.assertGreater(cfg.weights.expiry_urgency_factor, 0.0)
+        self.assertGreater(cfg.weights.scarcity_factor, 0.0)
+        self.assertGreater(cfg.weights.retry_cost_factor, 0.0)
+        self.assertGreater(cfg.weights.uncertainty_factor, 0.0)
+        self.assertAlmostEqual(sum(cfg.weights.to_dict().values()), 1.0, places=2)
 
     def test_overrides_from_yaml(self):
         from apps.gateway.routing.scoring import ScoringConfig

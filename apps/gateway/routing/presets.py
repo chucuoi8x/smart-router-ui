@@ -229,10 +229,10 @@ def preset_to_scoring_weights(preset: PolicyPreset) -> dict[str, float]:
 
     Chỉ map các chiều đã có trong ScoringWeights hiện tại; các chiều mới
     (free_savings, expiry_urgency, scarcity, retry_cost, uncertainty)
-    được trả về riêng để scheduler mở rộng sau này mà không làm vỡ API.
+    được map sang 4 factor mới để scheduler phản ánh đúng policy preset.
     """
     w = preset.weights
-    # Map sang 6 chiều hiện tại của ScoringWeights
+    # Map sang 10 chiều của ScoringWeights (6 cũ + 4 mới)
     mapped: dict[str, float] = {
         "cost_factor": max(0.0, w.free_savings) if w.free_savings else 0.25,
         "reliability_factor": max(0.0, w.reliability) if w.reliability else 0.30,
@@ -240,8 +240,12 @@ def preset_to_scoring_weights(preset: PolicyPreset) -> dict[str, float]:
         "capability_factor": max(0.0, w.quality_fit) if w.quality_fit else 0.10,
         "session_affinity_factor": max(0.0, w.cache_locality) if w.cache_locality else 0.10,
         "latency_factor": max(0.0, w.latency) if w.latency and w.latency > 0 else 0.10,
+        "expiry_urgency_factor": max(0.0, w.expiry_urgency) if w.expiry_urgency else 0.0,
+        "scarcity_factor": max(0.0, abs(w.scarcity)) if w.scarcity else 0.0,
+        "retry_cost_factor": max(0.0, abs(w.retry_cost)) if w.retry_cost else 0.0,
+        "uncertainty_factor": max(0.0, abs(w.uncertainty)) if w.uncertainty else 0.0,
     }
-    # Chuẩn hóa về tổng 1.0 nếu cần
+    # Chuẩn hóa về tổng 1.0 nếu cần; giữ 4 factor mới có trọng số khi preset yêu cầu
     total = sum(mapped.values())
     if total > 0 and abs(total - 1.0) > 0.01:
         inv = 1.0 / total

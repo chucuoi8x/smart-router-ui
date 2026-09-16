@@ -290,11 +290,12 @@ class RouterEngine:
             from apps.gateway.routing.scoring import CandidateMetrics
             metrics: dict[str, CandidateMetrics] = {}
             prices = getattr(self.snapshot, "_prices", {}) or {}
-            for key in keys:
+            for candidate, key in zip(candidates, keys):
                 model_part = key.split(":", 1)[-1]
                 price_info = prices.get(model_part, {})
                 eff_remaining = 0
                 lim = 0
+                sb = 0
                 burn_urgency = 0.0
                 # Try quota snapshot for each candidate
                 rid = f"model:{model_part}"
@@ -303,6 +304,7 @@ class RouterEngine:
                         res = self._quota_snap(rid)
                         eff_remaining = getattr(res, "effective_remaining", 0)
                         lim = getattr(res, "limit", 0)
+                        sb = getattr(res, "safety_buffer", 0)
                     except (KeyError, TypeError, ValueError):
                         pass
                 if lim > 0 and eff_remaining >= 0:
@@ -311,7 +313,12 @@ class RouterEngine:
                     price_per_million_output=price_info.get("output_per_million"),
                     effective_remaining=eff_remaining,
                     limit=lim,
+                    safety_buffer=sb,
                     burn_rate_urgency=burn_urgency,
+                    expiry_urgency=float(candidate.metadata.get("expiry_urgency", 0.0)),
+                    scarcity=float(candidate.metadata.get("scarcity", 0.0)),
+                    retry_expected_cost=float(candidate.metadata.get("retry_expected_cost_per_request", 0.0)),
+                    uncertainty=float(candidate.metadata.get("uncertainty_score", 0.0)),
                 )
             # Lấy weights theo preset của route (không hardcode provider).
             route_weights = None

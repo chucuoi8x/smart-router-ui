@@ -34,6 +34,12 @@ class ScoringWeights:
     quota_pressure_factor: float = 0.15
     capability_factor: float = 0.10
     session_affinity_factor: float = 0.10
+    # Chiều mở rộng theo README §18.3. Mặc định 0 để giữ tương thích hành vi cũ;
+    # bật qua config weights hoặc weights tự sinh từ policy preset.
+    expiry_urgency_factor: float = 0.0
+    scarcity_factor: float = 0.0
+    retry_cost_factor: float = 0.0
+    uncertainty_factor: float = 0.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "ScoringWeights":
@@ -46,6 +52,10 @@ class ScoringWeights:
             quota_pressure_factor=float(data.get("quota_pressure_factor", cls.quota_pressure_factor)),
             capability_factor=float(data.get("capability_factor", cls.capability_factor)),
             session_affinity_factor=float(data.get("session_affinity_factor", cls.session_affinity_factor)),
+            expiry_urgency_factor=float(data.get("expiry_urgency_factor", cls.expiry_urgency_factor)),
+            scarcity_factor=float(data.get("scarcity_factor", cls.scarcity_factor)),
+            retry_cost_factor=float(data.get("retry_cost_factor", cls.retry_cost_factor)),
+            uncertainty_factor=float(data.get("uncertainty_factor", cls.uncertainty_factor)),
         )
 
     def normalize_if_needed(self) -> tuple["ScoringWeights", bool]:
@@ -57,6 +67,10 @@ class ScoringWeights:
             + self.quota_pressure_factor
             + self.capability_factor
             + self.session_affinity_factor
+            + self.expiry_urgency_factor
+            + self.scarcity_factor
+            + self.retry_cost_factor
+            + self.uncertainty_factor
         )
         if abs(total - 1.0) < 0.01:
             return self, False
@@ -72,6 +86,10 @@ class ScoringWeights:
             quota_pressure_factor=self.quota_pressure_factor * inv,
             capability_factor=self.capability_factor * inv,
             session_affinity_factor=self.session_affinity_factor * inv,
+            expiry_urgency_factor=self.expiry_urgency_factor * inv,
+            scarcity_factor=self.scarcity_factor * inv,
+            retry_cost_factor=self.retry_cost_factor * inv,
+            uncertainty_factor=self.uncertainty_factor * inv,
         )
         return normalized, True
 
@@ -83,6 +101,10 @@ class ScoringWeights:
             "quota_pressure_factor": round(self.quota_pressure_factor, 4),
             "capability_factor": round(self.capability_factor, 4),
             "session_affinity_factor": round(self.session_affinity_factor, 4),
+            "expiry_urgency_factor": round(self.expiry_urgency_factor, 4),
+            "scarcity_factor": round(self.scarcity_factor, 4),
+            "retry_cost_factor": round(self.retry_cost_factor, 4),
+            "uncertainty_factor": round(self.uncertainty_factor, 4),
         }
 
 
@@ -162,6 +184,10 @@ class ScoringConfig:
                     quota_pressure_factor=mapped.get("quota_pressure_factor", cfg.weights.quota_pressure_factor),
                     capability_factor=mapped.get("capability_factor", cfg.weights.capability_factor),
                     session_affinity_factor=mapped.get("session_affinity_factor", cfg.weights.session_affinity_factor),
+                    expiry_urgency_factor=mapped.get("expiry_urgency_factor", cfg.weights.expiry_urgency_factor),
+                    scarcity_factor=mapped.get("scarcity_factor", cfg.weights.scarcity_factor),
+                    retry_cost_factor=mapped.get("retry_cost_factor", cfg.weights.retry_cost_factor),
+                    uncertainty_factor=mapped.get("uncertainty_factor", cfg.weights.uncertainty_factor),
                 )
                 cfg.weights, _ = cfg.weights.normalize_if_needed()
             except Exception:
@@ -204,6 +230,10 @@ class ScoringConfig:
                 quota_pressure_factor=mapped.get("quota_pressure_factor", self.weights.quota_pressure_factor),
                 capability_factor=mapped.get("capability_factor", self.weights.capability_factor),
                 session_affinity_factor=mapped.get("session_affinity_factor", self.weights.session_affinity_factor),
+                expiry_urgency_factor=mapped.get("expiry_urgency_factor", self.weights.expiry_urgency_factor),
+                scarcity_factor=mapped.get("scarcity_factor", self.weights.scarcity_factor),
+                retry_cost_factor=mapped.get("retry_cost_factor", self.weights.retry_cost_factor),
+                uncertainty_factor=mapped.get("uncertainty_factor", self.weights.uncertainty_factor),
             )
             w, _ = w.normalize_if_needed()
             return w
@@ -240,6 +270,10 @@ class CandidateMetrics:
     limit: int = 0
     safety_buffer: int = 0
     burn_rate_urgency: float = 0.0
+    expiry_urgency: float = 0.0
+    scarcity: float = 0.0
+    retry_expected_cost: float = 0.0
+    uncertainty: float = 0.0
 
     # Capability
     capability_match: bool = True
@@ -489,6 +523,10 @@ class SmartScoreCalculator:
         quota = self._score_quota_pressure(metrics)
         capability = self._score_capability(metrics)
         affinity = self._score_session_affinity(key, conversation_thread)
+        expiry_urgency = self._score_expiry_urgency(metrics)
+        scarcity = self._score_scarcity(metrics)
+        retry_cost = self._score_retry_cost(metrics)
+        uncertainty = self._score_uncertainty(metrics)
 
         composite = (
             w.cost_factor * cost
@@ -497,6 +535,10 @@ class SmartScoreCalculator:
             + w.quota_pressure_factor * quota
             + w.capability_factor * capability
             + w.session_affinity_factor * affinity
+            + w.expiry_urgency_factor * expiry_urgency
+            + w.scarcity_factor * scarcity
+            + w.retry_cost_factor * retry_cost
+            + w.uncertainty_factor * uncertainty
         )
 
         return {
@@ -506,6 +548,10 @@ class SmartScoreCalculator:
             "quota_pressure": round(quota, 4),
             "capability": round(capability, 4),
             "session_affinity": round(affinity, 4),
+            "expiry_urgency": round(expiry_urgency, 4),
+            "scarcity": round(scarcity, 4),
+            "retry_cost": round(retry_cost, 4),
+            "uncertainty": round(uncertainty, 4),
             "composite": round(composite, 4),
         }
 
@@ -564,3 +610,21 @@ class SmartScoreCalculator:
             return 0.0
         last_candidate = self._session_store.get(conversation_thread)
         return 1.0 if last_candidate == key else 0.0
+
+    def _score_expiry_urgency(self, m: CandidateMetrics) -> float:
+        """Năng lượng expiry: càng gần reset, urgency càng cao."""
+        return max(0.0, min(1.0, m.expiry_urgency))
+
+    def _score_scarcity(self, m: CandidateMetrics) -> float:
+        """Model hiếm bị hạ điểm theo scarcity."""
+        return max(0.0, min(1.0, 1.0 - m.scarcity))
+
+    def _score_retry_cost(self, m: CandidateMetrics) -> float:
+        """Chi phí retry càng cao càng bị trừ."""
+        cost = max(0.0, m.retry_expected_cost)
+        # Inverse scale: scale 10 tokens là điểm tham chiếu
+        return 1.0 / (1.0 + cost / 10.0) if cost >= 0 else 1.0
+
+    def _score_uncertainty(self, m: CandidateMetrics) -> float:
+        """Metadata thiếu tin cậy bị hạ điểm."""
+        return max(0.0, min(1.0, 1.0 - m.uncertainty))
