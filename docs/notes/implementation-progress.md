@@ -2109,3 +2109,18 @@ Outcome:
 Follow-up risks / TODOs:
 - Budget/concurrency và retry-cost live wiring cho scoring vẫn là slice M5 còn lại theo README §18–§20.
 - Cần thêm integration test end-to-end cho vision/tools qua gateway (hiện chỉ unit cho filter và candidate ordering).
+
+## Step 94 — M5 retry budget enforcement theo preset (§21)
+
+Implemented:
+- `apps/gateway/routing/presets.py`: mở rộng `RetryPolicy` thêm `max_extra_latency_ms` (default 5000), `retryable_errors=("RATE_LIMIT","OVERLOADED","TRANSIENT_NETWORK","QUOTA_EXHAUSTED")`. `QUOTA_EXHAUSTED` được giữ trong default để failover candidate khác không bị chặn bởi budget (không retry cùng resource khi quota hết).
+- `apps/gateway/routing/retry.py`: mới `RetryBudget` class — track `attempts_used`, `extra_input_tokens_used`, `extra_latency_ms_used`; `can_retry(kind, extra_input_tokens, extra_latency_ms)` kiểm tra allowed errors, max attempts, token budget, latency budget; `record_retry()` cập nhật counters. Không lưu payload request.
+- `router.py`: `_failure_runtime_decision(..., retry_budget, extra_input_tokens, extra_latency_ms)` nhận budget, gọi `can_retry()` trước khi trả `try_next=True`; giảm `try_next` về False khi budget exhausted. Thêm `_estimate_input_tokens(body)` ước lượng input tokens cho budget từ JSON serialization length. `handle_messages()` tạo `RetryBudget` từ preset của route ngay trước khi dispatch stream/non-stream. Signature `_non_stream_messages(..., retry_budget)` và `_stream_messages(..., retry_budget)` nhận budget; mỗi call site `_failure_runtime_decision` truyền `retry_budget` + estimate input tokens + elapsed ms. Các khối `decision.try_next → continue` được gắn `retry_budget.record_retry(...)` sau khi chấp thuận retry. Stream path (`_stream_messages`) cũng nhận budget; status error trên opened response gọi decision có budget.
+
+Verification:
+- RED: 4 tests fail `ModuleNotFoundError` và `TypeError: unexpected keyword argument 'max_extra_latency_ms'` trước implement.
+- GREEN: `pytest tests/unit/test_m5_retry_budget.py -q` → `4 passed`; targeted `... + test_router_engine.py` → `20 passed`; full suite `pytest -q --tb=short` → `317 passed, 6 skipped, 1 warning`. Regression: test `test_upstream_quota_exhaustion_excludes_candidate_on_next_request` rớt vì budget mặc định chưa có `QUOTA_EXHAUSTED` trong `retryable_errors` → sửa presets, test xanh lại.
+- `git diff --check` sạch (chỉ CRLF). Quét secret 0 match; file mới chỉ dùng string literals không chứa credential.
+
+Outcome:
+- Retry budget enforcement hoạt động: `INVALID_REQUEST`, `CONTEXT_TOO_LARGE` không bao giờ retry; `QUOTA_EXHAUSTED` retry (failover); `RATE_LIMIT`/`OVERLOADED`/`TRANSIENT_NETWORK` tuân thủ budget. Default policy auto-free/coding không thay đổi hành vi failover hiện tại nhưng `critical` preset có thể hạn chế retry bằng `max_attempts`. Provider-agnostic — chỉ đọc metadata/preset.

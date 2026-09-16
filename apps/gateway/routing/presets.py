@@ -46,6 +46,14 @@ class PolicyWeights:
 class RetryPolicy:
     max_attempts: int = 3
     max_extra_input_tokens: int = 60000
+    max_extra_latency_ms: int = 5000
+    retryable_errors: tuple[str, ...] = (
+        "RATE_LIMIT",
+        "OVERLOADED",
+        "TRANSIENT_NETWORK",
+        # Quota hết ở resource hiện tại: failover candidate kế tiếp, không retry cùng resource.
+        "QUOTA_EXHAUSTED",
+    )
 
 
 @dataclass(frozen=True)

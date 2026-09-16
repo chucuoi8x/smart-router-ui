@@ -647,6 +647,18 @@ class SmartRouter:
             pass
         return caps
 
+    def _estimate_input_tokens(self, body: dict[str, Any] | None) -> int:
+        """Ước lượng input tokens cho retry budget — không lưu payload."""
+        if not isinstance(body, dict):
+            return 0
+        try:
+            import json as _json
+
+            txt = _json.dumps(body, ensure_ascii=False)
+            return max(0, len(txt) // 4)
+        except Exception:
+            return 0
+
     def _apply_policy_constraints(
         self,
         candidates: list[Candidate],
@@ -1384,11 +1396,24 @@ class SmartRouter:
                 content={"error": {"type": "overloaded", "message": "all candidates are cooling down or unavailable"}},
             )
 
+        # Retry budget theo policy preset — giữ state trong một request, không lưu payload.
+        from apps.gateway.routing.retry import RetryBudget
+        try:
+            retry_policy = self._scoring_config.effective_preset_for_route(route_name).retry
+        except Exception:
+            from apps.gateway.routing.presets import RetryPolicy
+            retry_policy = RetryPolicy()
+        estimated_input_tokens = self._estimate_input_tokens(body)
+        retry_budget = RetryBudget(
+            retry_policy,
+            estimated_input_tokens=estimated_input_tokens,
+        )
+
         await self._record_usage_request(request_id=request_id, route_name=route_name)
 
         if bool(body.get("stream", False)) and path.endswith("/messages"):
-            return await self._stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id, request_id, conversation_thread)
-        return await self._non_stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id, request_id, conversation_thread)
+            return await self._stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id, request_id, conversation_thread, retry_budget=retry_budget)
+        return await self._non_stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id, request_id, conversation_thread, retry_budget=retry_budget)
 
     async def _non_stream_messages(
         self,
@@ -1401,6 +1426,7 @@ class SmartRouter:
         resource_id: str | None = None,
         request_id: str | None = None,
         conversation_thread: str | None = None,
+        retry_budget: Any | None = None,
     ) -> Response:
         last_failure: str | None = None
         for index, candidate in enumerate(candidates):
@@ -1432,7 +1458,7 @@ class SmartRouter:
                         "consumption_uncertainty": "none",
                         "status_code": None,
                     }
-                    decision = self._failure_runtime_decision(None, classification, has_next=has_next)
+                    decision = self._failure_runtime_decision(None, classification, has_next=has_next, retry_budget=retry_budget, extra_input_tokens=self._estimate_input_tokens(body), extra_latency_ms=int(elapsed_ms))
                     await self._record_failure(candidate, None, last_failure, classification, decision)
                     await self._record_usage_attempt(
                         request_id=request_id,
@@ -1441,6 +1467,11 @@ class SmartRouter:
                         status="TRANSIENT_NETWORK",
                     )
                     if decision.try_next:
+                        if retry_budget is not None:
+                            try:
+                                retry_budget.record_retry(extra_input_tokens=self._estimate_input_tokens(body), extra_latency_ms=int(elapsed_ms))
+                            except Exception:
+                                pass
                         continue
                     break
                 if response.status_code >= 400:
@@ -1454,6 +1485,9 @@ class SmartRouter:
                         classification,
                         has_next=has_next,
                         quota_observed=quota_observed,
+                        retry_budget=retry_budget,
+                        extra_input_tokens=self._estimate_input_tokens(body),
+                        extra_latency_ms=int((time.monotonic() - _start) * 1000),
                     )
                     last_failure = f"upstream returned {response.status_code} ({attempt_status})"
                     await self._record_failure(candidate, response.status_code, last_failure, classification, decision)
@@ -1464,6 +1498,11 @@ class SmartRouter:
                         status=attempt_status,
                     )
                     if decision.try_next:
+                        if retry_budget is not None:
+                            try:
+                                retry_budget.record_retry(extra_input_tokens=self._estimate_input_tokens(body), extra_latency_ms=int((time.monotonic() - _start) * 1000))
+                            except Exception:
+                                pass
                         continue
                     await self._finalize_error_reservation(reservation_id, resource_id, classification, decision)
                     return Response(
@@ -1537,7 +1576,12 @@ class SmartRouter:
                     "consumption_uncertainty": "none",
                     "status_code": None,
                 }
-                decision = self._failure_runtime_decision(None, classification, has_next=has_next)
+                decision = self._failure_runtime_decision(
+                    None, classification, has_next=has_next,
+                    retry_budget=retry_budget,
+                    extra_input_tokens=self._estimate_input_tokens(body),
+                    extra_latency_ms=int(elapsed_ms),
+                )
                 await self._record_failure(candidate, None, last_failure, classification, decision)
                 await self._record_usage_attempt(
                     request_id=request_id,
@@ -1546,6 +1590,11 @@ class SmartRouter:
                     status="TRANSIENT_NETWORK",
                 )
                 if decision.try_next:
+                    if retry_budget is not None:
+                        try:
+                            retry_budget.record_retry(extra_input_tokens=self._estimate_input_tokens(body), extra_latency_ms=int(elapsed_ms))
+                        except Exception:
+                            pass
                     continue
                 break
             status_code = result["status_code"]
@@ -1560,6 +1609,9 @@ class SmartRouter:
                     classification,
                     has_next=has_next,
                     quota_observed=quota_observed,
+                    retry_budget=retry_budget,
+                    extra_input_tokens=self._estimate_input_tokens(body),
+                    extra_latency_ms=int((time.monotonic() - _start) * 1000),
                 )
                 last_failure = f"upstream returned {status_code} ({attempt_status})"
                 await self._record_failure(candidate, status_code, last_failure, classification, decision)
@@ -1570,6 +1622,14 @@ class SmartRouter:
                     status=attempt_status,
                 )
                 if decision.try_next:
+                    if retry_budget is not None:
+                        try:
+                            retry_budget.record_retry(
+                                extra_input_tokens=self._estimate_input_tokens(body),
+                                extra_latency_ms=int((time.monotonic() - _start) * 1000),
+                            )
+                        except Exception:
+                            pass
                     continue
                 await self._finalize_error_reservation(reservation_id, resource_id, classification, decision)
                 # Convert body string to bytes for Response
@@ -1639,6 +1699,7 @@ class SmartRouter:
         resource_id: str | None = None,
         request_id: str | None = None,
         conversation_thread: str | None = None,
+        retry_budget: Any | None = None,
     ) -> Response:
         last_failure: str | None = None
         for index, candidate in enumerate(candidates):
@@ -1663,6 +1724,9 @@ class SmartRouter:
                         classification,
                         has_next=has_next,
                         quota_observed=quota_observed,
+                        retry_budget=retry_budget,
+                        extra_input_tokens=self._estimate_input_tokens(body),
+                        extra_latency_ms=int(_elapsed_ms),
                     )
                     last_failure = f"upstream returned {opened.status_code} ({attempt_status})"
                     await self._record_failure(candidate, opened.status_code, last_failure, classification, decision)
@@ -1673,6 +1737,11 @@ class SmartRouter:
                         status=attempt_status,
                     )
                     if decision.try_next:
+                        if retry_budget is not None:
+                            try:
+                                retry_budget.record_retry(extra_input_tokens=self._estimate_input_tokens(body), extra_latency_ms=int(_elapsed_ms))
+                            except Exception:
+                                pass
                         continue
                     # Non-retryable error Response (e.g. invalid request);
                     # no stream was opened, so we cannot know actual token usage.
@@ -1870,6 +1939,9 @@ class SmartRouter:
         has_next: bool,
         consecutive_failures: int = 1,
         quota_observed: bool = False,
+        retry_budget: Any | None = None,
+        extra_input_tokens: int = 0,
+        extra_latency_ms: int = 0,
     ) -> FailureRuntimeDecision:
         kind = self._classification_kind(classification, status)
         scope = str(classification.get("scope")) if classification and classification.get("scope") else None
@@ -1881,12 +1953,30 @@ class SmartRouter:
         suppression = {"QUOTA_EXHAUSTED", "AUTH_EXPIRED", "AUTH_REVOKED", "MODEL_NOT_FOUND"}
         transient = {"RATE_LIMIT", "OVERLOADED", "TRANSIENT_NETWORK"}
 
+        # Retry budget enforcement (M5 §21): chặn retry khi hết ngân sách attempts / tokens / latency
+        budget_allows = True
+        if retry_budget is not None and hasattr(retry_budget, "can_retry"):
+            try:
+                budget_allows = bool(
+                    retry_budget.can_retry(
+                        kind,
+                        extra_input_tokens=extra_input_tokens,
+                        extra_latency_ms=extra_latency_ms,
+                    )
+                )
+            except Exception:
+                budget_allows = True
+
         if kind in request_scoped:
             return FailureRuntimeDecision(kind, scope, False, False, None, False, False, "release")
 
         if kind == "QUOTA_EXHAUSTED":
             cooldown = None if quota_observed else (parsed_delay or self._default_cooldown_seconds(kind, consecutive_failures))
-            return FailureRuntimeDecision(kind, scope, True, False, cooldown, has_next, not quota_observed, "reconcile_minimal")
+            return FailureRuntimeDecision(
+                kind, scope, True, False, cooldown,
+                bool(has_next and budget_allows),
+                not quota_observed, "reconcile_minimal",
+            )
 
         if kind in {"AUTH_EXPIRED", "AUTH_REVOKED", "MODEL_NOT_FOUND"}:
             return FailureRuntimeDecision(
@@ -1895,7 +1985,7 @@ class SmartRouter:
                 True,
                 False,
                 parsed_delay or self._default_cooldown_seconds(kind, consecutive_failures),
-                has_next,
+                bool(has_next and budget_allows),
                 False,
                 "reconcile_minimal",
             )
@@ -1907,7 +1997,7 @@ class SmartRouter:
                 True,
                 True,
                 parsed_delay or self._default_cooldown_seconds(kind, consecutive_failures),
-                has_next,
+                bool(has_next and budget_allows),
                 False,
                 "reconcile_minimal",
             )
@@ -1919,7 +2009,7 @@ class SmartRouter:
             compatible_transient,
             compatible_transient,
             self._default_cooldown_seconds("UNKNOWN", consecutive_failures) if compatible_transient else None,
-            bool(has_next and compatible_transient),
+            bool(has_next and compatible_transient and budget_allows),
             False,
             "reconcile_minimal" if compatible_transient else "release",
         )
