@@ -38,6 +38,7 @@ _provider_credentials: dict[str, list[dict[str, Any]]] = {}
 _projects: dict[str, dict[str, Any]] = {}
 _project_keys: dict[str, list[dict[str, Any]]] = {}
 _project_budgets: dict[str, dict[str, Any]] = {}
+_policies: dict[str, dict[str, Any]] = {"paid-fallback": {"policy": "paid-fallback", "enabled": False, "requires_budget": True, "project_id": None}}
 _alerts: list[dict[str, Any]] = []
 _quota_resources: dict[str, dict[str, Any]] = {}
 _audit_events: list[dict[str, Any]] = []
@@ -568,6 +569,40 @@ def get_project_budget(project_id: str) -> dict[str, Any]:
     record = _project_budgets.get(project_id)
     if record is None:
         raise HTTPException(status_code=404, detail="budget not found")
+    return dict(record)
+
+
+@router.get("/policies/paid-fallback")
+def get_paid_fallback_policy() -> dict[str, Any]:
+    record = _policies.get("paid-fallback", {"policy": "paid-fallback", "enabled": False, "requires_budget": True, "project_id": None})
+    return dict(record)
+
+
+@router.put("/policies/paid-fallback")
+def update_paid_fallback_policy(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    if "enabled" not in payload:
+        raise HTTPException(status_code=400, detail="enabled is required")
+    enabled = bool(payload["enabled"])
+    project_id = payload.get("project_id")
+    if enabled:
+        # Enabling requires budget approval when a project_id is supplied, or global gate when not.
+        if project_id is not None:
+            project_id = str(project_id)
+            if project_id not in _projects:
+                raise HTTPException(status_code=404, detail="project not found")
+            budget = _project_budgets.get(project_id)
+            if budget is None or not bool(budget.get("allow_paid_fallback")):
+                raise HTTPException(status_code=400, detail="paid fallback requires budget with allow_paid_fallback=true")
+            remaining = float(budget.get("remaining", budget.get("ceiling", 0)) )
+            if remaining <= 0 and float(budget.get("ceiling", 0)) > 0:
+                raise HTTPException(status_code=400, detail="budget exhausted: cannot enable paid fallback")
+        else:
+            # Global enable without project: require at least one budget with allow_paid_fallback=true
+            if not any(bool(b.get("allow_paid_fallback")) for b in _project_budgets.values()):
+                raise HTTPException(status_code=400, detail="paid fallback requires at least one budget with allow_paid_fallback=true")
+    record = {"policy": "paid-fallback", "enabled": enabled, "requires_budget": True, "project_id": project_id}
+    _policies["paid-fallback"] = record
+    _audit_events.append({"action": "policy.paid_fallback.updated", "enabled": enabled, "project_id": project_id, "created_at": datetime.now(UTC).isoformat()})
     return dict(record)
 
 
