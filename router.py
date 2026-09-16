@@ -1360,33 +1360,6 @@ class SmartRouter:
                 content={"error": {"type": "unknown_model", "message": "unknown logical router model"}},
             )
 
-        reservation_id = None
-        resource_id = None
-        # Quota admission check
-        if self.quota_reservations is not None:
-            from apps.gateway.quota.reservations import QuotaReservationRequest
-            resource_id = f"model:{route_name}"
-            try:
-                reservation_id = uuid.uuid4().hex
-                result = await self.quota_reservations.reserve_many(
-                    reservation_id=reservation_id,
-                    requests=[QuotaReservationRequest(resource_id, amount=1)],
-                )
-                if not result.accepted:
-                    await self._record_usage_request(
-                        request_id=request_id,
-                        route_name=route_name,
-                        metadata={"status": "rejected", "reason": "quota_exhausted", "path": path},
-                    )
-                    return JSONResponse(
-                        status_code=503,
-                        content={"error": {"type": "quota_exhausted", "message": "quota exhausted"}},
-                    )
-            except KeyError:
-                # No quota resource defined for this route; allow the request
-                reservation_id = None
-                resource_id = None
-
         # Session hint: chỉ lấy ID để scoring affinity — không đụng payload/secret
         conversation_thread = self._conversation_thread_hint(body, incoming_headers)
         required_capabilities = self._required_capabilities_from_body(body)
@@ -1396,10 +1369,49 @@ class SmartRouter:
             conversation_thread=conversation_thread,
             required_capabilities=required_capabilities,
         )
+        reservation_id = None
+        resource_id = None
+        # Reservation theo candidate vật lý đã chọn (README §15.8) — thử reserve theo thứ tự candidate đã xếp hạng.
+        # Giữ fallback route-level (model:{route}) để tương thích test cũ khi candidate chưa khai resource riêng.
         if not candidates:
-            # If we had a reservation, release it before returning overloaded
-            if reservation_id is not None and resource_id is not None:
-                await self.quota_reservations.release(reservation_id)
+            if self.quota_reservations is not None:
+                # Kiểm tra xem empty có phải do quota exhausted không để trả đúng error type
+                raw_route = self.routes.get(route_name, {})
+                raw_cands = list(raw_route.get("candidates", [])) + list(raw_route.get("fallback", []))
+                quota_blocked = False
+                explicit_quota_resource = False
+                for rc in raw_cands:
+                    explicit_quota_resource = explicit_quota_resource or bool(
+                        rc.metadata.get("quota_resource_id") or rc.metadata.get("quota_resource_ids")
+                    )
+                    rids = await self._known_candidate_quota_resource_ids(rc)
+                    if not rids:
+                        # fallback route-level resource nếu candidate chưa khai
+                        try:
+                            await self.quota_reservations.snapshot(f"model:{route_name}")
+                            rids = [f"model:{route_name}"]
+                        except KeyError:
+                            rids = []
+                    if not rids:
+                        continue
+                    from apps.gateway.quota.reservations import QuotaReservationRequest
+                    try:
+                        adm = await self.quota_reservations.check_many([QuotaReservationRequest(rid, amount=1) for rid in rids])
+                    except KeyError:
+                        continue
+                    if not adm.accepted:
+                        quota_blocked = True
+                        break
+                if quota_blocked and explicit_quota_resource:
+                    await self._record_usage_request(
+                        request_id=request_id,
+                        route_name=route_name,
+                        metadata={"status": "rejected", "reason": "quota_exhausted", "path": path},
+                    )
+                    return JSONResponse(
+                        status_code=503,
+                        content={"error": {"type": "quota_exhausted", "message": "quota exhausted"}},
+                    )
             await self._record_usage_request(
                 request_id=request_id,
                 route_name=route_name,
@@ -1409,6 +1421,54 @@ class SmartRouter:
                 status_code=503,
                 content={"error": {"type": "overloaded", "message": "all candidates are cooling down or unavailable"}},
             )
+        if self.quota_reservations is not None:
+            from apps.gateway.quota.reservations import QuotaReservationRequest
+            reserved = False
+            for idx, cand in enumerate(list(candidates)):
+                rids = await self._known_candidate_quota_resource_ids(cand)
+                if not rids:
+                    try:
+                        await self.quota_reservations.snapshot(f"model:{route_name}")
+                        rids = [f"model:{route_name}"]
+                    except KeyError:
+                        rids = []
+                if not rids:
+                    reservation_id = None
+                    resource_id = None
+                    reserved = True
+                    if idx != 0:
+                        candidates = [cand] + candidates[:idx] + candidates[idx+1:]
+                    break
+                tmp_id = uuid.uuid4().hex
+                reqs = [QuotaReservationRequest(rid, amount=1) for rid in rids]
+                try:
+                    res = await self.quota_reservations.reserve_many(reservation_id=tmp_id, requests=reqs)
+                except KeyError:
+                    reservation_id = None
+                    resource_id = None
+                    reserved = True
+                    if idx != 0:
+                        candidates = [cand] + candidates[:idx] + candidates[idx+1:]
+                    break
+                if res.accepted:
+                    reservation_id = tmp_id
+                    resource_id = rids[0]
+                    reserved = True
+                    if idx != 0:
+                        candidates = [cand] + candidates[:idx] + candidates[idx+1:]
+                    break
+                # rejected -> thử candidate tiếp theo (không giữ reservation rejected)
+                continue
+            if not reserved:
+                await self._record_usage_request(
+                    request_id=request_id,
+                    route_name=route_name,
+                    metadata={"status": "rejected", "reason": "quota_exhausted", "path": path},
+                )
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": {"type": "quota_exhausted", "message": "quota exhausted"}},
+                )
 
         # Retry budget theo policy preset — giữ state trong một request, không lưu payload.
         from apps.gateway.routing.retry import RetryBudget

@@ -2247,3 +2247,22 @@ Outcome:
 Follow-up risks / TODOs:
 - Nốt gate cứng §18.2 đã đủ: disabled, deprecated, state, circuit, credential, protocol, output-limit, concurrency, budget đều luôn bật.
 - Còn lại wiring phiên live (quota/burn-rate expiry) cho scoring — thuộc slice scorer chứ không còn hard eligibility thiếu.
+## Step 101 — M5 live reservation theo candidate resource (2026-09-16)
+
+Implemented:
+- `router.py::handle_messages`: đổi thứ tự reservation — chọn candidate trước (conversation affinity + capability + hard filter), rồi reserve theo `quota_resource_ids`/`quota_resource_id` của candidate được chọn (thử lần lượt theo thứ tự xếp hạng). Giữ fallback `model:{route}` cho test legacy khi candidate không khai resource. Empty candidates: phân biệt `quota_exhausted` (khi candidate explicit) và `overloaded` (implicit/cooling). `reserve_many` reject -> thử candidate kế tiếp; hết candidate -> 503 quota_exhausted.
+- Giữ reconcile/release hiện có trong `_non_stream_messages`/`_stream_messages` không đổi.
+- `tests/unit/test_m5_candidate_reservation.py`: 2 tests — reservation đúng resource backup khi primary exhausted, và quota reject không gọi upstream.
+
+Verification:
+- RED: 2/2 fail — primary vẫn chọn dù exhausted, overloaded thay vì quota_exhausted.
+- GREEN: `pytest test_m5_candidate_reservation -q` → `2 passed`; cùng `test_quota_integration` → `16 passed`; full suite `pytest -q --tb=short` → `337 passed, 6 skipped, 1 warning`.
+- `git diff --check` sạch (chỉ CRLF). Secret scan `router.py` 0 match.
+
+Outcome:
+- Live reservation giờ theo resource vật lý đã chọn, đúng README §15.8 atomic reservation — không còn khóa logical route trước khi chọn candidate.
+- Tương thích test cũ: implicit `model:` limit=0 vẫn trả overloaded, explicit `account:`/`quota_resource_id` mới trả quota_exhausted.
+
+Follow-up risks / TODOs:
+- Candidate reservation hiện amount=1 requests; token-based capacity (TPM) chưa wiring theo `estimated_input_tokens`.
+- Cần wiring `reconcile` với actual usage cho tất cả path (đã có nhưng chỉ release/reconcile 1 resource).
