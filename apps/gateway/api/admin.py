@@ -162,6 +162,7 @@ def list_providers_health() -> dict[str, Any]:
             "driver": record.get("driver"),
             "status": cached.get("status", "unknown"),
             "checked_at": cached.get("checked_at", now),
+            "runtime_state": cached.get("runtime_state"),
             "credential_present": bool(record.get("credential_present")),
         })
     return {"items": items, "total": len(items)}
@@ -181,6 +182,7 @@ def get_provider_health(connection_id: str) -> dict[str, Any]:
         "driver": record.get("driver"),
         "status": cached.get("status", "unknown"),
         "checked_at": cached.get("checked_at", datetime.now(UTC).isoformat()),
+        "runtime_state": cached.get("runtime_state"),
         "credential_present": bool(record.get("credential_present")),
     }
 
@@ -309,9 +311,24 @@ async def test_provider_connection(connection_id: str) -> dict[str, Any]:
     normalized_result = result if isinstance(result, dict) else {"result": result}
     result_status = str(normalized_result.get("status", "ok")).lower()
     health_status = "healthy" if result_status in {"ok", "healthy", "success"} else "degraded"
+    try:
+        from apps.gateway.quota.runtime import describe_runtime_state as _describe_runtime_state
+
+        _probe_kind = str(normalized_result.get("kind") or normalized_result.get("error_kind") or ("SUCCESS" if health_status == "healthy" else "UNKNOWN")).upper()
+        _runtime_state = _describe_runtime_state(
+            _probe_kind,
+            reset_at=str(normalized_result.get("reset_at")) if normalized_result.get("reset_at") else None,
+            retry_after=str(normalized_result.get("retry_after")) if normalized_result.get("retry_after") else None,
+        )
+        # Map healthy probe to explicit healthy state (probe success ≠ rate-limited)
+        if health_status == "healthy" and _probe_kind in {"SUCCESS", "UNKNOWN"}:
+            _runtime_state = {"state": "healthy", "kind": "SUCCESS", "retryable": False, "is_long_term": False, "reset_at": None, "retry_after": None, "scope": None}
+    except Exception:
+        _runtime_state = None
     _provider_health_cache[connection_id] = {
         "status": health_status,
         "checked_at": datetime.now(UTC).isoformat(),
+        "runtime_state": _runtime_state,
         "result": {k: v for k, v in normalized_result.items() if k not in {"api_key", "credential", "token", "secret"}},
     }
     return {"ok": True, "connection_id": connection_id, "result": normalized_result}
