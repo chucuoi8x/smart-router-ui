@@ -36,6 +36,7 @@ _revision_manager = ConfigRevisionManager()
 _provider_connections: dict[str, dict[str, Any]] = {}
 _provider_credentials: dict[str, list[dict[str, Any]]] = {}
 _projects: dict[str, dict[str, Any]] = {}
+_alerts: list[dict[str, Any]] = []
 _audit_events: list[dict[str, Any]] = []
 _settings: dict[str, Any] = {"log_level": "INFO"}
 _driver_registry = default_driver_registry()
@@ -363,6 +364,54 @@ def delete_project(project_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="project not found")
     _audit_events.append({"action":"project.deleted","project_id":project_id,"name":record["name"],"created_at":datetime.now(UTC).isoformat()})
     return {"project_id": project_id, "deleted": True}
+
+
+@router.post("/alerts", status_code=201)
+def create_alert(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    severity = str(payload.get("severity") or "info").strip().lower()
+    if severity not in {"info", "warning", "critical"}:
+        raise HTTPException(status_code=400, detail="severity must be info, warning or critical")
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    alert = {
+        "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
+        "severity": severity,
+        "message": message,
+        "source": str(payload.get("source") or "manual"),
+        "status": "open",
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    _alerts.append(alert)
+    _audit_events.append({"action":"alert.created","alert_id":alert["alert_id"],"severity":severity,"created_at":alert["created_at"]})
+    return dict(alert)
+
+
+@router.get("/alerts")
+def list_alerts(status: str | None = Query(default=None), severity: str | None = Query(default=None)) -> dict[str, Any]:
+    items = list(reversed(_alerts))
+    if status:
+        items = [a for a in items if a["status"] == status]
+    if severity:
+        items = [a for a in items if a["severity"] == severity]
+    return {"items": items, "total": len(items)}
+
+
+@router.patch("/alerts/{alert_id}")
+def update_alert(alert_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    target = None
+    for a in _alerts:
+        if a["alert_id"] == alert_id:
+            target = a
+            break
+    if target is None:
+        raise HTTPException(status_code=404, detail="alert not found")
+    new_status = str(payload.get("status") or "").strip().lower()
+    if new_status not in {"open", "acknowledged", "resolved"}:
+        raise HTTPException(status_code=400, detail="status must be open, acknowledged or resolved")
+    target["status"] = new_status
+    _audit_events.append({"action":"alert.updated","alert_id":alert_id,"status":new_status,"created_at":datetime.now(UTC).isoformat()})
+    return dict(target)
 
 
 @router.get("/routes")
