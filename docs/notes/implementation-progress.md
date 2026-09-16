@@ -2657,7 +2657,7 @@ Follow-up risks / TODOs:
 ## RESUME 1.0 — current
 
 - Branch: `feature/admin-api-baseline`
-- HEAD after Step 160 (ready audit); full `524 passed, 6 skipped, 1 warning`
+- HEAD after Step 160 (ready audit); full `526 passed, 6 skipped, 1 warning` (after migrate gate)
 - AC-01 through AC-16 covered by implementation/tests/docs.
 - `.claude/` remains untracked and must not be committed.
 - Post-1.0 backlog: Docker compose smoke tren host co Docker (gateway/worker/web/postgres/redis + alembic upgrade), load benchmark, UI dist build pipeline.
@@ -2701,3 +2701,10 @@ Follow-up risks / TODOs:
 - Test moi `tests/unit/test_production_readiness.py` 5 tests: env.example du key, worker compose env/volume, Dockerfile worker state, runbook khong stale, gitignore co `__pycache__`/`state/`/`.env`.
 - Ket qua: targeted `5 passed`, full `524 passed, 6 skipped, 1 warning`; YAML/config parse OK; secret scan tren tracked files: 0 match.
 - Docker runtime van chua chay duoc tren may nay (khong co Docker); ready = package + config + docs + test verification. Nguoi dung can Docker Desktop tren Windows de compose smoke.
+
+## Step 161 — Migration gate for compose startup
+
+- Van de: gateway/worker len ngay ca khi alembic chua upgrade -> schema thieu, req ledger fail.
+- Sua: them service `migrate` (one-shot `alembic upgrade head`, `restart: no`, mount `config.yaml:ro`), doi DATABASE_URL tu container env; sua `migrations/env.py` de DATABASE_URL override sqlalchemy.url; doi gateway/worker depends_on them `migrate: service_completed_successfully`.
+- Test: `tests/unit/test_compose_migrations.py` 2 tests: migrate service dang truoc gateway, depends_on dat service_completed_successfully.
+- Ket qua: targeted `2 passed`, `test_production_readiness + test_compose_migrations + test_full_stack_compose + test_docker_packaging` = `13 passed`, compile migration scripts OK.

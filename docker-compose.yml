@@ -2,6 +2,21 @@
 version: "3.9"
 
 services:
+  # ── Migrate database before starting services (one-shot) ──────────────
+  migrate:
+    image: smart-router/gateway:latest
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:smart_router_secret@postgres:5432/smart_router}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+
   # ── Gateway API ──────────────────────────────────────────────────────
   gateway:
     build:
@@ -25,6 +40,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     volumes:
       - ./config.yaml:/app/config.yaml:ro
@@ -85,6 +102,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     volumes:
       - ./config.yaml:/app/config.yaml:ro
