@@ -167,6 +167,42 @@ def get_provider_health(connection_id: str) -> dict[str, Any]:
     }
 
 
+@router.put("/providers/{connection_id}")
+def update_provider(connection_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    record = _provider_connections.get(connection_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    name = payload.get("name")
+    if name is not None:
+        cleaned = str(name).strip()
+        if not cleaned:
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        record["name"] = cleaned
+    base_url = payload.get("base_url")
+    if base_url is not None:
+        cleaned_url = str(base_url).strip()
+        if not cleaned_url:
+            raise HTTPException(status_code=400, detail="base_url cannot be empty")
+        record["base_url"] = cleaned_url
+    driver = payload.get("driver")
+    if driver is not None:
+        record["driver"] = str(driver)
+    api_key = payload.get("api_key")
+    if api_key:
+        record["credential_present"] = True
+        record["credential_encrypted"] = encrypt_secret(str(api_key))
+    if "active" in payload:
+        record["active"] = bool(payload["active"])
+    timestamp = datetime.now(UTC).isoformat()
+    _audit_events.append({
+        "action": "provider.updated",
+        "connection_id": connection_id,
+        "fields": sorted([k for k in payload if k != "api_key"]) + (["credential_present"] if api_key else []),
+        "created_at": timestamp,
+    })
+    return _serialize_provider(record)
+
+
 @router.post("/providers/{connection_id}/deactivate")
 def deactivate_provider(connection_id: str) -> dict[str, Any]:
     record = _provider_connections.get(connection_id)

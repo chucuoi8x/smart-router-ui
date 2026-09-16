@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 140 (467p) — provider deactivate/reactivate
+- Last completed: Step 141 (471p) — provider update AC-01
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 141 — provider health degraded + retry semantics M7
+- Next suggested: Step 142 — usage ledger aggregation M7
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2552,3 +2552,9 @@ Follow-up risks / TODOs:
 - Cập nhật `apps/gateway/api/admin.py`: serializer `_serialize_provider` bổ sung `active`/`disabled`; `create_provider` mặc định `active=True`; thêm `POST /providers/{id}/deactivate` và `POST /providers/{id}/reactivate` (404 nếu không tồn tại, ghi audit `provider.deactivated/reactivated`, trả `connection_id/active/disabled/changed_at`).
 - Test `tests/unit/test_m6_provider_deactivation.py` 4 tests: health sau test, deactivate trả disabled, listing phản ánh disabled, reactivate khôi phục active — đều redacted.
 - Kết quả: targeted 4 passed, full `467 passed, 6 skipped`.
+
+## Step 141 — Provider update AC-01
+- Van de: Control Plane thieu PUT /providers/{id} de sua name/base_url/driver/api_key/active.
+- Them `PUT /providers/{connection_id}` trong `apps/gateway/api/admin.py`: validate name/base_url khong rong, update driver/api_key (ma hoa Fernet, redacted), active toggle, audit `provider.updated` voi fields (khong ghi api_key), tra _serialize_provider.
+- Test `tests/unit/test_m6_provider_update.py` 4 tests: auth 401, 404 unknown, update name/base_url, update api_key redacted.
+- Ket qua: targeted 4 passed, full `471 passed, 6 skipped`.
