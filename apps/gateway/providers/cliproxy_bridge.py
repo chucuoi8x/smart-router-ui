@@ -10,6 +10,7 @@ class CLIProxyBridgeDriver(ProviderDriver):
     """Provider driver that forwards requests to a CLIProxy sidecar/daemon."""
 
     driver_id = "cliproxy-bridge"
+    delegates_request_execution = True
 
     def __init__(
         self,
@@ -89,6 +90,8 @@ class CLIProxyBridgeDriver(ProviderDriver):
         for k, v in usage.items():
             if k not in result:
                 result[k] = v
+        result.setdefault("source", "provider_api")
+        result.setdefault("confidence", "exact")
         return result
 
     def _parse_usage_from_sse(self, sse_text: str) -> Dict[str, Any]:
@@ -237,7 +240,10 @@ class CLIProxyBridgeDriver(ProviderDriver):
         if isinstance(response, dict):
             # If it's a dict from execute(), it may have 'body' or 'usage' field.
             if "usage" in response and response["usage"]:
-                return dict(response["usage"])
+                usage = dict(response["usage"])
+                usage.setdefault("source", "provider_api")
+                usage.setdefault("confidence", "exact")
+                return usage
             if "body" in response:
                 return self._parse_usage_from_body(response["body"])
         # If it's a response object with .text
@@ -259,18 +265,39 @@ class CLIProxyBridgeDriver(ProviderDriver):
             headers = headers or error_or_response.get("headers")
         return classify_provider_error(status_code=status_code, body=body, headers=headers)
 
-    async def validate_connection(self, ctx: Any) -> Any:
-        """Check connectivity to the CLIProxy service."""
-        # Simple health check by sending a HEAD request to the base URL.
+    async def validate_connection(self, ctx: Any) -> Dict[str, Any]:
+        """Check connectivity and health of the CLIProxy service."""
+        # 1. Basic reachability via GET /health.
+        head_status = "error"
         try:
-            # We could also try to get models, but a simple ping is enough.
-            # For now, assume it's reachable if we can connect.
-            # Use a short timeout.
-            async with self._client.stream("HEAD", self.base_url, timeout=5.0) as resp:
-                # Any response is fine.
-                return {"status": "ok", "status_code": resp.status_code}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
+            resp = await self._client.get(f"{self.base_url}/health", timeout=3.0)
+            if resp.status_code < 500:
+                head_status = "ok"
+        except httpx.TimeoutException:
+            head_status = "timeout"
+        except Exception:
+            head_status = "unreachable"
+
+        # 2. Pool-level health from management API (optional, non-fatal)
+        pool_info: Dict[str, Any] = {}
+        try:
+            pool_info = await self._fetch_pool_status()
+        except Exception:
+            pass  # Management API may not be available; that's fine
+
+        # 3. Synthesize overall result
+        if head_status == "ok" or (isinstance(pool_info, dict) and pool_info.get("status") == "ok"):
+            return {
+                "status": "ok",
+                "head_status": head_status,
+                "pool_info": pool_info,
+            }
+
+        return {
+            "status": "error",
+            "head_status": head_status,
+            "pool_info": pool_info,
+        }
 
     async def discover_models(self, ctx: Any) -> list[Any]:
         """Retrieve available models from the CLIProxy service."""
@@ -291,18 +318,29 @@ class CLIProxyBridgeDriver(ProviderDriver):
         except Exception:
             return []
 
-    async def fetch_quota(self, ctx: Any) -> list[Any]:
-        """Fetch quota information from the CLIProxy service."""
+    async def _fetch_pool_status(self) -> Dict[str, Any]:
+        """Fetch pool-level health and status from CLIProxy management API."""
         try:
-            url = f"{self.base_url}/quota"
+            url = f"{self.base_url}/management/pool"
+            response = await self._client.get(url, timeout=5.0)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                return {"status": "error", "code": response.status_code}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
+
+    async def _fetch_credential_status(self) -> list[Dict[str, Any]]:
+        """Fetch credential-level statuses from CLIProxy management API."""
+        try:
+            url = f"{self.base_url}/management/credentials"
             response = await self._client.get(url, timeout=5.0)
             if response.status_code == 200:
                 data = response.json()
-                # Expect a list under "resources" key or direct list.
-                if isinstance(data, dict) and "resources" in data:
-                    return data["resources"]
-                elif isinstance(data, list):
+                if isinstance(data, list):
                     return data
+                elif isinstance(data, dict) and "credentials" in data:
+                    return data["credentials"]
                 else:
                     return []
             else:
@@ -310,6 +348,60 @@ class CLIProxyBridgeDriver(ProviderDriver):
         except Exception:
             return []
 
+    async def fetch_quota(
+        self,
+        ctx: Any,
+        include_management: bool = False,
+    ) -> list[Any]:
+        """Fetch quota information from the CLIProxy service.
+
+        If include_management=True, enriches each resource with
+        pool-level and credential-level telemetry when available.
+        """
+        result: list[Dict[str, Any]] = []
+        try:
+            url = f"{self.base_url}/quota"
+            response = await self._client.get(url, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, dict) and "resources" in data:
+                    result = data["resources"]
+                elif isinstance(data, list):
+                    result = data
+        except Exception:
+            result = []
+
+        if not include_management:
+            return result
+
+        pool_status = await self._fetch_pool_status()
+        cred_statuses = await self._fetch_credential_status()
+
+        enriched: list[Dict[str, Any]] = []
+        for resource in result:
+            if not isinstance(resource, dict):
+                continue
+            entry = dict(resource)
+            # Attach pool-level signals only when management reports ok
+            if isinstance(pool_status, dict) and pool_status.get("status") == "ok":
+                entry["pool_status"] = pool_status
+            # Map credential quotas to resources where IDs match
+            resource_id = resource.get("resource_id") or resource.get("id") or ""
+            for cred in cred_statuses:
+                if isinstance(cred, dict) and (
+                    cred.get("id") == resource_id or cred.get("name") == resource_id
+                ):
+                    if "credential_quota" not in entry:
+                        entry["credential_quota"] = {}
+                    entry["credential_quota"][resource_id] = cred
+            enriched.append(entry)
+
+        return enriched if enriched else result
+
     def capabilities(self) -> Dict[str, Any]:
-        """Return driver capabilities."""
-        return {"supports_streaming": True}
+        """Return driver capabilities including management features."""
+        caps: Dict[str, Any] = {"supports_streaming": True}
+        # Management feature is advertised but gracefully degrades when
+        # CLIProxy does not expose those endpoints.
+        caps["supports_management_metadata"] = True
+        return caps

@@ -4,6 +4,17 @@ class DriverNotFoundError(Exception):
     pass
 
 class ProviderDriver(Protocol):
+    """Contract for upstream provider drivers.
+
+    ``delegates_request_execution`` advertises that the driver performs the
+    full HTTP exchange itself (request building, auth, response parsing).
+    Drivers that do not delegate it let the router keep its direct HTTP
+    client behavior. This is a driver capability, never a provider-name
+    check in routing core.
+    """
+
+    delegates_request_execution: bool = False
+
     async def validate_connection(self, ctx: Any) -> Any: ...
     async def discover_models(self, ctx: Any) -> list[Any]: ...
     async def execute(self, ctx: Any, request: Any) -> Any: ...

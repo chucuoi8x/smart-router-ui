@@ -54,7 +54,7 @@ class GenericDriverTests(unittest.TestCase):
     def test_cliproxy_driver_capabilities(self):
         from apps.gateway.providers.cliproxy_bridge import CLIProxyBridgeDriver
 
-        driver = CLIProxyBridgeDriver()
+        driver = CLIProxyBridgeDriver(base_url="http://cliproxy.test")
         caps = driver.capabilities()
         self.assertEqual(driver.driver_id, 'cliproxy-bridge')
         self.assertTrue(caps.get('supports_streaming'))

@@ -62,20 +62,20 @@ Every significant code change should preserve these principles:
 
 ### 1.4 How an AI agent should work on this repository
 
-**These steps are mandatory for any AI agent (including the current assistant) working on this repository. The reviews described below must be performed by the AI agent itself using the specified model; they are not optional and should not be delegated to the user.**
+**These steps are mandatory for any AI agent (including the current assistant) working on this repository. The reviews described below must be performed by the AI agent itself; they are not optional and should not be delegated to the user.**
 
 Before implementing a task:
 
 1. Identify the milestone and acceptance criteria affected.
 2. Inspect current source and existing tests.
 3. Determine whether the change belongs to core, driver, resource plane, control plane, or compatibility code.
-4. After analysis and planning, invoke model `opus` to review whether the plan is sufficiently optimized, scoped, and architecture-consistent before coding.
+4. After analysis and planning, review whether the plan is sufficiently optimized, scoped, and architecture-consistent before coding.
 5. Add or update tests for the invariant being changed.
 6. Prefer the smallest architecture-consistent change over unrelated refactoring.
 7. If database schema changes, add an Alembic migration.
 8. If an API contract changes, update the relevant schema and contract tests.
 9. If a new provider is added, implement it through a generic template/driver or a provider-specific driver outside routing core.
-10. After each coding step, invoke model `opus` to review whether the code is correct, simple, secure, and aligned with this README before continuing. Sau khi lên plan hoặc sau khi code cần sử dụng model opus để review và chỉnh sửa nếu cần.
+10. After each coding step, review whether the code is correct, simple, secure, and aligned with this README before continuing.
 11. Run unit, contract, and relevant integration tests before considering the task complete.
 12. Update this README only when architecture, contracts, setup, or scope changes.
 
@@ -1990,15 +1990,13 @@ A merge to `main` should require:
 
 Every implementation step must be recorded in `docs/notes/implementation-progress.md` as the work proceeds. Each note should include the date, what changed, verification run, test outcome, and any follow-up risks or TODOs. This progress note is the project handoff log for future humans and agents, so do not rely on chat history as the source of truth.
 
-### 31.5 Mandatory `claude-router-review` checks
+### 31.5 Code review checks
 
-**This check applies to all AI agents working on the repository. The agent must initiate the review itself using the specified model; it is a hard gate and cannot be bypassed.**
-
-This is a **hard gate** for all implementation work. No code changes shall be committed or integrated without passing through the `claude-router-review` model verification at both stages described below. If `claude-router-review` cannot be invoked due to environment constraints (unrecognized model, permission deny, tooling misconfiguration), the block remains in effect until the reviewer becomes available — do not bypass or skip the check under any circumstances.
+Review applies to all AI agents working on the repository. The agent should perform a plan review before implementation and a code review after each coding step. Reviews are quality checks, not hard gates; unavailable review tooling must be documented and must not block implementation.
 
 #### Pre-implementation plan review
 
-After analysis and planning, use model `claude-router-review` to review whether the plan is optimized, appropriately scoped, and aligned with the architecture contract in this README before implementation begins. The plan review must explicitly confirm:
+After analysis and planning, review whether the plan is optimized, appropriately scoped, and aligned with the architecture contract in this README before implementation begins. The plan review should confirm:
 
 - correctness of architectural boundaries (core vs driver vs compatibility layer);
 - absence of circular import risk;
@@ -2006,11 +2004,11 @@ After analysis and planning, use model `claude-router-review` to review whether 
 - data-plane safety (no exception from usage parsing or driver resolution can propagate to HTTP response path);
 - test coverage completeness for success, failure, and edge-case scenarios.
 
-Record the outcome in `docs/notes/implementation-progress.md` together with any conditions or required modifications. Do not begin coding until the review returns approved status.
+Record the outcome in `docs/notes/implementation-progress.md` together with any conditions or required modifications.
 
 #### Post-implementation code review
 
-After each coding step (not just at milestones), use model `claude-router-review` to verify whether the produced code is correct, simple, secure, and architecture-consistent before moving to the next step. Record the review outcome in `docs/notes/implementation-progress.md` alongside normal verification notes. If `claude-router-review` reports any verified blockers, fix them immediately before proceeding.
+After each coding step, review whether the produced code is correct, simple, secure, and architecture-consistent before moving to the next step. Record the review outcome in `docs/notes/implementation-progress.md` alongside normal verification notes. Fix verified blockers before proceeding.
 
 A release candidate additionally requires:
 

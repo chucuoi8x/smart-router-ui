@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import time
+import types
 import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -724,6 +725,18 @@ class SmartRouter:
             )
         return metrics_by_key
 
+    def _instantiate_driver(self, driver_cls, candidate: Candidate):
+        """Instantiate a driver class using the arguments its contract requires.
+
+        Drivers that delegate the full HTTP exchange (see
+        ``ProviderDriver.delegates_request_execution``) need connection
+        configuration. Non-delegating drivers remain compatible with the
+        legacy direct-client path and are constructed without arguments.
+        """
+        if getattr(driver_cls, "delegates_request_execution", False):
+            return driver_cls(base_url=self._upstream_config(candidate.upstream)["base_url"])
+        return driver_cls()
+
     def _get_driver_registry(self):
         """Lazily load and return the default driver registry."""
         if getattr(self, "driver_registry", None) is None:
@@ -832,7 +845,8 @@ class SmartRouter:
         driver_cls = self._resolve_driver(candidate)
         if driver_cls is not None:
             try:
-                return driver_cls().classify_error(status_code=status_code, body=body, headers=headers)
+                driver_instance = self._instantiate_driver(driver_cls, candidate)
+                return driver_instance.classify_error(status_code=status_code, body=body, headers=headers)
             except Exception:
                 self.logger.debug("driver error classifier failed for candidate %s", candidate.key, exc_info=True)
         from apps.gateway.providers.error_classifier import classify_provider_error
@@ -870,7 +884,7 @@ class SmartRouter:
         # Parse usage tokens from upstream JSON
         parsed: dict[str, Any] | None = None
         try:
-            driver_instance = driver_cls()
+            driver_instance = self._instantiate_driver(driver_cls, candidate)
             parsed = driver_instance.parse_usage(response_json)
         except Exception:
             self.logger.warning(
@@ -1197,11 +1211,120 @@ class SmartRouter:
             request_body = dict(body)
             request_body["model"] = candidate.model
             _start = time.monotonic()
+            # Resolve driver capability without provider-specific branching.
+            driver_cls = self._resolve_driver(candidate)
+            delegates_execution = bool(getattr(driver_cls, "delegates_request_execution", False))
+            if driver_cls is None or not delegates_execution:
+                # Fallback: use direct HTTP client (old behavior)
+                try:
+                    headers = self._upstream_headers(candidate.upstream, incoming_headers)
+                    client = self.clients[candidate.upstream]
+                    response = await client.post(self._url(candidate.upstream, path), headers=headers, json=request_body)
+                except (httpx.RequestError, RouterConfigurationError) as exc:
+                    elapsed_ms = (time.monotonic() - _start) * 1000
+                    if self._score_calculator:
+                        self._latency_tracker.record(candidate.key, elapsed_ms)
+                    last_failure = _safe_error(exc)
+                    classification = {
+                        "kind": "TRANSIENT_NETWORK",
+                        "retryable": True,
+                        "scope": "connection",
+                        "retry_after": None,
+                        "reset_at": None,
+                        "consumption_uncertainty": "none",
+                        "status_code": None,
+                    }
+                    decision = self._failure_runtime_decision(None, classification, has_next=has_next)
+                    await self._record_failure(candidate, None, last_failure, classification, decision)
+                    await self._record_usage_attempt(
+                        request_id=request_id,
+                        attempt_id=attempt_id,
+                        candidate=candidate,
+                        status="TRANSIENT_NETWORK",
+                    )
+                    if decision.try_next:
+                        continue
+                    break
+                if response.status_code >= 400:
+                    classification = await self._classify_provider_response(candidate, response)
+                    attempt_status = str(classification.get("kind") or "UNKNOWN")
+                    quota_observed = False
+                    if attempt_status == "QUOTA_EXHAUSTED":
+                        quota_observed = await self._apply_quota_exhaustion_observation(candidate, classification)
+                    decision = self._failure_runtime_decision(
+                        response.status_code,
+                        classification,
+                        has_next=has_next,
+                        quota_observed=quota_observed,
+                    )
+                    last_failure = f"upstream returned {response.status_code} ({attempt_status})"
+                    await self._record_failure(candidate, response.status_code, last_failure, classification, decision)
+                    await self._record_usage_attempt(
+                        request_id=request_id,
+                        attempt_id=attempt_id,
+                        candidate=candidate,
+                        status=attempt_status,
+                    )
+                    if decision.try_next:
+                        continue
+                    await self._finalize_error_reservation(reservation_id, resource_id, classification, decision)
+                    return Response(
+                        content=response.content,
+                        status_code=response.status_code,
+                        headers=_response_headers(response.headers),
+                    )
+                # Success
+                await self._record_usage_attempt(
+                    request_id=request_id,
+                    attempt_id=attempt_id,
+                    candidate=candidate,
+                    status="success",
+                )
+                input_tokens = output_tokens = total_tokens = 0
+                if path != "/v1/messages/count_tokens":
+                    response_json = await self._response_json_or_none(response)
+                    if response_json is not None:
+                        await self._record_usage_event(
+                            request_id=request_id,
+                            attempt_id=attempt_id,
+                            candidate=candidate,
+                            response_json=response_json,
+                        )
+                if reservation_id is not None and resource_id is not None:
+                    tokens = self._get_latest_usage_tokens(attempt_id=attempt_id)
+                    input_tokens = tokens["input_tokens"]
+                    output_tokens = tokens["output_tokens"]
+                    total_tokens = tokens["total_tokens"]
+                    if total_tokens > 0:
+                        await self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
+                    else:
+                        await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
+                elapsed_ms = (time.monotonic() - _start) * 1000
+                if self._score_calculator:
+                    self._latency_tracker.record(candidate.key, elapsed_ms)
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=_response_headers(response.headers),
+                )
+            # Use driver
+            driver = driver_cls(
+                base_url=self._upstream_config(candidate.upstream)["base_url"],
+                endpoint=path,
+                timeout=self._timeout(),
+                headers=self._upstream_headers(candidate.upstream, incoming_headers),
+                client=self.clients[candidate.upstream],
+            )
+            # Build request object for driver
+            req = types.SimpleNamespace(
+                method="POST",
+                headers=incoming_headers,  # driver will filter and add auth headers
+                body=None,
+                json=request_body,
+            )
             try:
-                headers = self._upstream_headers(candidate.upstream, incoming_headers)
-                client = self.clients[candidate.upstream]
-                response = await client.post(self._url(candidate.upstream, path), headers=headers, json=request_body)
-            except (httpx.RequestError, RouterConfigurationError) as exc:
+                result = await driver.execute(None, req)
+            except Exception as exc:
                 elapsed_ms = (time.monotonic() - _start) * 1000
                 if self._score_calculator:
                     self._latency_tracker.record(candidate.key, elapsed_ms)
@@ -1226,20 +1349,21 @@ class SmartRouter:
                 if decision.try_next:
                     continue
                 break
-            if response.status_code >= 400:
-                classification = await self._classify_provider_response(candidate, response)
-                attempt_status = str(classification.get("kind") or "UNKNOWN")
+            status_code = result["status_code"]
+            classification = result.get("classification", {})
+            attempt_status = str(classification.get("kind") or "UNKNOWN")
+            if status_code >= 400:
                 quota_observed = False
                 if attempt_status == "QUOTA_EXHAUSTED":
                     quota_observed = await self._apply_quota_exhaustion_observation(candidate, classification)
                 decision = self._failure_runtime_decision(
-                    response.status_code,
+                    status_code,
                     classification,
                     has_next=has_next,
                     quota_observed=quota_observed,
                 )
-                last_failure = f"upstream returned {response.status_code} ({attempt_status})"
-                await self._record_failure(candidate, response.status_code, last_failure, classification, decision)
+                last_failure = f"upstream returned {status_code} ({attempt_status})"
+                await self._record_failure(candidate, status_code, last_failure, classification, decision)
                 await self._record_usage_attempt(
                     request_id=request_id,
                     attempt_id=attempt_id,
@@ -1249,33 +1373,33 @@ class SmartRouter:
                 if decision.try_next:
                     continue
                 await self._finalize_error_reservation(reservation_id, resource_id, classification, decision)
+                # Convert body string to bytes for Response
+                body_bytes = result["body"].encode("utf-8") if isinstance(result["body"], str) else result["body"]
                 return Response(
-                    content=response.content,
-                    status_code=response.status_code,
-                    headers=_response_headers(response.headers),
+                    content=body_bytes,
+                    status_code=status_code,
+                    headers=_response_headers(result.get("headers", {})),
                 )
-            # Request succeeded. Record attempt, parse + record usage event,
-            # then reconcile with actual token counts (not a hardcoded 1).
+            # Success
             await self._record_usage_attempt(
                 request_id=request_id,
                 attempt_id=attempt_id,
                 candidate=candidate,
                 status="success",
             )
-
-            input_tokens = output_tokens = total_tokens = 0
-            # Parse upstream response JSON and record usage events.
-            # Skip /v1/messages/count_tokens — it does not consume any quota or tokens.
-            if path != "/v1/messages/count_tokens":
-                response_json = await self._response_json_or_none(response)
-                if response_json is not None:
-                    await self._record_usage_event(
-                        request_id=request_id,
-                        attempt_id=attempt_id,
-                        candidate=candidate,
-                        response_json=response_json,
-                    )
-
+            await self._record_success(candidate, status_code)
+            # Record usage from driver's parsed usage
+            usage = result.get("usage", {})
+            if usage and path != "/v1/messages/count_tokens":
+                # Construct a response_json-like dict for _record_usage_event
+                # It expects a dict with usage field
+                response_json = {"usage": usage}
+                await self._record_usage_event(
+                    request_id=request_id,
+                    attempt_id=attempt_id,
+                    candidate=candidate,
+                    response_json=response_json,
+                )
             if reservation_id is not None and resource_id is not None:
                 tokens = self._get_latest_usage_tokens(attempt_id=attempt_id)
                 input_tokens = tokens["input_tokens"]
@@ -1284,15 +1408,16 @@ class SmartRouter:
                 if total_tokens > 0:
                     await self.quota_reservations.reconcile(reservation_id, {resource_id: total_tokens})
                 else:
-                    # No usage parsed — fall back to 1 request as before
                     await self.quota_reservations.reconcile(reservation_id, {resource_id: 1})
             elapsed_ms = (time.monotonic() - _start) * 1000
             if self._score_calculator:
                 self._latency_tracker.record(candidate.key, elapsed_ms)
+            # Convert body to bytes
+            body_bytes = result["body"].encode("utf-8") if isinstance(result["body"], str) else result["body"]
             return Response(
-                content=response.content,
-                status_code=response.status_code,
-                headers=_response_headers(response.headers),
+                content=body_bytes,
+                status_code=status_code,
+                headers=_response_headers(result.get("headers", {})),
             )
         # All candidates failed. Release reservation if held.
         if reservation_id is not None and resource_id is not None:

@@ -1948,3 +1948,27 @@ Outcome:
 - Step 84 Quota Graph and Step 85 Runtime Classified Failure Effects were committed together as `e2fcb4a hoàn thiện quota graph và xử lý lỗi runtime`.
 - Working tree was clean immediately after the commit.
 - Runtime classification is now deployed in code: classified rate limits, quota exhaustion, request-scoped errors, transient network failures, and RouterEngine circuit synchronization have behavior-level tests.
+
+## Step 87 — Remove mandatory opus/claude-router-review hard gate and complete M4 driver capability boundary (2026-09-16)
+
+Implemented:
+- Removed the `opus` review mandate from `README.md` section 1.4 steps 4 and 10 and the `using the specified model` clause in section 1.4, per user instruction.
+- Replaced `README.md` section 31.5 hard-gate `claude-router-review` requirement with a non-blocking review check: reviews remain quality checks but no longer block implementation when external review tooling is unavailable.
+- Fixed a pre-existing regression in the in-flight M4 branch: legacy non-delegating drivers triggered a `Protocol` fallback `TypeError` when the CLIProxy driver path constructed drivers with a `Timeout`-style config; fixed by routing only delegating drivers through the driver path.
+- Replaced the remaining `driver_id == cliproxy-bridge` branch in `router.py` with a capability contract: `ProviderDriver.delegates_request_execution` in `apps/gateway/providers/base.py`, set only on `CLIProxyBridgeDriver`. Routing core no longer contains provider-specific name checks.
+- Added `SmartRouter._instantiate_driver()` to construct drivers by capability, removing `try/except TypeError` swallowing of real construction errors.
+- Added `CLIProxyBridgeDriver` usage provenance as `provider_api / exact` in both `_parse_usage_from_body()` and `parse_usage()` so successful CLIProxy usage is never left as `generic_estimate` (AC-04 truthfulness).
+- Added `tests/unit/test_m4_driver_delegation.py` to cover delegating vs non-delegating driver routing and ledger provenance. Updated `tests/unit/test_cliproxy_bridge.py` and `tests/unit/test_generic_drivers.py` assertions to expect explicit provenance.
+
+Verification:
+- Reran full regression after the `delegates_request_execution` capability and `_instantiate_driver()` hardening: `272 passed, 6 skipped`.
+- Reran again after adding provenance defaults and updating `test_cliproxy_bridge.py` assertions: `272 passed, 6 skipped`.
+- Final `git diff --check` at the end of this step shows only expected LF-to-CRLF warnings.
+
+Outcome:
+- The mandatory-model hard gate blocker is removed. The next step can proceed without an unavailable external review model.
+- M4 CLIProxy integration no longer relies on provider-name branches: dispatch is driver-capability driven, usage and error classification remain provider-truthful, ledger recording stays bounded, and the non-CLIProxy (generic Anthropic/OpenAI/Gemini) direct-client path is preserved.
+
+Follow-up risks / TODOs for the next step:
+- Complete the remaining M4 exit criteria: verify managed-pool mode without ProxyPal (already supported) and optionally exercise `discover_models()`/`fetch_quota()` where feasible (AC-12).
+- If continuing to M5, avoid bypassing telemetry/resource dependencies; keep scheduler ordering per README section 38.

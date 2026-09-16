@@ -20,15 +20,18 @@ def default_driver_registry() -> DriverRegistry:
     from apps.gateway.providers.generic_anthropic import GenericAnthropicDriver
     from apps.gateway.providers.generic_openai import GenericOpenAIDriver
     from apps.gateway.providers.generic_gemini import GenericGeminiDriver
+    from apps.gateway.providers.cliproxy_bridge import CLIProxyBridgeDriver
 
     reg = DriverRegistry()
     # Canonical registrations
     reg.register(GenericAnthropicDriver.driver_id, GenericAnthropicDriver)
     reg.register(GenericOpenAIDriver.driver_id, GenericOpenAIDriver)
     reg.register(GenericGeminiDriver.driver_id, GenericGeminiDriver)
+    reg.register(CLIProxyBridgeDriver.driver_id, CLIProxyBridgeDriver)
     # Protocol alias registrations
     reg.register("anthropic-compatible", GenericAnthropicDriver)
     reg.register("openai-compatible", GenericOpenAIDriver)
     reg.register("gemini-compatible", GenericGeminiDriver)
+    reg.register("cliproxy-bridge", CLIProxyBridgeDriver)
     return reg
 

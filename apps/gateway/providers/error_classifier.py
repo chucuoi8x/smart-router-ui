@@ -60,10 +60,24 @@ def _provider_code(body: Any) -> str | None:
 
 
 def _safe_message(body: Any) -> str | None:
+    # If body is a string, try to parse it as JSON
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except json.JSONDecodeError:
+            # If it's not JSON, treat the whole string as the message
+            return body[:300] if body else None
     if not isinstance(body, dict):
         return None
-    err = body.get("error") if isinstance(body.get("error"), dict) else {}
-    value = err.get("message") or body.get("message")
+
+    err = body.get("error")
+    if isinstance(err, dict):
+        value = err.get("message")
+    elif isinstance(err, str):
+        value = err
+    else:
+        value = body.get("message")
+
     if not value:
         return None
     message = str(value)
@@ -123,6 +137,18 @@ def classify_provider_error(
     state should block a resource until replenishment, while rate limits should
     cool down and retry elsewhere.
     """
+    # 2xx responses are successful
+    if status_code is not None and 200 <= status_code < 300:
+        return _result(
+            "SUCCESS",
+            retryable=False,
+            scope="request",
+            status_code=status_code,
+            body=body,
+            headers=headers,
+            consumption_uncertainty="none",
+        )
+
     text = _safe_body_text(body)
     code = (_provider_code(body) or "").lower()
     combined = f"{code} {text}"

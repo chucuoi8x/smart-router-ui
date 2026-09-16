@@ -48,7 +48,13 @@ class TestNonStreaming:
         assert result["status_code"] == 200
         assert result["headers"] is not None
         assert json.loads(result["body"]) == response_body
-        assert result["usage"] == {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}
+        assert {k: v for k, v in result["usage"].items() if k in {"input_tokens", "output_tokens", "total_tokens"}} == {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "total_tokens": 30,
+        }
+        assert result["usage"]["source"] == "provider_api"
+        assert result["usage"]["confidence"] == "exact"
         assert "classification" in result
         assert result["classification"]["kind"] == "SUCCESS"
 
@@ -303,20 +309,33 @@ class TestParsingHelpers:
             "body": '{"usage": {"input_tokens": 5, "output_tokens": 15}}',
         }
         usage = driver.parse_usage(response)
-        assert usage == {"input_tokens": 5, "output_tokens": 15}
+        assert {k: v for k, v in usage.items() if k in {"input_tokens", "output_tokens"}} == {
+            "input_tokens": 5,
+            "output_tokens": 15,
+        }
+        assert usage["source"] == "provider_api" and usage["confidence"] == "exact"
 
     def test_parse_usage_from_response_with_usage_field(self, driver: CLIProxyBridgeDriver):
         response = {
             "usage": {"input_tokens": 7, "output_tokens": 11, "cost": 0.002},
         }
         usage = driver.parse_usage(response)
-        assert usage == {"input_tokens": 7, "output_tokens": 11, "cost": 0.002}
+        assert {k: v for k, v in usage.items() if k in {"input_tokens", "output_tokens", "cost"}} == {
+            "input_tokens": 7,
+            "output_tokens": 11,
+            "cost": 0.002,
+        }
+        assert usage["source"] == "provider_api" and usage["confidence"] == "exact"
 
     def test_parse_usage_from_response_object_with_text(self, driver: CLIProxyBridgeDriver):
         class Resp:
             text = '{"usage": {"input_tokens": 3, "output_tokens": 4}}'
         usage = driver.parse_usage(Resp())
-        assert usage == {"input_tokens": 3, "output_tokens": 4}
+        assert {k: v for k, v in usage.items() if k in {"input_tokens", "output_tokens"}} == {
+            "input_tokens": 3,
+            "output_tokens": 4,
+        }
+        assert usage["source"] == "provider_api" and usage["confidence"] == "exact"
 
     def test_parse_usage_fallback_to_stored(self, driver: CLIProxyBridgeDriver):
         driver._last_stream_usage = {"input_tokens": 100}
@@ -328,24 +347,153 @@ class TestCapabilitiesAndStubs:
     def test_capabilities(self, driver: CLIProxyBridgeDriver):
         caps = driver.capabilities()
         assert caps["supports_streaming"] is True
+        assert caps["supports_management_metadata"] is True
 
     @pytest.mark.asyncio
-    async def test_validate_connection_ok(self, driver: CLIProxyBridgeDriver, base_url: str):
+    async def test_validate_connection_ok(self, base_url: str):
+        """GET /health returns 2xx + management OK → overall ok."""
+        pool_info = {"status": "ok"}
         with respx.mock:
-            route = respx.head(base_url)
-            route.mock(return_value=Response(200))
-            result = await driver.validate_connection(None)
+            respx.get(f"{base_url}/health").mock(return_value=Response(200, json={"status": "ok"}))
+            respx.get(f"{base_url}/management/pool").mock(return_value=Response(200, json=pool_info))
+            drv = CLIProxyBridgeDriver(base_url=base_url)
+            result = await drv.validate_connection(None)
         assert result["status"] == "ok"
-        assert result["status_code"] == 200
+        assert result["head_status"] == "ok"
 
     @pytest.mark.asyncio
-    async def test_validate_connection_error(self, driver: CLIProxyBridgeDriver, base_url: str):
+    async def test_validate_connection_error(self, base_url: str):
+        """Both GET /health and management fail → report error."""
         with respx.mock:
-            route = respx.head(base_url)
-            route.mock(side_effect=TimeoutException("Connection refused"))
-            result = await driver.validate_connection(None)
+            respx.get(f"{base_url}/health").mock(side_effect=TimeoutException("refused"))
+            respx.get(f"{base_url}/management/pool").mock(side_effect=TimeoutException("timeout"))
+            drv = CLIProxyBridgeDriver(base_url=base_url)
+            result = await drv.validate_connection(None)
         assert result["status"] == "error"
-        assert "Connection refused" in result["message"]
+        assert result["head_status"] == "timeout"
+
+    @pytest.mark.asyncio
+    async def test_validate_connection_with_pool_info(self, base_url: str):
+        pool_info = {"status": "ok", "models_count": 5}
+        with respx.mock:
+            respx.get(f"{base_url}/health").mock(return_value=Response(200, json={"status": "ok"}))
+            respx.get(f"{base_url}/management/pool").mock(return_value=Response(200, json=pool_info))
+            drv = CLIProxyBridgeDriver(base_url=base_url)
+            result = await drv.validate_connection(None)
+        assert result["status"] == "ok"
+        assert result["pool_info"] == pool_info
+
+    @pytest.mark.asyncio
+    async def test_validate_connection_head_fails_but_management_works(self, base_url: str):
+        """When health check fails but management is healthy, report ok."""
+        pool_info = {"status": "ok"}
+        with respx.mock:
+            respx.get(f"{base_url}/health").mock(side_effect=TimeoutException("refused"))
+            respx.get(f"{base_url}/management/pool").mock(return_value=Response(200, json=pool_info))
+            drv = CLIProxyBridgeDriver(base_url=base_url)
+            result = await drv.validate_connection(None)
+        assert result["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_validate_connection_head_timeout_no_management(self, base_url: str):
+        """When both health check and management timeout, report error."""
+        with respx.mock:
+            respx.get(f"{base_url}/health").mock(side_effect=TimeoutException("refused"))
+            respx.get(f"{base_url}/management/pool").mock(side_effect=TimeoutException("timeout"))
+            drv = CLIProxyBridgeDriver(base_url=base_url)
+            result = await drv.validate_connection(None)
+        assert result["status"] == "error"
+        assert result["head_status"] == "timeout"
+        assert isinstance(result["pool_info"], dict) and result["pool_info"].get("status") != "ok"
+
+    @pytest.mark.asyncio
+    async def test_fetch_pool_status_success(self, driver: CLIProxyBridgeDriver, base_url: str):
+        pool = {"model": "openai-compatible", "health": "ok", "credits_left": 420}
+        with respx.mock:
+            route = respx.get(f"{base_url}/management/pool")
+            route.mock(return_value=Response(200, json=pool))
+            result = await driver._fetch_pool_status()
+        assert result["health"] == "ok"
+        assert result["credits_left"] == 420
+
+    @pytest.mark.asyncio
+    async def test_fetch_pool_status_error(self, driver: CLIProxyBridgeDriver, base_url: str):
+        with respx.mock:
+            route = respx.get(f"{base_url}/management/pool")
+            route.mock(return_value=Response(503))
+            result = await driver._fetch_pool_status()
+        assert result["status"] == "error"
+        assert result["code"] == 503
+
+    @pytest.mark.asyncio
+    async def test_fetch_credential_status_success(self, driver: CLIProxyBridgeDriver, base_url: str):
+        creds = [
+            {"id": "cred-1", "name": "key-a", "rate_limited": False},
+            {"id": "cred-2", "name": "key-b", "rate_limited": True},
+        ]
+        with respx.mock:
+            route = respx.get(f"{base_url}/management/credentials")
+            route.mock(return_value=Response(200, json=creds))
+            result = await driver._fetch_credential_status()
+        assert len(result) == 2
+        assert result[0]["rate_limited"] is False
+        assert result[1]["rate_limited"] is True
+
+    @pytest.mark.asyncio
+    async def test_fetch_credential_status_dict_response(self, driver: CLIProxyBridgeDriver, base_url: str):
+        resp = {"credentials": [{"id": "c1", "active": True}]}
+        with respx.mock:
+            route = respx.get(f"{base_url}/management/credentials")
+            route.mock(return_value=Response(200, json=resp))
+            result = await driver._fetch_credential_status()
+        assert len(result) == 1
+        assert result[0]["active"] is True
+
+    @pytest.mark.asyncio
+    async def test_fetch_quota_without_management(self, driver: CLIProxyBridgeDriver, base_url: str):
+        quotas = [
+            {"metric": "tokens", "capacity": 1000000, "used": 100},
+        ]
+        with respx.mock:
+            route = respx.get(f"{base_url}/quota")
+            route.mock(return_value=Response(200, json={"resources": quotas}))
+            result = await driver.fetch_quota(None, include_management=False)
+        assert len(result) == 1
+        assert result[0]["metric"] == "tokens"
+        assert "pool_status" not in result[0]
+
+    @pytest.mark.asyncio
+    async def test_fetch_quota_with_management(self, driver: CLIProxyBridgeDriver, base_url: str):
+        quotas = [
+            {"metric": "tokens", "resource_id": "res-1"},
+            {"metric": "requests", "resource_id": "res-2"},
+        ]
+        creds = [
+            {"id": "res-1", "quota_left": 800000},
+            {"id": "res-2", "quota_left": 900},
+        ]
+        with respx.mock:
+            respx.get(f"{base_url}/quota").mock(return_value=Response(200, json={"resources": quotas}))
+            respx.get(f"{base_url}/management/pool").mock(return_value=Response(200, json={"status": "ok"}))
+            respx.get(f"{base_url}/management/credentials").mock(return_value=Response(200, json=creds))
+            result = await driver.fetch_quota(None, include_management=True)
+        assert len(result) == 2
+        assert result[0]["credential_quota"]["res-1"]["quota_left"] == 800000
+        assert result[1]["credential_quota"]["res-2"]["quota_left"] == 900
+        assert result[0]["pool_status"]["status"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_fetch_quota_management_fallback_gracefully(self, driver: CLIProxyBridgeDriver, base_url: str):
+        quotas = [{"metric": "tokens", "resource_id": "r1"}]
+        with respx.mock:
+            respx.get(f"{base_url}/quota").mock(return_value=Response(200, json={"resources": quotas}))
+            respx.get(f"{base_url}/management/pool").mock(side_effect=TimeoutException("timeout"))
+            respx.get(f"{base_url}/management/credentials").mock(side_effect=TimeoutException("timeout"))
+            result = await driver.fetch_quota(None, include_management=True)
+        # Should return raw quota without enrichment, not raise
+        assert len(result) == 1
+        assert result[0]["metric"] == "tokens"
+        assert "pool_status" not in result[0]
 
     @pytest.mark.asyncio
     async def test_discover_models_success(self, driver: CLIProxyBridgeDriver, base_url: str):
