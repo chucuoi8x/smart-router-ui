@@ -248,6 +248,10 @@ class SmartRouter:
         for key in ("quota_resource_id", "quota_resource_ids"):
             if key in item:
                 metadata[key] = item[key]
+        # Chuyển tiếp metadata cho policy preset (AC-09/AC-10) — không branch provider
+        for key in ("quality_score", "is_paid", "expected_cost_per_request"):
+            if key in item:
+                metadata[key] = item[key]
         return metadata
 
     @staticmethod
@@ -408,7 +412,15 @@ class SmartRouter:
             primary = await self._quota_available_candidates(
                 [c for c in route["candidates"] if self._is_available(c)]
             )
-            if route["strategy"] == "smooth_weighted_rr" and len(primary) >= 2:
+            fallback = await self._quota_available_candidates(
+                [c for c in route.get("fallback", []) if self._is_available(c)]
+            )
+        # Policy constraints: hard filter per group (primary vs fallback have
+        # different paid-fallback semantics). No-op when scheduler disabled.
+        primary = self._apply_policy_constraints(primary, route_name, is_fallback=False)
+        fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True)
+        if route["strategy"] == "smooth_weighted_rr" and len(primary) >= 2:
+            async with self.state_lock:
                 current = self.rr_current.setdefault(route_name, {})
                 total = sum(c.weight for c in primary)
                 for candidate in primary:
@@ -418,12 +430,9 @@ class SmartRouter:
                 remaining = [candidate for candidate in primary if candidate != selected]
                 remaining.sort(key=lambda item: current.get(item.key, 0.0), reverse=True)
                 ordered = [selected, *remaining]
-            else:
-                ordered = list(primary)
-            fallback = await self._quota_available_candidates(
-                [c for c in route.get("fallback", []) if self._is_available(c)]
-            )
-            ordered = ordered + fallback
+        else:
+            ordered = list(primary)
+        ordered = ordered + fallback
         # Apply smart scoring as an optimization layer (graceful no-op when disabled)
         ordered = await self._async_apply_scoring(ordered, route_name)
         return ordered
@@ -504,6 +513,24 @@ class SmartRouter:
         allowlist = getattr(self._scoring_config, "route_allowlist", [])
         return not allowlist or route_name in allowlist
 
+    def _apply_policy_constraints(
+        self,
+        candidates: list[Candidate],
+        route_name: str,
+        *,
+        is_fallback: bool,
+    ) -> list[Candidate]:
+        """Lọc hard constraints theo preset, không branch theo provider."""
+        if not self._should_apply_smart_scoring(route_name):
+            return candidates
+        try:
+            from apps.gateway.routing.presets import filter_candidates_for_policy
+
+            policy = self._scoring_config.effective_preset_for_route(route_name)
+            return filter_candidates_for_policy(candidates, policy, is_fallback=is_fallback)
+        except Exception:
+            return candidates  # Policy lỗi không được chặn data plane
+
     def _ensure_scoring(self) -> None:
         """Lazy-init the score calculator with catalog and trackers."""
         if self._score_calculator is not None:
@@ -530,10 +557,12 @@ class SmartRouter:
         try:
             candidate_keys = [c.key for c in candidates]
             metrics_by_key = self._get_candidate_metrics(candidate_keys)
+            route_weights = self._scoring_config.effective_weights_for_route(route_name)
             scored = self._score_calculator.compute_scores(
                 candidates=candidates,
                 candidate_keys=candidate_keys,
                 metrics_by_key=metrics_by_key,
+                weights=route_weights,
             )
             if self._scoring_config.mode == "shadow":
                 if self._scoring_config.decision_logging:
@@ -563,10 +592,12 @@ class SmartRouter:
         try:
             candidate_keys = [c.key for c in candidates]
             metrics_by_key = await self._build_candidate_metrics(candidate_keys)
+            route_weights = self._scoring_config.effective_weights_for_route(route_name)
             scored = self._score_calculator.compute_scores(
                 candidates=candidates,
                 candidate_keys=candidate_keys,
                 metrics_by_key=metrics_by_key,
+                weights=route_weights,
             )
             if self._scoring_config.mode == "shadow":
                 if self._scoring_config.decision_logging:

@@ -1992,3 +1992,27 @@ Outcome:
 
 Follow-up risks / TODOs for the next step:
 - Tiếp M5 còn lại: capability eligibility, policy constraints enforcement, quota headroom/burn-rate/expiry/scarcity/reliability/retry-cost/paid ceilings/session affinity/route simulation (README §18–§20).
+
+## Step 89 — M5 policy constraints + route wiring (2026-09-16)
+
+Implemented:
+- `apps/gateway/routing/presets.py`: thêm `filter_candidates_for_policy()` để enforce `min_quality`, paid fallback, `max_expected_cost_per_request`, và `min_quota_headroom`. Filter provider-agnostic, đọc metadata resource.
+- `apps/gateway/routing/scoring.py`: thêm `ScoringConfig.effective_preset_for_route()`; route-level preset resolve dùng chung cho constraints và scoring weights.
+- `apps/gateway/routing/engine.py`: `RouterEngine` áp policy trước quota/scoring, tách primary/fallback; route-level preset weights truyền vào `compute_scores()`.
+- `router.py`: legacy `SmartRouter` áp cùng policy path khi RouterEngine tắt; metadata route giữ `quality_score`, `is_paid`, `expected_cost_per_request`.
+- Comment/code mới viết tiếng Việt, dễ đọc; không thêm branch theo tên provider.
+
+Verification:
+- RED test `test_candidate_order_enforces_quality_from_route_config` bắt lỗi metadata bị rơi ở parser.
+- Sửa parser/compiler và rerun: `6 passed` wiring tests.
+- Full suite: `293 passed, 6 skipped`.
+- GitHub auth device flow thành công với account `chucuoi8x`; branch `feature/admin-api-baseline` đã push commit trước đó.
+
+Outcome:
+- AC-08/AC-10 slice đạt: policy có thể loại resource dưới quality floor, paid fallback bị chặn khi policy không cho phép, và paid fallback vượt budget bị loại.
+- M5 pipeline hiện có: policy eligibility -> quota admission -> preset scoring.
+
+Follow-up risks / TODOs:
+- `expiry_urgency`, `scarcity`, `retry_cost`, `uncertainty`, session/cache affinity và route simulation chưa được đưa đầy đủ vào `CandidateMetrics`/score composite.
+- `min_quota_headroom` chỉ enforce khi metadata có cả remaining và limit; thiếu telemetry thì fail-open có chủ đích.
+- Cần commit/push Step 89 sau khi kiểm tra diff và secret scan.

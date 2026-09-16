@@ -252,3 +252,61 @@ def preset_to_scoring_weights(preset: PolicyPreset) -> dict[str, float]:
 def all_presets_dict() -> dict[str, dict[str, Any]]:
     """Trả về toàn bộ presets dạng dict để dùng cho API/UI."""
     return {name: preset.to_dict() for name, preset in _PRESETS.items()}
+
+
+def filter_candidates_for_policy(
+    candidates,
+    policy: PolicyPreset | PolicyConstraints,
+    *,
+    is_fallback: bool = False,
+) -> list:
+    """Lọc candidate dựa trên policy constraints của preset.
+
+    Nhận cả ``PolicyPreset`` và ``PolicyConstraints`` để caller không phải
+    tự bóc tách cấu hình. Không branch theo tên provider; chỉ đọc metadata.
+    """
+    constraints = policy.constraints if isinstance(policy, PolicyPreset) else policy
+    accepted: list = []
+    for c in candidates:
+        meta = getattr(c, "metadata", {}) or {}
+
+        # 1. Quality floor: reject khi quality_score < min_quality và preset yêu cầu
+        if constraints.min_quality > 0:
+            qscore = meta.get("quality_score")
+            if qscore is not None and float(qscore) < constraints.min_quality:
+                continue
+
+        # 2. Paid ceiling: nếu policy không cho phép paid fallback, loại paid ở fallback
+        if not constraints.allow_paid_fallback and is_fallback:
+            if meta.get("is_paid", False):
+                continue
+
+        # 3. Cost ceiling: khi allow_paid_fallback=True, loại paid vượt trần hoặc không rõ chi phí
+        if constraints.allow_paid_fallback and is_fallback and meta.get("is_paid", False):
+            cost = meta.get("expected_cost_per_request")
+            if cost is None:
+                # Paid nhưng không có dữ liệu giá -> thận trọng loại
+                continue
+            ceiled = constraints.max_expected_cost_per_request
+            if ceiled is not None and float(cost) > ceiled:
+                continue
+
+        # 4. Quota headroom: kiểm tra ratio remaining/limit >= min_quota_headroom
+        if constraints.min_quota_headroom > 0:
+            rem_by_res = meta.get("quota_remaining_by_resource", {})
+            lim_by_res = meta.get("quota_limit_by_resource", {})
+            if rem_by_res and lim_by_res:
+                try:
+                    overall_ratio = min(
+                        r / l if l > 0 else 0
+                        for r, l in zip(rem_by_res.values(), lim_by_res.values())
+                    )
+                except ZeroDivisionError:
+                    overall_ratio = 0
+                if overall_ratio < constraints.min_quota_headroom:
+                    continue
+            # Thiếu data quota → giữ lại (không chặn)
+
+        accepted.append(c)
+
+    return accepted

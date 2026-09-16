@@ -114,6 +114,10 @@ class LegacyConfigCompiler:
         for key in ("quota_resource_id", "quota_resource_ids"):
             if key in item:
                 metadata[key] = item[key]
+        # Policy constraint metadata: phải giữ để filter policy hoạt động đúng
+        for key in ("quality_score", "is_paid", "expected_cost_per_request"):
+            if key in item:
+                metadata[key] = item[key]
         # Smart scoring hints
         for key in ("session_group", "driver_id"):
             val = item.get(key)

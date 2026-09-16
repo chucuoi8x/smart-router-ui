@@ -168,10 +168,10 @@ class ScoringConfig:
                 pass  # preset lỗi thì giữ weights mặc định, không chặn khởi động
         return cfg
 
-    def effective_weights_for_route(self, route_name: str | None = None) -> "ScoringWeights":
-        """Trả về weights đã resolve cho route cụ thể.
+    def effective_preset_for_route(self, route_name: str | None = None):
+        """Trả về PolicyPreset đã resolve cho route cụ thể.
 
-        Ưu tiên: route_presets[route] -> preset chung -> weights hiện có.
+        Ưu tiên: route_presets[route] -> preset chung -> auto-free.
         """
         preset_name = None
         if route_name and route_name in self.route_presets:
@@ -179,10 +179,24 @@ class ScoringConfig:
         else:
             preset_name = self.preset
         try:
-            from apps.gateway.routing.presets import get_preset_or_default, preset_to_scoring_weights
+            from apps.gateway.routing.presets import get_preset_or_default
 
-            preset_obj = get_preset_or_default(preset_name)
-            mapped = preset_to_scoring_weights(preset_obj)
+            return get_preset_or_default(preset_name)
+        except Exception:
+            from apps.gateway.routing.presets import get_preset_or_default
+
+            return get_preset_or_default("auto-free")
+
+    def effective_weights_for_route(self, route_name: str | None = None) -> "ScoringWeights":
+        """Trả về weights đã resolve cho route cụ thể.
+
+        Ưu tiên: route_presets[route] -> preset chung -> weights hiện có.
+        """
+        try:
+            preset = self.effective_preset_for_route(route_name)
+            from apps.gateway.routing.presets import preset_to_scoring_weights
+
+            mapped = preset_to_scoring_weights(preset)
             w = ScoringWeights(
                 cost_factor=mapped.get("cost_factor", self.weights.cost_factor),
                 reliability_factor=mapped.get("reliability_factor", self.weights.reliability_factor),
@@ -421,6 +435,7 @@ class SmartScoreCalculator:
         metrics_by_key: dict[str, CandidateMetrics],
         conversation_thread: str | None = None,
         request_id: str | None = None,
+        weights: ScoringWeights | None = None,
     ) -> list[tuple[Any, float]]:
         """Score candidates and return sorted (candidate, composite_score) descending.
 
@@ -432,7 +447,7 @@ class SmartScoreCalculator:
                 metrics = metrics_by_key.get(key)
                 if metrics is None:
                     continue
-                score_dict = self._compute_candidate_score(candidate, key, metrics, conversation_thread)
+                score_dict = self._compute_candidate_score(candidate, key, metrics, conversation_thread, weights=weights)
                 scored.append((candidate, score_dict["composite"]))
             scored.sort(key=lambda x: x[1], reverse=True)
             return scored
@@ -463,9 +478,10 @@ class SmartScoreCalculator:
         key: str,
         metrics: CandidateMetrics,
         conversation_thread: str | None,
+        weights: ScoringWeights | None = None,
     ) -> dict[str, float]:
         """Compute all six dimension scores and the composite for one candidate."""
-        w = self._config.weights
+        w = weights if weights is not None else self._config.weights
 
         cost = self._score_cost(metrics)
         reliability = self._score_reliability(metrics)

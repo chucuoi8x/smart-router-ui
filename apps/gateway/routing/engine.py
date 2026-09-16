@@ -7,6 +7,7 @@ from typing import Any, List, Optional
 from apps.gateway.routing.models import ResourceRef, ResourceCandidate
 from apps.gateway.config.snapshot import RuntimeConfigSnapshot
 from apps.gateway.routing.scoring import ScoringConfig
+from apps.gateway.routing.presets import filter_candidates_for_policy
 
 class InMemoryCircuitRepository:
     def __init__(self):
@@ -88,14 +89,34 @@ class RouterEngine:
             return self._run_coro_sync(snap(resource_id))
         return snap(resource_id)
 
+    def _apply_policy_constraints(
+        self,
+        candidates: list[ResourceCandidate],
+        route_name: str,
+        *,
+        is_fallback: bool,
+    ) -> list[ResourceCandidate]:
+        """Lọc hard policy constraints khi Smart Scheduler đang active.
+
+        Scheduler disabled/shadow giữ nguyên legacy behavior.  Metadata thiếu
+        thì filter fail-open, trừ paid resource thiếu giá trong fallback.
+        """
+        if not self._should_apply_smart_scoring(route_name):
+            return candidates
+        try:
+            preset = self._scoring_config.effective_preset_for_route(route_name)  # type: ignore[union-attr]
+            return filter_candidates_for_policy(candidates, preset, is_fallback=is_fallback)
+        except Exception:
+            return candidates  # Policy lỗi không được làm hỏng data plane
+
     def select_candidates(self, route_name: str) -> List[ResourceCandidate]:
         route = self.snapshot.routes.get(route_name)
         if route is None:
             return []
-
         primary = [c for c in route.candidates if self.circuit_repository.is_available(c.resource_ref)]
         fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
-
+        primary = self._apply_policy_constraints(primary, route_name, is_fallback=False)
+        fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True)
         scored_primary = self._quota_rank_sync(primary)
         scored_fallback = self._quota_rank_sync(fallback)
         return list(self._apply_smart_scoring(scored_primary, route_name)) + list(
@@ -109,6 +130,8 @@ class RouterEngine:
 
         primary = [c for c in route.candidates if self.circuit_repository.is_available(c.resource_ref)]
         fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
+        primary = self._apply_policy_constraints(primary, route_name, is_fallback=False)
+        fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True)
 
         scored_primary = await self._quota_rank(primary)
         scored_fallback = await self._quota_rank(fallback)
@@ -290,10 +313,18 @@ class RouterEngine:
                     limit=lim,
                     burn_rate_urgency=burn_urgency,
                 )
+            # Lấy weights theo preset của route (không hardcode provider).
+            route_weights = None
+            if self._scoring_config is not None:
+                try:
+                    route_weights = self._scoring_config.effective_weights_for_route(route_name)
+                except Exception:
+                    route_weights = None
             scored = self._score_calculator.compute_scores(
                 candidates=candidates,
                 candidate_keys=keys,
                 metrics_by_key=metrics,
+                weights=route_weights,
             )
             if self._scoring_config and self._scoring_config.mode == "shadow":
                 return candidates
