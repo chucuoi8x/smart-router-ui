@@ -36,6 +36,7 @@ _revision_manager = ConfigRevisionManager()
 _provider_connections: dict[str, dict[str, Any]] = {}
 _provider_credentials: dict[str, list[dict[str, Any]]] = {}
 _projects: dict[str, dict[str, Any]] = {}
+_project_keys: dict[str, list[dict[str, Any]]] = {}
 _alerts: list[dict[str, Any]] = []
 _quota_resources: dict[str, dict[str, Any]] = {}
 _audit_events: list[dict[str, Any]] = []
@@ -470,6 +471,55 @@ def list_projects() -> dict[str, Any]:
         for p in _projects.values()
     ]
     return {"items": items, "total": len(items)}
+
+
+@router.post("/projects/{project_id}/keys", status_code=201)
+def create_project_key(project_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    project = _projects.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    alias = str(payload.get("alias") or "default").strip()
+    if not alias:
+        raise HTTPException(status_code=400, detail="alias cannot be empty")
+    key_id = f"key_{uuid.uuid4().hex[:12]}"
+    secret = f"srk_{uuid.uuid4().hex}"
+    record = {
+        "key_id": key_id,
+        "project_id": project_id,
+        "alias": alias,
+        "secret_encrypted": encrypt_secret(secret),
+        "active": True,
+        "created_at": datetime.now(UTC).isoformat(),
+        "revoked_at": None,
+    }
+    _project_keys.setdefault(project_id, []).append(record)
+    _audit_events.append({"action": "project.key.created", "project_id": project_id, "key_id": key_id, "alias": alias, "created_at": record["created_at"]})
+    return {"key_id": key_id, "project_id": project_id, "alias": alias, "secret": secret, "active": True, "created_at": record["created_at"]}
+
+
+@router.get("/projects/{project_id}/keys")
+def list_project_keys(project_id: str) -> dict[str, Any]:
+    if project_id not in _projects:
+        raise HTTPException(status_code=404, detail="project not found")
+    items = [
+        {"key_id": k["key_id"], "project_id": project_id, "alias": k["alias"], "active": bool(k["active"]), "created_at": k["created_at"], "revoked_at": k.get("revoked_at")}
+        for k in _project_keys.get(project_id, [])
+    ]
+    return {"items": items, "total": len(items)}
+
+
+@router.delete("/projects/{project_id}/keys/{key_id}", status_code=200)
+def revoke_project_key(project_id: str, key_id: str) -> dict[str, Any]:
+    if project_id not in _projects:
+        raise HTTPException(status_code=404, detail="project not found")
+    target = next((k for k in _project_keys.get(project_id, []) if k["key_id"] == key_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="project key not found")
+    if target["active"]:
+        target["active"] = False
+        target["revoked_at"] = datetime.now(UTC).isoformat()
+        _audit_events.append({"action": "project.key.revoked", "project_id": project_id, "key_id": key_id, "created_at": target["revoked_at"]})
+    return {"project_id": project_id, "key_id": key_id, "revoked": True, "active": False, "revoked_at": target["revoked_at"]}
 
 
 @router.get("/projects/{project_id}")
