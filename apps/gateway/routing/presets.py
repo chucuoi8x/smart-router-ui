@@ -288,6 +288,11 @@ def hard_state_eligible(meta: dict) -> bool:
     protocol = str(meta.get("protocol", "")).strip().lower()
     if protocol in {"unsupported", "unsupported-xyz", "unknown", "invalid"}:
         return False
+    if meta.get("project_budget_exhausted") is True:
+        return False
+    budget_state = str(meta.get("project_budget_state", meta.get("budget_state", ""))).strip().lower()
+    if budget_state in {"exhausted", "depleted", "over_budget", "insufficient"}:
+        return False
     return True
 
 

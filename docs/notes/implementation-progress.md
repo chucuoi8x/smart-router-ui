@@ -2227,3 +2227,23 @@ Outcome:
 Follow-up risks / TODOs:
 - Chưa nối live quota/budget reservation và auth revocation từ upstream telemetry — vẫn snapshot-based.
 - Cần e2e qua gateway khi live counters sẵn sàng.
+## Step 100 — M5 hard filter: project budget exhausted (2026-09-16)
+
+Implemented:
+- `apps/gateway/routing/presets.py`: mở rộng `hard_state_eligible(meta)` — thêm `project_budget_exhausted is True` và `project_budget_state`/`budget_state ∈ {exhausted, depleted, over_budget, insufficient}`. Fail-open khi thiếu metadata, đúng README §18.2 project budget gate.
+- `apps/gateway/routing/simulation.py`: `_eligibility_for_candidate()` trả diagnostics `budget_exhausted` và `project_budget_exhausted:<state>`; giữ dry-run provider-agnostic.
+- `apps/gateway/config/compiler.py` + `router.py`: `_candidate_metadata()` giữ `project_budget_state`, `budget_state`, `project_budget_exhausted`, `budget_exhausted`.
+- `tests/unit/test_m5_hard_budget.py`: 4 tests — budget exhausted reject, RouterEngine và legacy SmartRouter chặn khi scheduler tắt, simulation ineligible đúng.
+
+Verification:
+- RED: 4/4 tests fail trước khi mở rộng helper (budget candidates vẫn eligible).
+- GREEN: `pytest test_m5_hard_budget + test_m5_hard_credential_protocol -q` → `8 passed`; full suite `pytest -q --tb=short` → `335 passed, 6 skipped, 1 warning`.
+- `git diff --check` sạch (chỉ CRLF). Secret scan `presets.py`/`simulation.py`/`router.py` 0 match.
+
+Outcome:
+- Project budget exhaustion giờ là hard safety gate độc lập với preset — chạy kể cả khi admin tắt scheduler, đúng README §18.2/§5.
+- Fail-open khi thiếu telemetry; hard-reject khi có dữ liệu.
+
+Follow-up risks / TODOs:
+- Nốt gate cứng §18.2 đã đủ: disabled, deprecated, state, circuit, credential, protocol, output-limit, concurrency, budget đều luôn bật.
+- Còn lại wiring phiên live (quota/burn-rate expiry) cho scoring — thuộc slice scorer chứ không còn hard eligibility thiếu.

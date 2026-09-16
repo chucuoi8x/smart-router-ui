@@ -59,6 +59,11 @@ def _eligibility_for_candidate(
     protocol = str(meta.get("protocol", "")).strip().lower()
     if protocol in {"unsupported", "unsupported-xyz", "unknown", "invalid"}:
         failed.append(f"protocol_unsupported:{protocol}")
+    if meta.get("project_budget_exhausted") is True:
+        failed.append("budget_exhausted")
+    budget_state = str(meta.get("project_budget_state", meta.get("budget_state", ""))).strip().lower()
+    if budget_state in {"exhausted", "depleted", "over_budget", "insufficient"}:
+        failed.append(f"project_budget_exhausted:{budget_state}")
 
     if constraints.min_quality > 0:
         qscore = meta.get("quality_score")
