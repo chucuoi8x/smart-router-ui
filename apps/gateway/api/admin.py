@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, Form, Header, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -566,6 +566,111 @@ async def control_plane_overview(
         "usage": stats,
         "status": "ok",
     }
+
+
+def _snapshot_to_dict(snapshot) -> dict[str, object]:
+    """Convert RuntimeConfigSnapshot to JSON-serializable dict for revision storage."""
+    conns: dict[str, object] = {}
+    for cid, cfg in (getattr(snapshot, "connections", {}) or {}).items():
+        conns[cid] = {
+            "connection_id": getattr(cfg, "connection_id", cid),
+            "base_url": getattr(cfg, "base_url", ""),
+            "auth_mode": getattr(cfg, "auth_mode", "bearer"),
+            "token_env": getattr(cfg, "token_env", ""),
+        }
+    routes: dict[str, object] = {}
+    for rname, rcfg in (getattr(snapshot, "routes", {}) or {}).items():
+        cand_list = []
+        for c in getattr(rcfg, "candidates", []) or []:
+            ref = getattr(c, "resource_ref", None)
+            upstream = getattr(ref, "provider_connection_id", "") if ref else ""
+            model = getattr(ref, "model_id", "") if ref else ""
+            entry: dict[str, object] = {"upstream": upstream, "model": model, "weight": getattr(c, "weight", 1)}
+            meta = getattr(c, "metadata", {}) or {}
+            # merge relevant metadata without leaking secrets
+            for k, v in meta.items():
+                if k not in entry:
+                    entry[k] = v
+            cand_list.append(entry)
+        fb_list = []
+        for c in getattr(rcfg, "fallback", []) or []:
+            ref = getattr(c, "resource_ref", None)
+            upstream = getattr(ref, "provider_connection_id", "") if ref else ""
+            model = getattr(ref, "model_id", "") if ref else ""
+            entry = {"upstream": upstream, "model": model, "weight": getattr(c, "weight", 1)}
+            meta = getattr(c, "metadata", {}) or {}
+            for k, v in meta.items():
+                if k not in entry:
+                    entry[k] = v
+            fb_list.append(entry)
+        routes[rname] = {
+            "strategy": getattr(rcfg, "strategy", "priority"),
+            "candidates": cand_list,
+            "fallback": fb_list,
+            "generated": bool(getattr(rcfg, "generated", False)),
+        }
+    return {"connections": conns, "routes": routes}
+
+
+@router.post("/migration/yaml", status_code=201)
+async def migrate_legacy_yaml(request: Request) -> dict[str, object]:
+    """Compile legacy YAML (AC-16) into an activated revision — Control Plane."""
+    import yaml as _yaml
+    from apps.gateway.config.compiler import LegacyConfigCompiler
+
+    import json as _json
+    from urllib.parse import parse_qs
+
+    content_type = request.headers.get("content-type", "")
+    raw = await request.body()
+    text = raw.decode("utf-8", errors="replace") if raw else ""
+    yaml_data: str | None = None
+
+    if "application/json" in content_type:
+        try:
+            payload = _json.loads(text)
+            if isinstance(payload, dict):
+                yaml_data = payload.get("yaml_data") or payload.get("yaml") or payload.get("content")
+        except Exception:
+            yaml_data = None
+    elif "application/x-www-form-urlencoded" in content_type:
+        parsed = parse_qs(text, keep_blank_values=True)
+        for key in ("yaml_data", "yaml", "content"):
+            if parsed.get(key):
+                yaml_data = parsed[key][0]
+                break
+    else:
+        # Treat the raw body as YAML text directly (content-type absent/other).
+        yaml_data = text
+
+    if not yaml_data or not str(yaml_data).strip():
+        raise HTTPException(status_code=400, detail="yaml_data is required")
+    yaml_str = str(yaml_data)
+    try:
+        cfg = _yaml.safe_load(yaml_str)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid YAML: {exc}") from exc
+    if not isinstance(cfg, dict):
+        raise HTTPException(status_code=400, detail="YAML must be a mapping")
+    # basic validation: if routes present it must be a mapping
+    routes_val = cfg.get("routes")
+    if routes_val is not None and not isinstance(routes_val, dict):
+        raise HTTPException(status_code=400, detail="routes must be a mapping")
+    upstreams_val = cfg.get("upstreams")
+    if upstreams_val is not None and not isinstance(upstreams_val, dict):
+        raise HTTPException(status_code=400, detail="upstreams must be a mapping")
+    try:
+        snapshot = LegacyConfigCompiler().compile_dict(cfg)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    snapshot_data = _snapshot_to_dict(snapshot)
+    revision_id = _revision_manager.create_draft(snapshot_data)
+    valid, errors = _revision_manager.validate(revision_id)
+    if not valid:
+        raise HTTPException(status_code=400, detail=errors)
+    _revision_manager.activate(revision_id)
+    _audit_events.append({"action": "migration.yaml", "revision_id": revision_id, "created_at": datetime.now(UTC).isoformat()})
+    return {"revision_id": revision_id, "activated": True, "snapshot_data": snapshot_data}
 
 
 @router.post("/routes/simulate")
