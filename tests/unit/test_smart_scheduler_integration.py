@@ -111,8 +111,9 @@ class TestScoringConfigParsing(unittest.TestCase):
 
         cfg = ScoringConfig.from_dict({})
         self.assertFalse(cfg.enabled)
-        self.assertAlmostEqual(cfg.weights.cost_factor, 0.25, places=4)
-        self.assertAlmostEqual(cfg.weights.reliability_factor, 0.30, places=4)
+        self.assertEqual(cfg.preset, "auto-free")
+        self.assertAlmostEqual(cfg.weights.cost_factor, 0.3226, places=3)
+        self.assertAlmostEqual(cfg.weights.reliability_factor, 0.1774, places=3)
 
     def test_overrides_from_yaml(self):
         from apps.gateway.routing.scoring import ScoringConfig

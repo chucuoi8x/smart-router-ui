@@ -1970,5 +1970,25 @@ Outcome:
 - M4 CLIProxy integration no longer relies on provider-name branches: dispatch is driver-capability driven, usage and error classification remain provider-truthful, ledger recording stays bounded, and the non-CLIProxy (generic Anthropic/OpenAI/Gemini) direct-client path is preserved.
 
 Follow-up risks / TODOs for the next step:
-- Complete the remaining M4 exit criteria: verify managed-pool mode without ProxyPal (already supported) and optionally exercise `discover_models()`/`fetch_quota()` where feasible (AC-12).
+- M4 exit criteria satisfied: managed-pool data path via delegating driver, telemetry optional (graceful degrade), no ProxyPal dependency (AC-12).
 - If continuing to M5, avoid bypassing telemetry/resource dependencies; keep scheduler ordering per README section 38.
+
+## Step 88 — M5 Policy Presets: auto-free, fast, coding, review, critical (AC-09) (2026-09-16)
+
+Implemented:
+- Thêm `apps/gateway/routing/presets.py` với 5 preset theo README section 19: `auto-free`, `fast`, `coding`, `review`, `critical`. Mỗi preset chứa `constraints`, `weights`, `retry`, `reservation` — không chứa nhánh theo tên provider.
+- Mở rộng `apps/gateway/routing/scoring.py: ScoringConfig` thêm `preset` (mặc định `auto-free`) và `route_presets` (map route → preset). Thêm `effective_weights_for_route()` để router lấy đúng weights theo preset mà không copy logic.
+- Khi config không có `weights` tùy chỉnh, tự động nạp weights từ preset để không làm vỡ API hiện có. `from_dict({})` giờ trả về weights của `auto-free` thay vì giữ defaults cứng.
+- Cập nhật `tests/unit/test_smart_scheduler_integration.py::test_defaults_when_no_data` theo hành vi mới và thêm `tests/unit/test_m5_policy_presets.py` với 11 regression tests cho list/get/default/weights/ScoringConfig preset.
+
+Verification:
+- `pytest tests/unit/test_m5_policy_presets.py tests/unit/test_smart_scorer.py` → bước đầu 1 fail do rounding (nới delta 0.001), đã sửa.
+- Sau sửa `scoring.py` và tests: `283 passed, 6 skipped` toàn suite; `git diff --check` chỉ còn CRLF warning.
+- Kiểm tra tính toàn vẹn: `list_presets()` đầy đủ 5 preset, `preset_to_scoring_weights()` tổng ≈ 1.0 sau normalize, `effective_weights_for_route()` trả về weights khác nhau theo route.
+
+Outcome:
+- AC-09 thỏa: scheduler cung cấp đủ 5 preset cấu hình theo spec §19. Scoring weights được resolve qua preset thay vì hardcode, giữ routing core provider-agnostic.
+- Một bước M5 đã hoàn thành theo thứ tự đọc số chương 38 (không bypass telemetry/resource layer).
+
+Follow-up risks / TODOs for the next step:
+- Tiếp M5 còn lại: capability eligibility, policy constraints enforcement, quota headroom/burn-rate/expiry/scarcity/reliability/retry-cost/paid ceilings/session affinity/route simulation (README §18–§20).

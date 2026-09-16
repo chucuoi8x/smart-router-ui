@@ -95,7 +95,9 @@ class ScoringConfig:
 
     enabled: bool = False
     mode: str = "disabled"  # "disabled" | "shadow" | "active"
+    preset: str = "auto-free"  # tên preset theo README section 19 / AC-09
     route_allowlist: list[str] = field(default_factory=list)
+    route_presets: dict[str, str] = field(default_factory=dict)  # route_name -> preset_name
     weights: ScoringWeights = field(default_factory=ScoringWeights)
     normalization_window_seconds: int = 300
     max_failure_history: int = 100
@@ -117,10 +119,21 @@ class ScoringConfig:
             raw_mode = "disabled"
         raw_allowlist = data.get("route_allowlist", [])
         route_allowlist = [str(r) for r in raw_allowlist] if isinstance(raw_allowlist, list) else []
+        # Hỗ trợ preset: đọc từ config hoặc dùng auto-free mặc định. Không hardcode provider.
+        raw_preset = str(data.get("preset", "auto-free")).strip().lower()
+        raw_route_presets = data.get("route_presets", {})
+        route_presets: dict[str, str] = {}
+        if isinstance(raw_route_presets, dict):
+            for k, v in raw_route_presets.items():
+                route_presets[str(k)] = str(v).strip().lower()
+        # Nếu có weights tùy chỉnh trong config, ưu tiên weights đó hơn preset
+        has_custom_weights = bool(data.get("weights"))
         cfg = cls(
             enabled=enabled and raw_mode != "disabled",
             mode=raw_mode,
+            preset=(raw_preset or "auto-free"),
             route_allowlist=route_allowlist,
+            route_presets=route_presets,
             weights=ScoringWeights.from_dict(data.get("weights")),
             normalization_window_seconds=int(data.get("normalization_window_seconds", cls.normalization_window_seconds)),
             max_failure_history=int(data.get("max_failure_history", cls.max_failure_history)),
@@ -135,7 +148,53 @@ class ScoringConfig:
             ),
         )
         cfg.weights, _ = cfg.weights.normalize_if_needed()
+        # Nếu không có custom weights, nạp weights từ preset để scoring dùng ngay
+        if not has_custom_weights:
+            try:
+                from apps.gateway.routing.presets import get_preset_or_default, preset_to_scoring_weights
+
+                preset_obj = get_preset_or_default(cfg.preset)
+                mapped = preset_to_scoring_weights(preset_obj)
+                cfg.weights = ScoringWeights(
+                    cost_factor=mapped.get("cost_factor", cfg.weights.cost_factor),
+                    reliability_factor=mapped.get("reliability_factor", cfg.weights.reliability_factor),
+                    latency_factor=mapped.get("latency_factor", cfg.weights.latency_factor),
+                    quota_pressure_factor=mapped.get("quota_pressure_factor", cfg.weights.quota_pressure_factor),
+                    capability_factor=mapped.get("capability_factor", cfg.weights.capability_factor),
+                    session_affinity_factor=mapped.get("session_affinity_factor", cfg.weights.session_affinity_factor),
+                )
+                cfg.weights, _ = cfg.weights.normalize_if_needed()
+            except Exception:
+                pass  # preset lỗi thì giữ weights mặc định, không chặn khởi động
         return cfg
+
+    def effective_weights_for_route(self, route_name: str | None = None) -> "ScoringWeights":
+        """Trả về weights đã resolve cho route cụ thể.
+
+        Ưu tiên: route_presets[route] -> preset chung -> weights hiện có.
+        """
+        preset_name = None
+        if route_name and route_name in self.route_presets:
+            preset_name = self.route_presets[route_name]
+        else:
+            preset_name = self.preset
+        try:
+            from apps.gateway.routing.presets import get_preset_or_default, preset_to_scoring_weights
+
+            preset_obj = get_preset_or_default(preset_name)
+            mapped = preset_to_scoring_weights(preset_obj)
+            w = ScoringWeights(
+                cost_factor=mapped.get("cost_factor", self.weights.cost_factor),
+                reliability_factor=mapped.get("reliability_factor", self.weights.reliability_factor),
+                latency_factor=mapped.get("latency_factor", self.weights.latency_factor),
+                quota_pressure_factor=mapped.get("quota_pressure_factor", self.weights.quota_pressure_factor),
+                capability_factor=mapped.get("capability_factor", self.weights.capability_factor),
+                session_affinity_factor=mapped.get("session_affinity_factor", self.weights.session_affinity_factor),
+            )
+            w, _ = w.normalize_if_needed()
+            return w
+        except Exception:
+            return self.weights
 
 
 # ── Metrics dataclass ──────────────────────────────────────────────────
