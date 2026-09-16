@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -308,4 +308,83 @@ async def usage_stats(
             }
             for r in provider_rows
         ],
+    }
+
+
+@router.post("/routes/simulate")
+async def simulate_route_endpoint(
+    request: Request,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """Dry-run route simulation theo README §22.3 — không gọi provider."""
+    from pathlib import Path
+
+    from apps.gateway.config.compiler import LegacyConfigCompiler
+    from apps.gateway.routing.scoring import ScoringConfig
+    from apps.gateway.routing.simulation import simulate_route
+
+    route_name = str(payload.get("route") or payload.get("route_name") or payload.get("model") or "").strip()
+    if not route_name:
+        raise HTTPException(status_code=400, detail="route is required")
+
+    # Ưu tiên snapshot từ router đang chạy; fallback compile config.yaml
+    snapshot = None
+    scoring_config: ScoringConfig | None = None
+    app_router = getattr(request.app.state, "router", None)
+    if app_router is not None:
+        try:
+            # SmartRouter giữ config gốc; compile snapshot tương thích
+            cfg = getattr(app_router, "config", None)
+            if isinstance(cfg, dict):
+                snapshot = LegacyConfigCompiler().compile_dict(cfg)
+                scoring_config = getattr(app_router, "_scoring_config", None)
+                if scoring_config is None:
+                    scoring_config = ScoringConfig.from_dict(cfg.get("smart_scheduler", {}))
+        except Exception:
+            snapshot = None
+
+    if snapshot is None:
+        # Fallback: đọc config.yaml mặc định
+        config_path = Path(__file__).resolve().parents[3] / "config.yaml"
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail="route not found")
+        try:
+            snapshot = LegacyConfigCompiler().compile_file(config_path)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if scoring_config is None:
+            import yaml
+
+            try:
+                raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                scoring_config = ScoringConfig.from_dict(raw.get("smart_scheduler", {}))
+            except Exception:
+                scoring_config = ScoringConfig()
+
+    estimated_input_tokens = payload.get("estimated_input_tokens")
+    max_output_tokens = payload.get("max_output_tokens")
+    session_val = payload.get("session") or payload.get("session_id") or payload.get("conversation_id")
+
+    result = simulate_route(
+        snapshot=snapshot,
+        route_name=route_name,
+        scoring_config=scoring_config,
+        estimated_input_tokens=estimated_input_tokens if isinstance(estimated_input_tokens, int) else None,
+        max_output_tokens=max_output_tokens if isinstance(max_output_tokens, int) else None,
+        capabilities={
+            "tools": bool(payload.get("tools", False)),
+            "vision": bool(payload.get("vision", False)),
+        },
+        session_id=str(session_val).strip() if isinstance(session_val, str) and session_val.strip() else None,
+    )
+
+    if not result.candidates and result.reason == "unknown_route":
+        raise HTTPException(status_code=404, detail="route not found")
+
+    return {
+        "route_name": result.route_name,
+        "preset": result.preset,
+        "candidates": result.candidates,
+        "selected_resource": result.selected_resource,
+        "reason": result.reason,
     }

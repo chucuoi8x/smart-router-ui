@@ -2062,3 +2062,26 @@ Outcome:
 Follow-up risks / TODOs:
 - Route simulation/dry-run và telemetry persistence cho các scoring feature còn là slice M5 tiếp theo theo README §20.
 - Cần thêm integration test cho stream affinity end-to-end (hiện chỉ unit cho non-stream ordering).
+
+## Step 92 — M5 route simulation dry-run (2026-09-16)
+
+Implemented:
+- `apps/gateway/routing/simulation.py`: hàm `simulate_route()` thuần túy, không gọi provider/upstream và không reserve quota. Đánh giá eligibility theo preset constraints (min_quality, paid fallback/budget, quota headroom), chuẩn hóa features và tính composite score qua `SmartScoreCalculator` khi scoring enabled, chọn eligible có composite cao nhất. Giữ provider-agnostic — chỉ đọc metadata/preset.
+- `apps/gateway/api/admin.py`: endpoint `POST /api/admin/v1/routes/simulate` (admin auth) theo README §22.3. Nhận `route`/`estimated_input_tokens`/`max_output_tokens`/`tools`/`vision`/`session`, dùng snapshot từ `app.state.router` đang chạy hoặc fallback compile `config.yaml`, trả `route_name`/`preset`/`candidates` (mỗi candidate gồm eligibility, failed_constraints, score, features, metadata) / `selected_resource` / `reason`. Không gọi upstream; 400 khi thiếu route, 404 khi route không tồn tại.
+- Thêm `tests/unit/test_m5_route_simulation.py` (3 tests: loại low-quality, expose score/features không cần upstream, tôn trọng đổi preset) và `tests/unit/test_m5_admin_simulate_endpoint.py` (1 test endpoint 200 với payload mẫu §22.3).
+
+Verification:
+- RED: `ModuleNotFoundError: No module named 'apps.gateway.routing.simulation'` (3 tests) và `404 Not Found` cho endpoint trước khi gắn.
+- Sau implement: `pytest tests/unit/test_m5_route_simulation.py -q` → `3 passed`; `pytest tests/unit/test_m5_admin_simulate_endpoint.py -q` → `1 passed`; targeted `test_m5_route_simulation + test_m5_admin_simulate_endpoint + test_admin_api + test_m5_session_affinity` → `11 passed`.
+- Full: `pytest -q --tb=short` → `308 passed, 6 skipped, 1 warning (TestClient deprecation)` in ~20s.
+- `git diff --check` sạch (chỉ cảnh báo CRLF). Quét secret trong 2 file mới không có giá trị secret.
+
+- `router.py`: `_candidate_metadata()` đồng bộ với compiler, giữ `session_group`/`driver_id` và 4 metadata feature scoring để simulation/data-plane nhận cùng dữ liệu.
+
+Outcome:
+- Route simulation đã sẵn sàng cho Control Plane: admin có thể dry-run policy/route trước khi publish mà không tốn quota hay gọi provider.
+- Không thêm nhánh theo provider-name; simulation dùng cùng preset/scoring path với data-plane.
+
+Follow-up risks / TODOs:
+- Telemetry persistence cho scoring features và quota/burn-rate live wiring vẫn là slice M5 còn lại theo README §18–§20.
+- Endpoint hiện đọc snapshot từ config dict; khi DB revision active, cần compile từ `RuntimeConfigSnapshot` đã publish thay vì chỉ `config.yaml`.

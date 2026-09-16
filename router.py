@@ -252,6 +252,15 @@ class SmartRouter:
         for key in ("quality_score", "is_paid", "expected_cost_per_request"):
             if key in item:
                 metadata[key] = item[key]
+        # Smart scoring hints
+        for key in ("session_group", "driver_id"):
+            val = item.get(key)
+            if val is not None:
+                metadata[key] = val
+        # M5 feature metrics: giữ để scoring 4 chiều mới có dữ liệu, fail-open nếu thiếu
+        for key in ("expiry_urgency", "scarcity", "retry_expected_cost_per_request", "uncertainty_score"):
+            if key in item:
+                metadata[key] = item[key]
         return metadata
 
     @staticmethod
