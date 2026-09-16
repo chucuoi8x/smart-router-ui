@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 142 (474p) — audit export AC-13
+- Last completed: Step 143 (478p) — audit time-range filter
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 143 — audit retention/filter ranges M7
+- Next suggested: Step 144 — project API-key revocation AC-13
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2564,3 +2564,10 @@ Follow-up risks / TODOs:
 - Them `GET /audit/export` trong `apps/gateway/api/admin.py`: optional action filter, newest first, tra `items/total/exported_at`; redaction guard loai api_key/credential_encrypted/credential/secret/token va scrub gia tri `sk-*`.
 - Test `tests/unit/test_m6_audit_export.py` 3 tests: auth 401, export JSON co metadata va redacted, action filter.
 - Ket qua: targeted 3 passed, full `474 passed, 6 skipped`.
+
+## Step 143 — Audit time-range filter M7
+- Van de: /audit va /audit/export chi loc action, khong loc theo thoi gian de ops/security khoanh vung su kien.
+- Them `since` ISO-8601 query parameter cho ca `GET /audit` va `GET /audit/export`; timestamp invalid tra 400; su kien khong co timestamp bi loai khi filter.
+- Xu ly query-string `+00:00` bi decode thanh space bang cach normalize space -> `+` truoc khi parse ISO timestamp.
+- Test `tests/unit/test_m6_audit_timerange.py` 4 tests: future empty, past co su kien, export filter, invalid timestamp 400.
+- Ket qua: targeted 4 passed, full `478 passed, 6 skipped`.

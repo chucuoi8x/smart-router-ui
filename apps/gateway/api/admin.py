@@ -42,6 +42,21 @@ _audit_events: list[dict[str, Any]] = []
 _settings: dict[str, Any] = {"log_level": "INFO"}
 _driver_registry = default_driver_registry()
 _provider_health_cache: dict[str, dict[str, Any]] = {}
+def _parse_audit_since(value: str | None) -> datetime | None:
+    if value is None or value == "":
+        return None
+    # Query strings may decode an unescaped '+' as a space; ISO 8601 has no
+    # legal spaces, so normalise back to '+' before parsing.
+    raw = value.strip().replace(" ", "+")
+    try:
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid since timestamp") from exc
+
+
 
 
 # ── helpers ────────────────────────────────────────────────────────────
@@ -704,11 +719,26 @@ def activate_revision(revision_id: str) -> dict[str, Any]:
 @router.get("/audit/export")
 def export_audit(
     action: str | None = Query(default=None),
+    since: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """Export audit events as JSON — redacted, never includes plaintext secrets."""
+    since_dt = _parse_audit_since(since)
     items: list[dict[str, Any]] = list(reversed(_audit_events))
     if action:
         items = [e for e in items if e.get("action") == action]
+    if since_dt is not None:
+        def _created_at(e: dict[str, Any]) -> datetime | None:
+            val = e.get("created_at")
+            if not isinstance(val, str):
+                return None
+            try:
+                dt = datetime.fromisoformat(val)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                return dt
+            except Exception:
+                return None
+        items = [e for e in items if (_created_at(e) is not None and _created_at(e) >= since_dt)]  # type: ignore[operator]
     # redaction guard: ensure no secret key leaks even if stored incorrectly
     redacted: list[dict[str, Any]] = []
     for event in items:
@@ -726,11 +756,26 @@ def list_audit(
     action: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    since: str | None = Query(default=None),
 ) -> dict[str, Any]:
     """List audit events — redacted, no secrets exposed."""
+    since_dt = _parse_audit_since(since)
     items: list[dict[str, Any]] = list(reversed(_audit_events))
     if action:
         items = [e for e in items if e.get("action") == action]
+    if since_dt is not None:
+        def _created_at(e: dict[str, Any]) -> datetime | None:
+            val = e.get("created_at")
+            if not isinstance(val, str):
+                return None
+            try:
+                dt = datetime.fromisoformat(val)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=UTC)
+                return dt
+            except Exception:
+                return None
+        items = [e for e in items if (_created_at(e) is not None and _created_at(e) >= since_dt)]  # type: ignore[operator]
     total = len(items)
     paged = items[offset : offset + limit]
     return {"items": paged, "total": total, "limit": limit, "offset": offset}
