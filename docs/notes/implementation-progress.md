@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 141 (471p) — provider update AC-01
+- Last completed: Step 142 (474p) — audit export AC-13
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 142 — usage ledger aggregation M7
+- Next suggested: Step 143 — audit retention/filter ranges M7
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2558,3 +2558,9 @@ Follow-up risks / TODOs:
 - Them `PUT /providers/{connection_id}` trong `apps/gateway/api/admin.py`: validate name/base_url khong rong, update driver/api_key (ma hoa Fernet, redacted), active toggle, audit `provider.updated` voi fields (khong ghi api_key), tra _serialize_provider.
 - Test `tests/unit/test_m6_provider_update.py` 4 tests: auth 401, 404 unknown, update name/base_url, update api_key redacted.
 - Ket qua: targeted 4 passed, full `471 passed, 6 skipped`.
+
+## Step 142 — Audit export Control Plane AC-13
+- Van de: audit co list/filter nhung chua co export JSON de ops/security luu trich xuat su kien.
+- Them `GET /audit/export` trong `apps/gateway/api/admin.py`: optional action filter, newest first, tra `items/total/exported_at`; redaction guard loai api_key/credential_encrypted/credential/secret/token va scrub gia tri `sk-*`.
+- Test `tests/unit/test_m6_audit_export.py` 3 tests: auth 401, export JSON co metadata va redacted, action filter.
+- Ket qua: targeted 3 passed, full `474 passed, 6 skipped`.

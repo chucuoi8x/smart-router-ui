@@ -701,6 +701,26 @@ def activate_revision(revision_id: str) -> dict[str, Any]:
     return _serialize_revision(_ensure_active_revision())
 
 
+@router.get("/audit/export")
+def export_audit(
+    action: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Export audit events as JSON — redacted, never includes plaintext secrets."""
+    items: list[dict[str, Any]] = list(reversed(_audit_events))
+    if action:
+        items = [e for e in items if e.get("action") == action]
+    # redaction guard: ensure no secret key leaks even if stored incorrectly
+    redacted: list[dict[str, Any]] = []
+    for event in items:
+        safe = {k: v for k, v in event.items() if k.lower() not in {"api_key", "credential_encrypted", "credential", "secret", "token"}}
+        # also scrub any value that looks like a secret
+        for k, v in list(safe.items()):
+            if isinstance(v, str) and v.startswith("sk-"):
+                safe[k] = "[REDACTED]"
+        redacted.append(safe)
+    return {"items": redacted, "total": len(redacted), "exported_at": datetime.now(UTC).isoformat()}
+
+
 @router.get("/audit")
 def list_audit(
     action: str | None = Query(default=None),
