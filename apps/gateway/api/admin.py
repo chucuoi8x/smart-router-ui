@@ -1399,6 +1399,51 @@ async def simulate_route_endpoint(
             except Exception:
                 scoring_config = ScoringConfig()
 
+    # AC-10: optional project budget gate for simulation visibility
+    project_id = payload.get("project_id") or payload.get("project") or payload.get("projectId")
+    budget_context: dict[str, object] | None = None
+    if isinstance(project_id, str) and project_id.strip():
+        project_id = project_id.strip()
+        if project_id not in _projects:
+            raise HTTPException(status_code=404, detail="project not found")
+        budget = _project_budgets.get(project_id)
+        if budget is not None:
+            remaining = float(budget.get("remaining", budget.get("ceiling", 0) - float(budget.get("used", 0))))
+            eligible = remaining > 0
+            # normalize remaining to float for consistent API
+            budget_context = {
+                "project_id": project_id,
+                "currency": budget.get("currency", "USD"),
+                "ceiling": float(budget.get("ceiling", 0)),
+                "used": float(budget.get("used", 0)),
+                "remaining": float(remaining),
+                "eligible": bool(eligible),
+                "allow_paid_fallback": bool(budget.get("allow_paid_fallback", True)),
+            }
+            if not eligible:
+                return {
+                    "route_name": route_name,
+                    "preset": None,
+                    "candidates": [],
+                    "selected_resource": None,
+                    "reason": "project_budget_exhausted",
+                    "expected_reservation": None,
+                    "budget": budget_context,
+                }
+        else:
+            # Project exists but no explicit budget → treat as eligible with no ceiling
+            budget_context = {
+                "project_id": project_id,
+                "currency": "USD",
+                "ceiling": None,
+                "used": 0.0,
+                "remaining": None,
+                "eligible": True,
+                "allow_paid_fallback": True,
+            }
+    else:
+        project_id = None
+
     estimated_input_tokens = payload.get("estimated_input_tokens")
     max_output_tokens = payload.get("max_output_tokens")
     session_val = payload.get("session") or payload.get("session_id") or payload.get("conversation_id")
@@ -1419,7 +1464,7 @@ async def simulate_route_endpoint(
     if not result.candidates and result.reason == "unknown_route":
         raise HTTPException(status_code=404, detail="route not found")
 
-    return {
+    response: dict[str, object] = {
         "route_name": result.route_name,
         "preset": result.preset,
         "candidates": result.candidates,
@@ -1427,3 +1472,6 @@ async def simulate_route_endpoint(
         "reason": result.reason,
         "expected_reservation": result.expected_reservation,
     }
+    if budget_context is not None:
+        response["budget"] = budget_context
+    return response
