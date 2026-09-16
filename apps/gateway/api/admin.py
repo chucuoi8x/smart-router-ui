@@ -190,6 +190,14 @@ def list_revisions() -> dict[str, Any]:
     return {"items": items, "total": len(items)}
 
 
+@router.get("/revisions/{revision_id}")
+def get_revision_detail(revision_id: str) -> dict[str, Any]:
+    for rev in _revision_manager.list_revisions():
+        if rev.get("revision_id") == revision_id:
+            return _serialize_revision(rev)
+    raise HTTPException(status_code=404, detail="revision not found")
+
+
 @router.post("/revisions", status_code=201)
 def create_revision(payload: dict[str, Any] = Body(...)) -> dict[str, str]:
     revision_id = _revision_manager.create_draft(payload)
