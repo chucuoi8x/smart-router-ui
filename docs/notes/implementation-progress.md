@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 108 (a8d1660) — Overview API. Full 351p6s.
+- Last completed: Step 110 (357p) — revision audit history (redacted) — Overview API. Full 351p6s.
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 109 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 111 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2348,3 +2348,10 @@ Follow-up risks / TODOs:
 - Sửa `admin.py`: thêm `GET /revisions` serialize và trả về `{items:[], total:N}` dùng `_serialize_revision` như các endpoint khác.
 - Test `tests/unit/test_m6_revisions.py` 3 tests: 401 khi thiếu auth, list có draft mới tạo, activate bogus → 404.
 - Kết quả: targeted 3 passed, full `354 passed, 6 skipped`.
+
+## Step 110 — Revision audit history redacted cho Control Plane (M6)
+- Vấn đề: activation revision chưa có audit history — không truy vết thay đổi Control Plane (AC-13/M6), nguy cơ lộ secret nếu log raw payload.
+- Sửa `admin.py`: thêm `_audit_events[]`, patch `activate_revision` ghi `{action:"revision.activated", revision_id, created_at}` (không lưu payload), thêm `GET /audit` hỗ trợ filter `?action=` và pagination `limit/offset`, redacted mặc định.
+- Fix import `from datetime import UTC, datetime` (NameError 500 ở lần đầu).
+- Test `tests/unit/test_m6_audit.py` 3 tests: 401 thiếu auth, tạo draft với `api_key` rồi activate → audit có event và không lộ `sk-*`/`api_key`, filter `?action=revision.activated` đúng.
+- Kết quả: targeted 3 passed, full `357 passed, 6 skipped`.

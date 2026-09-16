@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
@@ -29,6 +29,7 @@ router = APIRouter(dependencies=[Depends(require_admin_auth)])
 _template_registry = ProviderTemplateRegistry()
 _revision_manager = ConfigRevisionManager()
 _provider_connections: dict[str, dict[str, Any]] = {}
+_audit_events: list[dict[str, Any]] = []
 
 
 # ── helpers ────────────────────────────────────────────────────────────
@@ -126,7 +127,29 @@ def activate_revision(revision_id: str) -> dict[str, Any]:
         status_code = 404 if errors == ["Revision not found"] else 400
         raise HTTPException(status_code=status_code, detail=errors)
     _revision_manager.activate(revision_id)
+    _audit_events.append(
+        {
+            "action": "revision.activated",
+            "revision_id": revision_id,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+    )
     return _serialize_revision(_ensure_active_revision())
+
+
+@router.get("/audit")
+def list_audit(
+    action: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """List audit events — redacted, no secrets exposed."""
+    items: list[dict[str, Any]] = list(reversed(_audit_events))
+    if action:
+        items = [e for e in items if e.get("action") == action]
+    total = len(items)
+    paged = items[offset : offset + limit]
+    return {"items": paged, "total": total, "limit": limit, "offset": offset}
 
 
 # ── ledger query endpoints ─────────────────────────────────────────────
