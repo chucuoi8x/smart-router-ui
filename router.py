@@ -2808,6 +2808,21 @@ async def version() -> dict[str, Any]:
     return {"service": "smart-router", "version": app.version}
 
 
+@app.get("/metrics")
+async def metrics(request: Request) -> dict[str, Any]:
+    service = getattr(request.app.state, "router", None)
+    upstream_count = len(service.clients) if service is not None and hasattr(service, "clients") else 0
+    return {
+        "service": "smart-router",
+        "version": app.version,
+        "uptime_seconds": int(time.monotonic() - _STARTED_AT_MONO),
+        "upstream_count": upstream_count,
+        "upstreams": upstream_count,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.get("/v1/models")
 async def models(service: SmartRouter = Depends(get_authorized_service)) -> dict[str, Any]:
     data = [
