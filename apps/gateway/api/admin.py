@@ -127,6 +127,41 @@ def delete_provider(connection_id: str) -> dict[str, object]:
     return {"connection_id": connection_id, "deleted": True}
 
 
+@router.get("/providers/health")
+def list_providers_health() -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    now = datetime.now(UTC).isoformat()
+    for record in _provider_connections.values():
+        items.append({
+            "connection_id": record["connection_id"],
+            "template_id": record.get("template_id"),
+            "name": record.get("name"),
+            "base_url": record.get("base_url"),
+            "driver": record.get("driver"),
+            "status": "unknown",
+            "checked_at": now,
+            "credential_present": bool(record.get("credential_present")),
+        })
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/providers/{connection_id}/health")
+def get_provider_health(connection_id: str) -> dict[str, Any]:
+    record = _provider_connections.get(connection_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    return {
+        "connection_id": record["connection_id"],
+        "template_id": record.get("template_id"),
+        "name": record.get("name"),
+        "base_url": record.get("base_url"),
+        "driver": record.get("driver"),
+        "status": "unknown",
+        "checked_at": datetime.now(UTC).isoformat(),
+        "credential_present": bool(record.get("credential_present")),
+    }
+
+
 @router.get("/providers/{connection_id}")
 def get_provider(connection_id: str) -> dict[str, object]:
     if connection_id not in _provider_connections:
