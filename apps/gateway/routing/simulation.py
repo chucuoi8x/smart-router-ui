@@ -43,6 +43,15 @@ def _eligibility_for_candidate(
     failed: list[str] = []
     constraints = preset.constraints
 
+    # Resource/model state là hard constraint trước mọi ngưỡng policy khác.
+    if meta.get("enabled") is False:
+        failed.append("resource_disabled")
+    if meta.get("deprecated") is True:
+        failed.append("model_deprecated")
+    state = str(meta.get("model_state", meta.get("state", ""))).strip().lower()
+    if state in {"deprecated", "hidden", "disabled", "unavailable", "revoked"}:
+        failed.append(f"state_unavailable:{state}")
+
     if constraints.min_quality > 0:
         qscore = meta.get("quality_score")
         if qscore is not None:
@@ -87,8 +96,21 @@ def _eligibility_for_candidate(
     if is_concurrency_exhausted(meta):
         failed.append("concurrency_exhausted")
 
-    # Capability eligibility: reuse filter_candidates_for_policy to stay consistent
     caps = required_capabilities if isinstance(required_capabilities, dict) else {}
+
+    # Output limit too small: chẩn đoán riêng để admin thấy rõ lý do.
+    min_output = caps.get("min_output_tokens")
+    if isinstance(min_output, (int, float)) and min_output > 0:
+        caps_meta = meta.get("capabilities") if isinstance(meta.get("capabilities"), dict) else {}
+        max_output = caps_meta.get("max_output_tokens", meta.get("max_output_tokens", meta.get("max_output")))
+        if max_output is not None:
+            try:
+                if int(max_output) < int(min_output):
+                    failed.append(f"max_output_tokens {max_output} < {min_output}")
+            except (TypeError, ValueError):
+                pass
+
+    # Capability eligibility: reuse filter_candidates_for_policy to stay consistent
     if caps and any(v for v in caps.values()):
         try:
             ok = filter_candidates_for_policy(
@@ -96,7 +118,7 @@ def _eligibility_for_candidate(
                 is_fallback=is_fallback,
                 required_capabilities=caps,
             )
-            if not ok:
+            if not ok and not any("output" in f for f in failed):
                 failed.append("capability_eligibility_failed")
         except Exception:
             pass

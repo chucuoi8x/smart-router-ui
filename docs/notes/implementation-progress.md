@@ -2164,3 +2164,23 @@ Outcome:
 Follow-up risks / TODOs:
 - Chưa nối live concurrency counters (Redis/in-memory atomic reservation) như §21/§8 — chỉ eligibility check dựa trên snapshot telemetry.
 - Cần integration test end-to-end qua gateway khi live reservation được nối.
+## Step 97 — M5 eligibility: disabled/deprecated/output-limit (2026-09-16)
+
+Implemented:
+- `apps/gateway/routing/presets.py`: thêm 2 hard filter trước quality: (0) loại `enabled is False` / `deprecated is True` / `model_state|state ∈ {deprecated, hidden, disabled, unavailable, revoked}`; thêm nhánh `min_output_tokens` trong `required_capabilities` (đọc `capabilities.max_output_tokens`/`max_output_tokens`/`max_output`, fail-open khi thiếu telemetry, strict thì mới reject). Nằm cùng block capability eligibility, giữ provider-agnostic.
+- `apps/gateway/routing/simulation.py`: `_eligibility_for_candidate()` thêm diagnostics `resource_disabled`, `model_deprecated`, `state_unavailable:<state>`, và `max_output_tokens < min_output_tokens`; giữ dry-run, không gọi upstream.
+- `apps/gateway/config/compiler.py` + `router.py`: `_candidate_metadata()` giữ thêm `enabled`/`deprecated`/`model_state`/`state`/`max_output_tokens`/`max_output` và đồng bộ `capabilities`/`concurrency` từ Step 96 để routing nhận đủ telemetry.
+- `tests/unit/test_m5_state_output_eligibility.py`: 4 tests — disabled reject, deprecated/hidden reject, output-limit too small reject, simulation diagnostics đúng.
+
+Verification:
+- RED: 4/4 tests fail trước implement (các candidate vẫn eligible).
+- GREEN: `pytest test_m5_state_output_eligibility -q` → `4 passed`; targeted cùng `test_m5_concurrency_eligibility + test_m5_capability_eligibility` → `12 passed`; full suite `pytest -q --tb=short` → `325 passed, 6 skipped, 1 warning`.
+- `git diff --check` sạch (chỉ cảnh báo CRLF). Secret scan `presets.py`/`simulation.py`/`router.py` 0 match.
+
+Outcome:
+- 3 hard filter còn thiếu của README §18.2 đã đủ: disabled, deprecated/hidden, output too small — đồng bộ data-plane và simulation.
+- Fail-open khi thiếu telemetry; hard-reject khi có đủ dữ liệu — tránh làm thừa việc ngoài ý muốn cho preset auto-free/coding.
+
+Follow-up risks / TODOs:
+- Chưa nối live circuit/auth/budget concurrency như §21/§8 — vẫn snapshot-based eligibility.
+- Cần e2e integration qua gateway khi live counters sẵn sàng.

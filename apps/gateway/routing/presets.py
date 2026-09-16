@@ -317,6 +317,15 @@ def filter_candidates_for_policy(
     for c in candidates:
         meta = getattr(c, "metadata", {}) or {}
 
+        # 0. Resource/model state: disabled, deprecated, hidden/unavailable không được chạy.
+        if meta.get("enabled") is False:
+            continue
+        if meta.get("deprecated") is True:
+            continue
+        state = str(meta.get("model_state", meta.get("state", ""))).strip().lower()
+        if state in {"deprecated", "hidden", "disabled", "unavailable", "revoked"}:
+            continue
+
         # 1. Quality floor: reject khi quality_score < min_quality và preset yêu cầu
         if constraints.min_quality > 0:
             qscore = meta.get("quality_score")
@@ -367,8 +376,32 @@ def filter_candidates_for_policy(
                 for req_key, req_val in required_capabilities.items():
                     if req_val is None or req_val is False or req_val == 0:
                         continue
+                    # Token output: yêu cầu min_output_tokens
+                    if req_key == "min_output_tokens":
+                        try:
+                            needed = int(req_val)
+                        except (TypeError, ValueError):
+                            continue
+                        if needed <= 0:
+                            continue
+                        max_output = caps.get("max_output_tokens") if isinstance(caps, dict) else None
+                        if max_output is None:
+                            max_output = meta.get("max_output_tokens")
+                        if max_output is None:
+                            max_output = meta.get("max_output")
+                        # Output size chưa được công bố: fail-open, giống auto context behavior.
+                        if max_output is None:
+                            continue
+                        try:
+                            if int(max_output) < needed:
+                                should_reject = True
+                                break
+                        except (TypeError, ValueError):
+                            if mode == "strict":
+                                should_reject = True
+                                break
                     # Context window: yêu cầu min_context_tokens
-                    if req_key == "min_context_tokens":
+                    elif req_key == "min_context_tokens":
                         try:
                             needed = int(req_val)
                         except (TypeError, ValueError):

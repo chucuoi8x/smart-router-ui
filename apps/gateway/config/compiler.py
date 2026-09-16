@@ -128,6 +128,7 @@ class LegacyConfigCompiler:
             "expiry_urgency", "scarcity", "retry_expected_cost_per_request", "uncertainty_score",
             "capabilities", "max_context_tokens", "context_window",
             "concurrency_used", "concurrency_limit", "concurrent_requests", "max_concurrency", "inflight",
+            "enabled", "deprecated", "model_state", "state",
         ):
             if key in item:
                 metadata[key] = item[key]

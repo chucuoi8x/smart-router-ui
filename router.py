@@ -258,7 +258,13 @@ class SmartRouter:
             if val is not None:
                 metadata[key] = val
         # M5 feature metrics: giữ để scoring 4 chiều mới có dữ liệu, fail-open nếu thiếu
-        for key in ("expiry_urgency", "scarcity", "retry_expected_cost_per_request", "uncertainty_score"):
+        for key in (
+            "expiry_urgency", "scarcity", "retry_expected_cost_per_request", "uncertainty_score",
+            "capabilities", "max_context_tokens", "context_window",
+            "concurrency_used", "concurrency_limit", "concurrent_requests", "max_concurrency", "inflight",
+            "enabled", "deprecated", "model_state", "state",
+            "max_output_tokens", "max_output",
+        ):
             if key in item:
                 metadata[key] = item[key]
         return metadata
