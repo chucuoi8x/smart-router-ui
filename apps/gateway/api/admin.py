@@ -16,6 +16,8 @@ from apps.gateway.config.revision import ConfigRevisionManager
 from apps.gateway.config.templates import ProviderTemplateRegistry
 from apps.gateway.db.dependencies import get_session
 from apps.gateway.db.models import AttemptLedger, RequestLedger, UsageLedger
+from apps.gateway.providers.registry import default_driver_registry
+from apps.gateway.providers.base import DriverNotFoundError
 from apps.gateway.security.crypto import encrypt_secret
 
 
@@ -34,6 +36,7 @@ _revision_manager = ConfigRevisionManager()
 _provider_connections: dict[str, dict[str, Any]] = {}
 _audit_events: list[dict[str, Any]] = []
 _settings: dict[str, Any] = {"log_level": "INFO"}
+_driver_registry = default_driver_registry()
 
 
 # ── helpers ────────────────────────────────────────────────────────────
@@ -135,7 +138,7 @@ def create_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         "template_id": template_id,
         "name": name,
         "base_url": base_url,
-        "driver": template.get("driver"),
+        "driver": str(payload.get("driver") or template.get("driver") or ""),
         "credential_present": bool(payload.get("api_key")),
         # Stored only as Fernet ciphertext; serializers below never expose it.
         "credential_encrypted": encrypt_secret(str(payload["api_key"])) if payload.get("api_key") else None,
@@ -143,6 +146,66 @@ def create_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     _provider_connections[connection_id] = record
     _ensure_active_revision()
     return _serialize_provider(record)
+
+
+@router.post("/providers/{connection_id}/test")
+async def test_provider_connection(connection_id: str) -> dict[str, Any]:
+    record = _provider_connections.get(connection_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    driver_id = str(record.get("driver") or record.get("template_id") or "generic-openai")
+    try:
+        driver_cls = _driver_registry.resolve(driver_id)
+    except DriverNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        driver = driver_cls()
+        ctx = {
+            "connection_id": connection_id,
+            "base_url": record.get("base_url"),
+            "driver": driver_id,
+            "template_id": record.get("template_id"),
+        }
+        result = await driver.validate_connection(ctx)  # type: ignore[func-returns-value]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"ok": True, "connection_id": connection_id, "result": result if isinstance(result, dict) else {"result": result}}
+
+
+@router.post("/providers/{connection_id}/discover")
+async def discover_provider_models(connection_id: str) -> dict[str, Any]:
+    record = _provider_connections.get(connection_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    driver_id = str(record.get("driver") or record.get("template_id") or "generic-openai")
+    try:
+        driver_cls = _driver_registry.resolve(driver_id)
+    except DriverNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        driver = driver_cls()
+        ctx = {
+            "connection_id": connection_id,
+            "base_url": record.get("base_url"),
+            "driver": driver_id,
+            "template_id": record.get("template_id"),
+        }
+        models = await driver.discover_models(ctx)  # type: ignore[func-returns-value]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    normalized: list[dict[str, Any]] = []
+    for m in models or []:
+        if isinstance(m, dict):
+            normalized.append(m)
+        elif isinstance(m, str):
+            normalized.append({"id": m})
+        else:
+            normalized.append({"id": str(m)})
+    return {"connection_id": connection_id, "models": normalized, "count": len(normalized)}
 
 
 @router.get("/routes")
