@@ -1,7 +1,87 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Smart Router Control Plane</title></head>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Smart Router Control Plane</title>
+  <style>
+    :root { font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; color: #111; }
+    body { margin: 0; background: #f7f7f8; }
+    header { position: sticky; top: 0; background: #111; color: #f7f7f8; padding: 12px 16px; display: flex; gap: 12px; align-items: center; }
+    header a { color: #d6e2ff; text-decoration: none; margin-right: 12px; }
+    main { max-width: 1100px; margin: 16px auto; padding: 0 16px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; }
+    label, input, button, pre { font: inherit; }
+    input, button { padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; }
+    button { cursor: pointer; background: #111; color: #fff; }
+    .grid { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; }
+    pre { white-space: pre-wrap; word-break: break-all; background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 12px; min-height: 88px; }
+    small { color: #6b7280; }
+  </style>
+</head>
 <body>
-<main><h1>Smart Router Control Plane</h1><p>Gateway API: <a href="/api/admin/v1/overview">Overview</a></p></main>
+<header>
+  <strong>Smart Router Control Plane</strong>
+  <nav>
+    <a href="/health">Health</a>
+    <a href="/api/admin/v1/overview">Overview</a>
+    <a href="/api/admin/v1/routes">Routes</a>
+    <a href="/api/admin/v1/providers">Providers</a>
+  </nav>
+</header>
+<main>
+  <div class="card">
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <label for="token">Bearer token</label>
+      <input id="token" type="password" placeholder="Paste SMART_ROUTER_KEY (stored in sessionStorage only)" autocomplete="off" style="flex:1; min-width:220px;" />
+      <button id="save">Save</button>
+      <button id="clear" style="background:#374151;">Clear</button>
+      <span id="hint" style="font-size:12px; color:#6b7280;"></span>
+    </div>
+    <small>Token never leaves the browser except as an Authorization header you choose to send. Refreshing does not persist to disk or server.</small>
+  </div>
+
+  <div class="grid" style="margin-top:16px;">
+    <section class="card">
+      <h3 style="margin:0 0 8px 0;">Health</h3>
+      <button id="callHealth">GET /health</button>
+      <pre id="outHealth" aria-live="polite">—</pre>
+    </section>
+    <section class="card">
+      <h3 style="margin:0 0 8px 0;">Overview</h3>
+      <button id="callOverview">GET /api/admin/v1/overview</button>
+      <pre id="outOverview">—</pre>
+      <a href="/api/admin/v1/overview" style="font-size:12px;">Open raw endpoint</a>
+    </section>
+    <section class="card">
+      <h3 style="margin:0 0 8px 0;">Routes</h3>
+      <button id="callRoutes">GET /api/admin/v1/routes</button>
+      <pre id="outRoutes">—</pre>
+    </section>
+    <section class="card">
+      <h3 style="margin:0 0 8px 0;">Providers</h3>
+      <button id="callProviders">GET /api/admin/v1/providers</button>
+      <pre id="outProviders">—</pre>
+    </section>
+  </div>
+</main>
+<script type="module">
+  const $ = (id) => document.getElementById(id);
+  const KEY = "SR_TOKEN";
+  if (sessionStorage.getItem(KEY)) $("token").value = sessionStorage.getItem(KEY);
+  const token = () => $("token").value.trim();
+  $("save").onclick = () => { sessionStorage.setItem(KEY, token()); $("hint").textContent = "Saved to sessionStorage."; };
+  $("clear").onclick = () => { sessionStorage.removeItem(KEY); $("token").value = ""; $("hint").textContent = "Cleared."; };
+  async function call(path, outId) {
+    const init = path.startsWith("/api/admin") ? { headers: token() ? { Authorization: `Bearer ${token()}` } : {} } : {};
+    try { const r = await fetch(path, init); const t = await r.text(); $(outId).textContent = `${r.status} ${r.statusText}\n${t.slice(0,12000)}`; }
+    catch (e) { $(outId).textContent = `Error: ${String(e && e.message || e)}`; }
+  }
+  $("callHealth").onclick = () => call("/health", "outHealth");
+  $("callOverview").onclick = () => call("/api/admin/v1/overview", "outOverview");
+  $("callRoutes").onclick = () => call("/api/admin/v1/routes", "outRoutes");
+  $("callProviders").onclick = () => call("/api/admin/v1/providers", "outProviders");
+  $("callHealth").click();
+</script>
 </body>
 </html>

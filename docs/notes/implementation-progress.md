@@ -2660,7 +2660,7 @@ Follow-up risks / TODOs:
 - HEAD after Step 160 (ready audit); full `526 passed, 6 skipped, 1 warning` (after migrate gate)
 - AC-01 through AC-16 covered by implementation/tests/docs.
 - `.claude/` remains untracked and must not be committed.
-- Post-1.0 backlog: Docker compose smoke tren host co Docker (gateway/worker/web/postgres/redis + alembic upgrade), load benchmark, UI dist build pipeline.
+- Post-1.0 backlog: Docker compose smoke tren host co Docker (gateway/worker/web/postgres/redis), load benchmark, real user acceptance testing, monitoring/alerting pipeline.
 
 ## Step 156 — Quota backend readiness + engine lifecycle fix
 
@@ -2708,3 +2708,14 @@ Follow-up risks / TODOs:
 - Sua: them service `migrate` (one-shot `alembic upgrade head`, `restart: no`, mount `config.yaml:ro`), doi DATABASE_URL tu container env; sua `migrations/env.py` de DATABASE_URL override sqlalchemy.url; doi gateway/worker depends_on them `migrate: service_completed_successfully`.
 - Test: `tests/unit/test_compose_migrations.py` 2 tests: migrate service dang truoc gateway, depends_on dat service_completed_successfully.
 - Ket qua: targeted `2 passed`, `test_production_readiness + test_compose_migrations + test_full_stack_compose + test_docker_packaging` = `13 passed`, compile migration scripts OK.
+
+## Step 162 — Control Plane UI smoke + runtime readiness
+
+- Van de: `web/dist/index.html` chi co placeholder link API, chua phat hien duoc tu browser.
+- Sua: thay HTML nay bang Control Plane static SPA nho (HTML+CSS+vanilla JS):
+   + navigation bar chuc Health/Overview/Routes/Providers
+   + nhap Bearer token, luu vao sessionStorage (khong ghi file ra server)
+   + cac nut cham len cac endpoint admin: /health, /api/admin/v1/overview, /routes, /providers
+   + khong embed secret, khong dua loai auth nao len server
+- Test moi: `tests/unit/test_control_plane_ui.py` 2 tests: nav/auth/input nam trong, khong co api_key/embedded credential.
+- Ket qua: targeted `2 passed`, full `528 passed, 6 skipped, 1 warning`.
