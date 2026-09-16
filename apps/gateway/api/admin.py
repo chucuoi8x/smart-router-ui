@@ -215,7 +215,53 @@ async def discover_provider_models(connection_id: str) -> dict[str, Any]:
             normalized.append({"id": m})
         else:
             normalized.append({"id": str(m)})
+
+
+
     return {"connection_id": connection_id, "models": normalized, "count": len(normalized)}
+
+
+@router.post("/providers/{connection_id}/models/import", status_code=201)
+def import_provider_models(connection_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    record = _provider_connections.get(connection_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    route_id = str(payload.get("route_id") or "").strip()
+    if not route_id:
+        raise HTTPException(status_code=400, detail="route_id is required")
+    model_list = payload.get("models")
+    if not isinstance(model_list, list) or not all(isinstance(m, str) for m in model_list):
+        raise HTTPException(status_code=400, detail="models must be a non-empty list of strings")
+    new_models = [str(m).strip() for m in model_list if str(m).strip()]
+    if not new_models:
+        raise HTTPException(status_code=400, detail="models cannot be empty")
+    active = _ensure_active_revision()
+    snapshot = copy.deepcopy(active.get("snapshot_data") or {})
+    routes = snapshot.get("routes") if isinstance(snapshot, dict) else {}
+    if not isinstance(routes, dict):
+        routes = {}
+    route_cfg = routes.get(route_id)
+    if route_cfg is None:
+        raise HTTPException(status_code=404, detail="route not found")
+    candidates = route_cfg.get("candidates") if isinstance(route_cfg, dict) else []
+    if not isinstance(candidates, list):
+        candidates = []
+    seen = {c.get("model") for c in candidates}
+    added = []
+    for mdl in new_models:
+        if mdl not in seen:
+            candidates.append({"upstream": connection_id, "model": mdl})
+            added.append(mdl)
+            seen.add(mdl)
+    routes[route_id] = {"strategy": route_cfg.get("strategy","priority"), "candidates": candidates, "fallback": route_cfg.get("fallback",[])}
+    snapshot["routes"] = routes
+    rev_id = _revision_manager.create_draft(snapshot)
+    valid, errs = _revision_manager.validate(rev_id)
+    if not valid:
+        raise HTTPException(status_code=400, detail=errs)
+    _revision_manager.activate(rev_id)
+    _audit_events.append({"action":"route.models.imported","route_id":route_id,"provider_id":connection_id,"imported":added,"revision_id":rev_id,"created_at":datetime.now(UTC).isoformat()})
+    return {"route_id":route_id,"revision_id":rev_id,"imported":added,"candidate_count":len(candidates)}
 
 
 @router.post("/providers/{connection_id}/credentials", status_code=201)
