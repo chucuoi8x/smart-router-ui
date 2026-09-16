@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 112 (364p) — Provider listing (361p) — Route/Policy editor (357p) — revision audit history (redacted) — Overview API. Full 351p6s.
+- Last completed: Step 113 (367p) — provider delete + audit (364p) — Provider listing (361p) — Route/Policy editor (357p) — revision audit history (redacted) — Overview API. Full 351p6s.
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 113 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 114 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2368,3 +2368,9 @@ Follow-up risks / TODOs:
 - Sửa `admin.py`: thêm `GET /providers` trả `{items,total}` và `GET /providers/{connection_id}` 404 khi không tồn tại; vẫn redacted chỉ trả `credential_present`.
 - Test `tests/unit/test_m6_providers_list.py` 3 tests: 401 thiếu auth, list chứa provider vừa tạo và không lộ secret, detail 404.
 - Kết quả: targeted 3 passed, full `364 passed, 6 skipped`.
+
+## Step 113 — Xóa provider an toàn + audit (M6)
+- Vấn đề: Control Plane chưa xóa được provider — không thể dọn dẹp connection cũ mà không sửa DB thủ công.
+- Sửa `admin.py`: thêm `DELETE /providers/{connection_id}` pop khỏi `_provider_connections`, ghi audit `provider.deleted` (connection_id, name, created_at) không chứa secret, 404 khi không tồn tại.
+- Test `tests/unit/test_m6_provider_delete.py` 3 tests: 401 thiếu auth, tạo→xóa→GET 404/list không còn/audit không lộ secret, xóa unknown → 404.
+- Kết quả: targeted 3 passed, full `367 passed, 6 skipped`.

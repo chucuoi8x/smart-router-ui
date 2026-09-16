@@ -80,6 +80,17 @@ def list_providers() -> dict[str, object]:
     return {"items": items, "total": len(items)}
 
 
+@router.delete("/providers/{connection_id}")
+def delete_provider(connection_id: str) -> dict[str, object]:
+    if connection_id not in _provider_connections:
+        raise HTTPException(status_code=404, detail="provider not found")
+    removed = _provider_connections.pop(connection_id)
+    _audit_events.append(
+        {"action": "provider.deleted", "connection_id": connection_id, "name": removed.get("name"), "created_at": datetime.now(UTC).isoformat()}
+    )
+    return {"connection_id": connection_id, "deleted": True}
+
+
 @router.get("/providers/{connection_id}")
 def get_provider(connection_id: str) -> dict[str, object]:
     if connection_id not in _provider_connections:
