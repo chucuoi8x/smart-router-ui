@@ -1,14 +1,102 @@
+# Smart Router 1.0 self-hosted deployment stack
+version: "3.9"
+
 services:
+  # ── Gateway API ──────────────────────────────────────────────────────
   gateway:
     build:
       context: .
       dockerfile: Dockerfile
+    image: smart-router/gateway:latest
     ports:
-      - "8320:8320"
+      - "${SMART_ROUTER_PORT:-8320}:8320"
     environment:
       SMART_ROUTER_CONFIG: /app/config.yaml
       SMART_ROUTER_KEY: ${SMART_ROUTER_KEY:?SMART_ROUTER_KEY is required}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:smart_router_secret@postgres:5432/smart_router}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SMART_ROUTER_ENCRYPTION_KEY: ${SMART_ROUTER_ENCRYPTION_KEY}
+      SMART_ROUTER_LOG_LEVEL: ${SMART_ROUTER_LOG_LEVEL:-INFO}
       PROXYPAL_API_KEY: ${PROXYPAL_API_KEY:-}
       XKIRO_API_KEY: ${XKIRO_API_KEY:-}
       AIBOX_API_KEY: ${AIBOX_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+
+  # ── PostgreSQL (durable config + ledger) ─────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: smart_router
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smart_router_secret}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backups/db:/backups/db
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Redis (runtime coordination / quota state) ───────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+      - ./backups/redis:/backups/redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ── Worker (catalog sync / usage aggregation) ────────────────────────
+  worker:
+    image: smart-router/worker:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:smart_router_secret@postgres:5432/smart_router}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SMART_ROUTER_LOG_LEVEL: ${SMART_ROUTER_LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./state:/app/state
+
+  # ── Web (static UI served via nginx) ─────────────────────────────────
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-80}:80"
+    volumes:
+      - ./web/dist:/usr/share/nginx/html:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  pgdata:
+  redis_data:

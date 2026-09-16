@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 115 (373p) — credential crypto (370p) — revision detail (367p) — provider delete + audit (364p) — Provider listing (361p) — Route/Policy editor (357p) — revision audit history (redacted) — Overview API. Full 351p6s.
+- Last completed: Step 116 (378p) — full compose AC-15 (373p) — credential crypto (370p) — revision detail (367p) — provider delete + audit (364p) — Provider listing (361p) — Route/Policy editor (357p) — revision audit history (redacted) — Overview API. Full 351p6s.
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 116 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 117 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2388,3 +2388,12 @@ Follow-up risks / TODOs:
 - Cập nhật `pyproject.toml` + `requirements.txt` thêm `cryptography>=41,<50`.
 - Test `tests/unit/test_m6_credential_crypto.py` 3 tests: roundtrip encrypt→decrypt, ciphertext không chứa plaintext, tạo provider → response/audit/list/detail đều redacted nhưng storage giải mã được.
 - Kết quả: targeted `3 passed`, full `373 passed, 6 skipped`.
+
+## Step 116 — Full Docker Compose stack AC-15 + backup/restore (M7)
+- Vấn đề: compose chỉ có gateway đơn lẻ — thiếu postgres/redis/worker/web, thiếu healthcheck/volumes và tài liệu backup/restore, chưa wire DATABASE_URL/REDIS_URL/SMART_ROUTER_ENCRYPTION_KEY.
+- Sửa `docker-compose.yml`: thêm services postgres (pgdata, healthcheck pg_isready), redis (redis_data, BGSAVE, healthcheck ping), worker (Dockerfile.worker, depends_on healthy), web (nginx + dist volume), khai báo volumes, DATABASE_URL/REDIS_URL trong gateway/worker.
+- Thêm `Dockerfile.worker` + `apps/worker/main.py` vòng lặp polling catalog sync, xử lý SIGTERM/SIGINT, interval WORKER_POLL_SECONDS.
+- Thêm `nginx/default.conf` reverse proxy /api → gateway:8320 và fallback SPA, `web/dist/index.html` placeholder, `docs/ops/backup-restore.md` hướng dẫn pg_dump/pg_restore và Redis BGSAVE.
+- Cập nhật `.env.example` thêm DATABASE_URL/REDIS_URL/SMART_ROUTER_ENCRYPTION_KEY/POSTGRES_PASSWORD.
+- Test `tests/unit/test_full_stack_compose.py` 5 tests: services bắt buộc, healthcheck/volumes, env wiring, .env.example vars, backup doc tồn tại.
+- Kết quả: targeted 5+1 passed, full `378 passed, 6 skipped`.
