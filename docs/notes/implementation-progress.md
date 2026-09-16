@@ -2144,3 +2144,23 @@ Outcome:
 Follow-up risks / TODOs:
 - Budget/concurrency live wiring cho scoring vẫn còn theo README §18–§20.
 - Cần thêm integration test end-to-end cho vision/tools qua gateway.
+## Step 96 — M5 concurrency eligibility: bão hòa capacity (2026-09-16)
+
+Implemented:
+- `apps/gateway/routing/presets.py`: thêm helpers `_raw_meta_lookup`, `concurrency_state()`, `is_concurrency_exhausted()` — đọc `concurrency_used`/`concurrent_requests`/`inflight` và `concurrency_limit`/`max_concurrency` từ `metadata` và `capabilities`. Thêm nhánh 6 trong `filter_candidates_for_policy()` loại candidate khi `used >= limit`; thiếu telemetry thì fail-open. Helper dùng chung cho data-plane và simulation.
+- `apps/gateway/routing/simulation.py`: dùng `is_concurrency_exhausted()` trong `_eligibility_for_candidate()` để đánh dấu `failed_constraints: ["concurrency_exhausted"]` khi concurrency bão hòa; simulation vẫn dry-run, không gọi upstream.
+- `apps/gateway/config/compiler.py`: `_candidate_metadata()` giữ thêm `concurrency_used`, `concurrency_limit`, `concurrent_requests`, `max_concurrency`, `inflight` để routing core nhận telemetry.
+- `tests/unit/test_m5_concurrency_eligibility.py`: 3 tests — loại khi `used >= limit`, fail-open khi thiếu telemetry, simulation đánh dấu ineligible đúng.
+
+Verification:
+- RED: 2/3 tests fail trước khi thêm nhánh 6 (`m-full`/`m-busy` vẫn eligible).
+- GREEN: `pytest tests/unit/test_m5_concurrency_eligibility.py -q` → `3 passed`; full suite `pytest -q --tb=short` → `321 passed, 6 skipped, 1 warning`.
+- `git diff --check` sạch (chỉ cảnh báo CRLF). Không có secret mới.
+
+Outcome:
+- Router tôn trọng concurrency capacity như hard admission constraint khi telemetry đầy đủ, không chặn khi thiếu dữ liệu — đồng bộ giữa data-plane filter và simulation diagnostics.
+- Giữ provider-agnostic, không nhánh theo tên provider.
+
+Follow-up risks / TODOs:
+- Chưa nối live concurrency counters (Redis/in-memory atomic reservation) như §21/§8 — chỉ eligibility check dựa trên snapshot telemetry.
+- Cần integration test end-to-end qua gateway khi live reservation được nối.

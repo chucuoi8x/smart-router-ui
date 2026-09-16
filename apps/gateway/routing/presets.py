@@ -266,6 +266,40 @@ def all_presets_dict() -> dict[str, dict[str, Any]]:
     return {name: preset.to_dict() for name, preset in _PRESETS.items()}
 
 
+def _raw_meta_lookup(meta: dict, keys) -> object:
+    caps = meta.get("capabilities") if isinstance(meta.get("capabilities"), dict) else {}
+    for key in keys:
+        if key in meta and meta[key] is not None:
+            return meta[key]
+        if isinstance(caps, dict) and key in caps and caps[key] is not None:
+            return caps[key]
+    return None
+
+
+def concurrency_state(meta: dict) -> tuple[int, int] | None:
+    """Đọc (used, limit) concurrency từ metadata; trả None khi thiếu telemetry (fail-open)."""
+    used = _raw_meta_lookup(meta, ("concurrency_used", "concurrent_requests", "inflight"))
+    limit = _raw_meta_lookup(meta, ("concurrency_limit", "max_concurrency"))
+    if used is None or limit is None:
+        return None
+    try:
+        return int(used), int(limit)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_concurrency_exhausted(meta: dict) -> bool:
+    """True khi concurrency đã bão hòa (used >= limit); thiếu dữ liệu thì False."""
+    state = concurrency_state(meta)
+    if state is None:
+        return False
+    used, limit = state
+    if limit <= 0:
+        # limit 0 = không cho phép concurrency nào -> coi như exhausted
+        return True
+    return used >= limit
+
+
 def filter_candidates_for_policy(
     candidates,
     policy: PolicyPreset | PolicyConstraints,
@@ -383,6 +417,10 @@ def filter_candidates_for_policy(
                                 break
                 if should_reject:
                     continue
+
+        # 6. Concurrency capacity: loại khi đã bão hòa (used >= limit); thiếu data thì fail-open
+        if is_concurrency_exhausted(meta):
+            continue
 
         accepted.append(c)
 

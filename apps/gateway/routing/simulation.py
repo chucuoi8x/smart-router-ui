@@ -13,6 +13,7 @@ from apps.gateway.config.snapshot import RuntimeConfigSnapshot
 from apps.gateway.routing.models import ResourceCandidate
 from apps.gateway.routing.presets import (
     PolicyPreset, filter_candidates_for_policy, get_preset_or_default,
+    is_concurrency_exhausted,
 )
 from apps.gateway.routing.scoring import CandidateMetrics, ScoringConfig, SmartScoreCalculator
 
@@ -81,6 +82,10 @@ def _eligibility_for_candidate(
                     failed.append(f"min_quota_headroom {min(ratios):.4f} < {constraints.min_quota_headroom}")
             except Exception:
                 pass
+
+    # Concurrency là hard admission constraint khi telemetry đầy đủ; thiếu data fail-open.
+    if is_concurrency_exhausted(meta):
+        failed.append("concurrency_exhausted")
 
     # Capability eligibility: reuse filter_candidates_for_policy to stay consistent
     caps = required_capabilities if isinstance(required_capabilities, dict) else {}
