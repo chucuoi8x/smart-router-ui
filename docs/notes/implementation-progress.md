@@ -2124,3 +2124,23 @@ Verification:
 
 Outcome:
 - Retry budget enforcement hoạt động: `INVALID_REQUEST`, `CONTEXT_TOO_LARGE` không bao giờ retry; `QUOTA_EXHAUSTED` retry (failover); `RATE_LIMIT`/`OVERLOADED`/`TRANSIENT_NETWORK` tuân thủ budget. Default policy auto-free/coding không thay đổi hành vi failover hiện tại nhưng `critical` preset có thể hạn chế retry bằng `max_attempts`. Provider-agnostic — chỉ đọc metadata/preset.
+
+
+## Step 95 — M5 route simulation: expected reservation diagnostics (§22.3)
+
+Implemented:
+- `apps/gateway/routing/simulation.py`: thêm `_dry_run_reservation()` — trích `resource_ids` từ metadata, fallback dùng `model_id`; ước lượng token từ input estimate, context window hoặc default 8000. Thêm `expected_reservation` vào từng candidate và top-level result.
+- `apps/gateway/api/admin.py`: endpoint `/routes/simulate` trả thêm `expected_reservation`.
+- `tests/unit/test_m5_expected_reservation.py`: xác nhận resource IDs, token estimate và tools capability ở per-candidate/top-level.
+
+Verification:
+- Targeted: `5 passed`.
+- Full suite: `318 passed, 6 skipped, 1 warning`.
+- `git diff --check` sạch, chỉ cảnh báo CRLF. Secret scan không có match.
+
+Outcome:
+- Admin route simulation expose expected quota reservation mà không reserve thật, không gọi upstream, provider-agnostic.
+
+Follow-up risks / TODOs:
+- Budget/concurrency live wiring cho scoring vẫn còn theo README §18–§20.
+- Cần thêm integration test end-to-end cho vision/tools qua gateway.

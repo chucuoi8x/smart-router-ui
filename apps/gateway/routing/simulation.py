@@ -24,6 +24,7 @@ class SimulationResult:
     selected_resource: str | None = None
     reason: str | None = None
     preset: str | None = None
+    expected_reservation: dict[str, Any] | None = None
 
 
 def _candidate_key(candidate: ResourceCandidate) -> str:
@@ -96,6 +97,42 @@ def _eligibility_for_candidate(
             pass
 
     return (len(failed) == 0, failed)
+
+
+
+def _dry_run_reservation(candidate: ResourceCandidate, estimated_input_tokens: int | None = None) -> dict[str, Any]:
+    """Ước lượng expected reservation — không gọi upstream, không reserve thật."""
+    meta = getattr(candidate, "metadata", {}) or {}
+    resource_ids: list[str] = []
+    if isinstance(meta.get("quota_resource_ids"), (list, tuple)):
+        resource_ids = [rid for rid in meta["quota_resource_ids"] if isinstance(rid, str) and rid]
+    elif isinstance(meta.get("quota_resource_id"), str) and meta["quota_resource_id"]:
+        resource_ids = [meta["quota_resource_id"]]
+    if not resource_ids and candidate.resource_ref.model_id:
+        resource_ids = [f"model:{candidate.resource_ref.model_id}"]
+
+    caps = meta.get("capabilities")
+    caps = caps if isinstance(caps, dict) else {}
+    has_tools = bool(caps.get("tools", meta.get("supports_tools", False)))
+    max_ctx = caps.get("max_context_tokens", meta.get("max_context_tokens"))
+    try:
+        max_ctx = int(max_ctx) if max_ctx else None
+    except (TypeError, ValueError):
+        max_ctx = None
+
+    if estimated_input_tokens is not None:
+        estimated_tokens = int(estimated_input_tokens)
+    elif max_ctx is not None:
+        estimated_tokens = max_ctx + 2000
+    else:
+        estimated_tokens = 8000
+
+    return {
+        "resource_ids": resource_ids,
+        "estimated_tokens_per_request": estimated_tokens,
+        "has_tools_capability": has_tools,
+        "note": "dry-run estimate only — not reserved",
+    }
 
 
 def simulate_route(
@@ -206,6 +243,7 @@ def simulate_route(
                 "score": score,
                 "features": features,
                 "metadata": dict(getattr(candidate, "metadata", {}) or {}),
+                "expected_reservation": _dry_run_reservation(candidate, estimated_input_tokens),
             }
         )
 
@@ -220,10 +258,17 @@ def simulate_route(
             selected = eligible_keys[0]
 
     reason = f"preset={preset.name}; eligible={len(eligible_keys)}/{len(rows)}"
+    # Expected reservation: chọn từ candidate được chọn; nếu nhiều candidates thì trả overview
+    exp_res: dict[str, Any] | None = None
+    if selected:
+        sel_row = next((r for r in rows if r["candidate_key"] == selected), None)
+        if sel_row and "expected_reservation" in sel_row:
+            exp_res = sel_row["expected_reservation"]
     return SimulationResult(
         route_name=route_name,
         candidates=rows,
         selected_resource=selected,
         reason=reason,
         preset=preset.name,
+        expected_reservation=exp_res,
     )

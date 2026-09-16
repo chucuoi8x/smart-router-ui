@@ -387,4 +387,5 @@ async def simulate_route_endpoint(
         "candidates": result.candidates,
         "selected_resource": result.selected_resource,
         "reason": result.reason,
+        "expected_reservation": result.expected_reservation,
     }
