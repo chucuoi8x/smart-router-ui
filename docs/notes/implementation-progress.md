@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 122 (401p) — Import models AC-01
+- Last completed: Step 123 (404p) — Ops runbook
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 123 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 124 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2437,3 +2437,9 @@ Follow-up risks / TODOs:
 - Sửa bug wiring Step 122: restore `return` của `POST /providers/{id}/discover` bị overwrite khi chèn import endpoint.
 - Test `tests/unit/test_m6_model_import.py` 4 tests: auth, unknown provider, import tạo revision và verify qua GET /routes, validate models rỗng.
 - Kết quả: targeted 4 passed, full `401 passed, 6 skipped`.
+
+## Step 123 — Ops runbook cho acceptance 1.0 (AC-01..16)
+- Vấn đề: AC-15 yêu cầu backup/restore nhưng thiếu docs vận hành tổng thể (runbook) bao gồm migration, overview, health, ledger, audit, troubleshooting.
+- Tạo `docs/ops/runbook.md`: hướng dẫn compose stack start/rebuild/migration/yaml, overview endpoint, health check, ledger query/detail/stats, audit log, acceptance criteria mapping (AC-01 add/test/discover/import, AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 compose+backup, AC-16 legacy migration), troubleshooting common errors.
+- Test `tests/unit/test_ops_runbook.py` 3 tests: runbook tồn tại, cover các keyword bắt buộc (compose, migration, overview, health, ledger, audit, acceptance, troubleshoot), backup-restore vẫn có.
+- Kết quả: targeted 3 passed, full `404 passed, 6 skipped`.
