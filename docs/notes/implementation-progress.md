@@ -2266,3 +2266,23 @@ Outcome:
 Follow-up risks / TODOs:
 - Candidate reservation hiện amount=1 requests; token-based capacity (TPM) chưa wiring theo `estimated_input_tokens`.
 - Cần wiring `reconcile` với actual usage cho tất cả path (đã có nhưng chỉ release/reconcile 1 resource).
+## Step 102 — M5 TPM token reservation theo estimated tokens (2026-09-16)
+
+Implemented:
+- `router.py::_known_candidate_quota_resource_ids`: bỏ filter `metric != "requests"` — giờ nhận mọi resource quota đã khai (requests + tokens/tpm), deduplicate theo shared_group.
+- `router.py::_quota_request_amount(resource, estimated_input_tokens)`: helper mới — `tokens`/`input_tokens`/`tpm`/`tokens_per_minute`/`tpm_tokens` dùng `max(1, estimated_input_tokens)`, còn lại (requests) = 1. Không hardcode provider.
+- `router.py::handle_messages`: tính `_estimated_for_quota = _estimate_input_tokens(body)` trước khi reserve; build `QuotaReservationRequest` per-rid với amount theo metric (snapshot rid để lấy metric); branch empty-candidates cũng dùng helper để check quota_exhausted đúng với token resource.
+- `tests/unit/test_m5_tpm_reservation.py`: 1 test — resource `tpm:primary` limit 5 tokens, input ~>5 tokens -> 503 quota_exhausted, không gọi upstream.
+
+Verification:
+- RED: `test_tpm_reservation_uses_estimated_input_tokens` fail — trả upstream_unavailable thay vì quota_exhausted (token resource bị bỏ qua).
+- GREEN: cùng test → `1 passed`; full suite `pytest -q --tb=short` → `338 passed, 6 skipped, 1 warning`.
+- `git diff --check` sạch (chỉ CRLF). Secret scan `router.py` 0 match.
+
+Outcome:
+- Live token quota (TPM/tokens) giờ được reserve/check bằng estimated input tokens, đúng README §15.8 — request quota vẫn 1, token quota theo body.
+- Tương thích limit 0 requests cũ (overloaded) giữ nguyên vì không có explicit resource.
+
+Follow-up risks / TODOs:
+- TPM reservation hiện chỉ input tokens; output tokens chưa cộng vào required (cần max_output_tokens khi có).
+- Cần wiring reconcile với actual usage cho multi-resource batch (hiện reconcile 1 resource chính).

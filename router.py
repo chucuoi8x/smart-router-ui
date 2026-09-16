@@ -556,14 +556,18 @@ class SmartRouter:
                 resource = await self.quota_reservations.snapshot(resource_id)
             except KeyError:
                 continue
-            if resource.metric != "requests":
-                continue
             group_key = resource.shared_group_id or resource.resource_id
             if group_key in seen_groups:
                 continue
             seen_groups.add(group_key)
             known.append(resource_id)
         return known
+
+    def _quota_request_amount(self, resource: object, estimated_input_tokens: int) -> int:
+        metric = str(getattr(resource, "metric", "") or "").lower()
+        if metric in {"tokens", "input_tokens", "tpm", "tokens_per_minute", "tpm_tokens"}:
+            return max(1, int(estimated_input_tokens))
+        return 1
 
     def _candidate_quota_resource_ids(self, candidate: Candidate) -> list[str]:
         resource_ids = candidate.metadata.get("quota_resource_ids")
@@ -1396,7 +1400,15 @@ class SmartRouter:
                         continue
                     from apps.gateway.quota.reservations import QuotaReservationRequest
                     try:
-                        adm = await self.quota_reservations.check_many([QuotaReservationRequest(rid, amount=1) for rid in rids])
+                        _check_reqs = []
+                        for _rid in rids:
+                            try:
+                                _r = await self.quota_reservations.snapshot(_rid)
+                                _amt = self._quota_request_amount(_r, self._estimate_input_tokens(body))
+                            except Exception:
+                                _amt = 1
+                            _check_reqs.append(QuotaReservationRequest(_rid, amount=_amt))
+                        adm = await self.quota_reservations.check_many(_check_reqs)
                     except KeyError:
                         continue
                     if not adm.accepted:
@@ -1421,6 +1433,8 @@ class SmartRouter:
                 status_code=503,
                 content={"error": {"type": "overloaded", "message": "all candidates are cooling down or unavailable"}},
             )
+        # Estimated tokens for TPM/token quota (README §15.8) — compute before reservation
+        _estimated_for_quota = self._estimate_input_tokens(body)
         if self.quota_reservations is not None:
             from apps.gateway.quota.reservations import QuotaReservationRequest
             reserved = False
@@ -1440,7 +1454,15 @@ class SmartRouter:
                         candidates = [cand] + candidates[:idx] + candidates[idx+1:]
                     break
                 tmp_id = uuid.uuid4().hex
-                reqs = [QuotaReservationRequest(rid, amount=1) for rid in rids]
+                # Build amount per metric: requests=1, tokens/tpm=estimated_input_tokens
+                reqs: list[QuotaReservationRequest] = []
+                for rid in rids:
+                    try:
+                        _res = await self.quota_reservations.snapshot(rid)
+                        amt = self._quota_request_amount(_res, _estimated_for_quota)
+                    except Exception:
+                        amt = 1
+                    reqs.append(QuotaReservationRequest(rid, amount=amt))
                 try:
                     res = await self.quota_reservations.reserve_many(reservation_id=tmp_id, requests=reqs)
                 except KeyError:
