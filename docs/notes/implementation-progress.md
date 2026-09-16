@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 151 (504p) — provider health runtime state AC-07/AC-08
+- Last completed: Step 152 (506p) — AC-11 streaming failover acceptance
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 152 — AC-11 evidence/docs hardening
+- Next suggested: Step 153 — hardening/docs 1.0 con lai
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2625,3 +2625,10 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_provider_health_runtime.py` 3 tests cho detail/summary; targeted health probe + runtime state `10 passed`.
 - AC-11 audit: `tests/test_streaming_failover.py::test_streaming_failover_only_before_first_output` da co regression coverage, khong sua behavior streaming.
 - Full suite: `504 passed, 6 skipped, 1 warning`.
+
+## Step 152 — AC-11 streaming failover acceptance AC-11
+
+- Van de: AC-11 streaming failover chi truoc first output da co regression thu cong `tests/test_streaming_failover.py` nhung thieu acceptance rieng biet cho 1.0.
+- Them `tests/integration/test_streaming_acceptance.py` 2 tests: `test_stream_primary_failure_before_first_output_triggers_fallback` moc `SmartRouter._open_stream` tra TRANSIENT_NETWORK truoc first output va verify fallback sang backup candidate; `test_stream_invariant_prevents_post_first_output_switch` kiem `first_chunk`/`OpenStream`/`anext(iterator)` va khong failover sau khi da co OpenStream.
+- Khong doi routing logic, chi bo sung chung cu AC-11.
+- Ket qua: targeted `2 passed`, full `506 passed, 6 skipped, 1 warning`.
