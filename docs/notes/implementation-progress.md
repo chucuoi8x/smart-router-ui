@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 156 (510p) — quota backend readiness + engine lifecycle fix
+- Last completed: Step 157 (512p) — dependency readiness payload without secrets
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 157 — post-1.0 quota/ledger hardening tiep theo
+- Next suggested: Step 158 — post-1.0 packing/hardening tiep theo
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2671,3 +2671,10 @@ Follow-up risks / TODOs:
 - Sua 2 — `apps/gateway/db/session.py`: doi `dispose_engine() -> None` thanh `async def dispose_engine()` va `await _engine.dispose()`; `init_engine()` khong con goi sync dispose; `router.py:lifespan` doi thanh `await dispose_engine()`.
 - Test `tests/unit/test_quota_backend_health.py` 2 tests: health ready bao `backend in {memory,redis}` khong chua `redis://`/password; metrics bao `quota_backend` khong chua `REDIS_URL`.
 - Ket qua: targeted `2 passed` (warning `AsyncEngine.dispose` da het, con lai chi 1 Starlette deprecation), full `510 passed, 6 skipped, 1 warning`.
+
+## Step 157 — Dependency readiness payload without secrets
+
+- Van de: `/health/ready` chi tra `database/redis -> {status:unknown}`, che `configured` state; ops/security can biet dependency co duoc cau hinh hay chua ma khong lo URL/credential.
+- Them `router.py:_dependency_health_payload()` tra `{database:{status:unknown, configured:bool}, redis:{status:unknown, configured:bool}}` doc tu env `DATABASE_URL`/`REDIS_URL` (params co the inject trong test); hop nhat vao `/health/ready` qua spread `**_dependency_health_payload()` giu sync, khong block request.
+- Test `tests/unit/test_dependency_health.py` 2 tests: live health ready du `configured` cho database/redis; helper payload sanitized khong chua secret/hostnames, `configured` dung.
+- Ket qua: targeted `2 passed`, full `512 passed, 6 skipped, 1 warning` (chi Starlette deprecation).

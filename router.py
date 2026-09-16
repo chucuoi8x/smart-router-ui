@@ -2772,6 +2772,25 @@ async def health_live() -> dict[str, Any]:
     }
 
 
+def _dependency_health_payload(
+    *,
+    database_url: str | None = None,
+    redis_url: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return dependency readiness metadata without exposing connection URLs.
+
+    The endpoint must stay non-blocking: it reports configuration presence,
+    while connection failures remain visible through startup logs and backend
+    specific metrics. Do not include URLs, usernames, or passwords here.
+    """
+    database_configured = bool(database_url if database_url is not None else os.getenv("DATABASE_URL"))
+    redis_configured = bool(redis_url if redis_url is not None else os.getenv("REDIS_URL"))
+    return {
+        "database": {"status": "unknown", "configured": database_configured},
+        "redis": {"status": "unknown", "configured": redis_configured},
+    }
+
+
 def _quota_backend_kind(service: Any | None) -> str:
     if service is not None:
         quota = getattr(service, "quota_reservations", None)
@@ -2800,8 +2819,7 @@ async def health_ready(request: Request) -> dict[str, Any]:
         "checks": {
             "upstreams": {"status": "ok", "count": upstream_count},
             "quota": {"status": "ok", "backend": qkind},
-            "database": {"status": "unknown"},
-            "redis": {"status": "unknown"},
+            **_dependency_health_payload(),
         },
     }
 
