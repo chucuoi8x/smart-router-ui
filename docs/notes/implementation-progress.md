@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 127 (420p) — revision rollback AC-13
+- Last completed: Step 128 (425p) — Project + API-key management AC-13
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 128 — 1.0 release notes — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 129 — 1.0 release notes — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2470,3 +2470,9 @@ Follow-up risks / TODOs:
 - Không lộ secret: chỉ serialize revision metadata.
 - Test `tests/unit/test_m6_revision_rollback.py` 4 tests: auth guard 401, unknown 404, rollback reactivate audit và verify routes/active, rollback về active hiện tại 400.
 - Kết quả: targeted 4 passed, full `420 passed, 6 skipped`.
+
+## Step 128 — Project + API-key management AC-13 (M6)
+- Vấn đề: Control Plane thiếu quản lý project/API-key — admin không tạo project có key riêng, audit khó phân tách usage theo dự án.
+- Sửa `admin.py`: thêm store `_projects`, endpoint CRUD `/projects` (POST=create với secret_key chỉ trả lúc tạo một lần, GET list redacted, GET/{id} detail, DELETE xóa+audit), lưu key_hash bằng Fernet chứ không plaintext, audit `project.created`/`project.deleted`.
+- Test `tests/unit/test_m6_project_management.py` 5 tests: auth, create trả key redacted+không lộ trong list, unknown 404, multiple projects tồn tại >1 keys, delete audit đúng + không còn trong list.
+- Kết quả: targeted 5 passed, full `425 passed, 6 skipped`.

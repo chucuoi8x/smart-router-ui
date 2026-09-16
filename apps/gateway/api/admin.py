@@ -35,6 +35,7 @@ _template_registry = ProviderTemplateRegistry()
 _revision_manager = ConfigRevisionManager()
 _provider_connections: dict[str, dict[str, Any]] = {}
 _provider_credentials: dict[str, list[dict[str, Any]]] = {}
+_projects: dict[str, dict[str, Any]] = {}
 _audit_events: list[dict[str, Any]] = []
 _settings: dict[str, Any] = {"log_level": "INFO"}
 _driver_registry = default_driver_registry()
@@ -315,6 +316,53 @@ def delete_provider_credential(connection_id: str, credential_id: str) -> dict[s
     _provider_credentials[connection_id] = creds
     _audit_events.append({"action": "credential.deleted", "connection_id": connection_id, "credential_id": credential_id, "alias": alias, "created_at": datetime.now(UTC).isoformat()})
     return {"deleted": True, "credential_id": credential_id}
+
+
+@router.post("/projects", status_code=201)
+def create_project(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    project_id = f"proj_{uuid.uuid4().hex[:12]}"
+    secret_key = f"sr_{uuid.uuid4().hex}"
+    record = {
+        "project_id": project_id,
+        "name": name,
+        "description": str(payload.get("description") or ""),
+        "key_hash": encrypt_secret(secret_key),
+        "created_at": datetime.now(UTC).isoformat(),
+        "active": True,
+    }
+    _projects[project_id] = record
+    _audit_events.append({"action":"project.created","project_id":project_id,"name":name,"created_at":datetime.now(UTC).isoformat()})
+    # Secret key returned exactly once; never persisted plaintext or returned by list/detail.
+    return {"project_id": project_id, "name": name, "description": record["description"], "secret_key": secret_key}
+
+
+@router.get("/projects")
+def list_projects() -> dict[str, Any]:
+    items = [
+        {"project_id": p["project_id"], "name": p["name"], "description": p["description"], "active": p["active"], "created_at": p["created_at"]}
+        for p in _projects.values()
+    ]
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/projects/{project_id}")
+def get_project(project_id: str) -> dict[str, Any]:
+    record = _projects.get(project_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return {"project_id": record["project_id"], "name": record["name"], "description": record["description"], "active": record["active"], "created_at": record["created_at"]}
+
+
+@router.delete("/projects/{project_id}")
+def delete_project(project_id: str) -> dict[str, Any]:
+    record = _projects.pop(project_id, None)
+    if record is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    _audit_events.append({"action":"project.deleted","project_id":project_id,"name":record["name"],"created_at":datetime.now(UTC).isoformat()})
+    return {"project_id": project_id, "deleted": True}
 
 
 @router.get("/routes")
