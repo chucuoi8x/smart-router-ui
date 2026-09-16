@@ -2311,3 +2311,13 @@ Follow-up risks / TODOs:
   - `test_token_reservation_includes_safety_buffer`: preset `critical` ratio 0.08, resource `tpm:primary` limit 10, estimate 10 tokens → required 11 > limit → 503 `quota_exhausted`.
   - `test_requests_metric_not_affected_by_token_buffer`: resource `requests` limit 1, preset critical → vẫn 200, chứng minh requests không bị cộng buffer.
 - Kết quả: targeted `2 passed`, full `344 passed, 6 skipped` (warnings StarletteDeprecationWarning).
+## Step 106 — Đồng bộ simulation với safety buffer (M5)
+- Vấn đề: `simulation.py::_dry_run_reservation` chỉ trả `estimated_tokens_per_request` và thiếu `risk_buffer`/`required_tokens`; dry-run lệch với reservation thực đã cộng `safety_buffer_ratio` ở Step 105.
+- Sửa `apps/gateway/routing/simulation.py`:
+  - Đổi `_dry_run_reservation(candidate, estimated_input_tokens, preset=None)` — tính `risk_buffer = ceil(estimated_tokens * ratio)` và `required_tokens = estimated + risk`, với `ratio` từ `preset.reservation.safety_buffer_ratio` (fallback `auto-free` 0.05); fail-open giữ 0.05.
+  - Sửa `simulate_route` truyền `preset` đã resolve vào `_dry_run_reservation` để `expected_reservation` phản ánh đúng policy của route.
+- Test `tests/unit/test_m5_simulation_buffer.py`:
+  - `test_dry_run_includes_safety_buffer`: auto-free 100 tokens → ratio 0.05, risk 5, required 105.
+  - `test_dry_run_uses_preset_ratio`: preset `critical` 0.08 → required 108.
+  - `test_simulate_route_reports_required_tokens`: route `coding` 1000 tokens, preset coding 0.05 → expected_reservation required 1050, ratio 0.05.
+- Kết quả: targeted `3 passed`, full `347 passed, 6 skipped` (warnings StarletteDeprecationWarning).

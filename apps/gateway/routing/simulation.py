@@ -140,8 +140,14 @@ def _eligibility_for_candidate(
 
 
 
-def _dry_run_reservation(candidate: ResourceCandidate, estimated_input_tokens: int | None = None) -> dict[str, Any]:
+def _dry_run_reservation(
+    candidate: ResourceCandidate,
+    estimated_input_tokens: int | None = None,
+    preset: PolicyPreset | None = None,
+) -> dict[str, Any]:
     """Ước lượng expected reservation — không gọi upstream, không reserve thật."""
+    import math
+
     meta = getattr(candidate, "metadata", {}) or {}
     resource_ids: list[str] = []
     if isinstance(meta.get("quota_resource_ids"), (list, tuple)):
@@ -167,9 +173,22 @@ def _dry_run_reservation(candidate: ResourceCandidate, estimated_input_tokens: i
     else:
         estimated_tokens = 8000
 
+    # Safety buffer mirror live _quota_risk_buffer (README §15.8)
+    ratio = 0.05
+    try:
+        p = preset if preset is not None else get_preset_or_default("auto-free")
+        ratio = float(getattr(p.reservation, "safety_buffer_ratio", 0.05) or 0.05)
+    except Exception:
+        ratio = 0.05
+    risk_buffer = int(math.ceil(estimated_tokens * ratio)) if ratio > 0 else 0
+    required_tokens = estimated_tokens + risk_buffer
+
     return {
         "resource_ids": resource_ids,
         "estimated_tokens_per_request": estimated_tokens,
+        "risk_buffer_ratio": ratio,
+        "risk_buffer": risk_buffer,
+        "required_tokens": required_tokens,
         "has_tools_capability": has_tools,
         "note": "dry-run estimate only — not reserved",
     }
@@ -283,7 +302,7 @@ def simulate_route(
                 "score": score,
                 "features": features,
                 "metadata": dict(getattr(candidate, "metadata", {}) or {}),
-                "expected_reservation": _dry_run_reservation(candidate, estimated_input_tokens),
+                "expected_reservation": _dry_run_reservation(candidate, estimated_input_tokens, preset),
             }
         )
 
