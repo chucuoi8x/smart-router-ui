@@ -41,6 +41,7 @@ _quota_resources: dict[str, dict[str, Any]] = {}
 _audit_events: list[dict[str, Any]] = []
 _settings: dict[str, Any] = {"log_level": "INFO"}
 _driver_registry = default_driver_registry()
+_provider_health_cache: dict[str, dict[str, Any]] = {}
 
 
 # ── helpers ────────────────────────────────────────────────────────────
@@ -132,14 +133,15 @@ def list_providers_health() -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     now = datetime.now(UTC).isoformat()
     for record in _provider_connections.values():
+        cached = _provider_health_cache.get(record["connection_id"], {})
         items.append({
             "connection_id": record["connection_id"],
             "template_id": record.get("template_id"),
             "name": record.get("name"),
             "base_url": record.get("base_url"),
             "driver": record.get("driver"),
-            "status": "unknown",
-            "checked_at": now,
+            "status": cached.get("status", "unknown"),
+            "checked_at": cached.get("checked_at", now),
             "credential_present": bool(record.get("credential_present")),
         })
     return {"items": items, "total": len(items)}
@@ -150,14 +152,15 @@ def get_provider_health(connection_id: str) -> dict[str, Any]:
     record = _provider_connections.get(connection_id)
     if record is None:
         raise HTTPException(status_code=404, detail="provider not found")
+    cached = _provider_health_cache.get(connection_id, {})
     return {
         "connection_id": record["connection_id"],
         "template_id": record.get("template_id"),
         "name": record.get("name"),
         "base_url": record.get("base_url"),
         "driver": record.get("driver"),
-        "status": "unknown",
-        "checked_at": datetime.now(UTC).isoformat(),
+        "status": cached.get("status", "unknown"),
+        "checked_at": cached.get("checked_at", datetime.now(UTC).isoformat()),
         "credential_present": bool(record.get("credential_present")),
     }
 
@@ -224,7 +227,15 @@ async def test_provider_connection(connection_id: str) -> dict[str, Any]:
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"ok": True, "connection_id": connection_id, "result": result if isinstance(result, dict) else {"result": result}}
+    normalized_result = result if isinstance(result, dict) else {"result": result}
+    result_status = str(normalized_result.get("status", "ok")).lower()
+    health_status = "healthy" if result_status in {"ok", "healthy", "success"} else "degraded"
+    _provider_health_cache[connection_id] = {
+        "status": health_status,
+        "checked_at": datetime.now(UTC).isoformat(),
+        "result": {k: v for k, v in normalized_result.items() if k not in {"api_key", "credential", "token", "secret"}},
+    }
+    return {"ok": True, "connection_id": connection_id, "result": normalized_result}
 
 
 @router.post("/providers/{connection_id}/discover")
