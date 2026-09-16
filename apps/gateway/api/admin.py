@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -32,6 +33,7 @@ _template_registry = ProviderTemplateRegistry()
 _revision_manager = ConfigRevisionManager()
 _provider_connections: dict[str, dict[str, Any]] = {}
 _audit_events: list[dict[str, Any]] = []
+_settings: dict[str, Any] = {"log_level": "INFO"}
 
 
 # ── helpers ────────────────────────────────────────────────────────────
@@ -291,6 +293,35 @@ def list_models(route_id: str | None = Query(default=None)) -> dict[str, Any]:
                 }
             )
     return {"items": out, "total": len(out)}
+
+
+@router.get("/settings")
+def get_settings() -> dict[str, Any]:
+    """Control Plane settings + security status — never returns secret values."""
+    return {
+        "settings": dict(_settings),
+        "security": {
+            "encryption_key_configured": bool(os.getenv("SMART_ROUTER_ENCRYPTION_KEY")),
+            "database_configured": bool(os.getenv("DATABASE_URL")),
+            "redis_configured": bool(os.getenv("REDIS_URL")),
+        },
+    }
+
+
+@router.put("/settings")
+def update_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    allowed = {"log_level"}
+    updated_keys: list[str] = []
+    for key in allowed:
+        if key in payload:
+            _settings[key] = str(payload[key])
+            updated_keys.append(key)
+            _audit_events.append(
+                {"action": "settings.updated", "key": key, "created_at": datetime.now(UTC).isoformat()}
+            )
+    if not updated_keys:
+        raise HTTPException(status_code=400, detail="no updatable settings provided")
+    return {"settings": dict(_settings), "updated": updated_keys}
 
 
 # ── ledger query endpoints ─────────────────────────────────────────────
