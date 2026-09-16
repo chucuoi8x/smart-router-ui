@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 114 (370p) — revision detail (367p) — provider delete + audit (364p) — Provider listing (361p) — Route/Policy editor (357p) — revision audit history (redacted) — Overview API. Full 351p6s.
+- Last completed: Step 115 (373p) — credential crypto (370p) — revision detail (367p) — provider delete + audit (364p) — Provider listing (361p) — Route/Policy editor (357p) — revision audit history (redacted) — Overview API. Full 351p6s.
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 115 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 116 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2380,3 +2380,11 @@ Follow-up risks / TODOs:
 - Sửa `admin.py`: thêm `GET /revisions/{revision_id}`, scan immutable revision store, serialize timestamp/snapshot qua `_serialize_revision`, 404 nếu không tồn tại.
 - Test `tests/unit/test_m6_revision_detail.py` 3 tests: 401 thiếu auth, draft detail 200 có revision_id/snapshot và không lộ secret, 404 unknown.
 - Kết quả: targeted 3 passed, full `370 passed, 6 skipped`.
+
+## Step 115 — Mã hóa credential at-rest AC-14 (M7)
+- Vấn đề: `credential_encrypted` trong DB đã có nhưng `admin.py` chỉ lưu flag `credential_present` trong memory, chưa mã hóa; response có nguy cơ lộ nếu trả nhầm field.
+- Thêm `apps/gateway/security/crypto.py` dùng Fernet: đọc `SMART_ROUTER_ENCRYPTION_KEY` nếu có, fallback deterministic dev key từ SHA256(`SMART_ROUTER_DEV_ENCRYPTION_SEED`) để test ổn định; thêm `apps/gateway/security/__init__.py`.
+- Sửa `admin.py`: import `encrypt_secret`, đổi `create_provider` lưu `credential_encrypted = encrypt_secret(api_key)` (không lưu plaintext), thêm `_serialize_provider()` chỉ trả `connection_id/name/template_id/base_url/driver/credential_present`, đổi `GET /providers` và `GET /providers/{id}` dùng serializer, đổi `POST /providers` trả serializer.
+- Cập nhật `pyproject.toml` + `requirements.txt` thêm `cryptography>=41,<50`.
+- Test `tests/unit/test_m6_credential_crypto.py` 3 tests: roundtrip encrypt→decrypt, ciphertext không chứa plaintext, tạo provider → response/audit/list/detail đều redacted nhưng storage giải mã được.
+- Kết quả: targeted `3 passed`, full `373 passed, 6 skipped`.

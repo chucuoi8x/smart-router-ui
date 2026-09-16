@@ -15,6 +15,7 @@ from apps.gateway.config.revision import ConfigRevisionManager
 from apps.gateway.config.templates import ProviderTemplateRegistry
 from apps.gateway.db.dependencies import get_session
 from apps.gateway.db.models import AttemptLedger, RequestLedger, UsageLedger
+from apps.gateway.security.crypto import encrypt_secret
 
 
 ADMIN_AUTH_TOKEN = "Bearer test-admin-key"
@@ -57,6 +58,18 @@ def _ensure_active_revision() -> dict[str, Any]:
     return active
 
 
+def _serialize_provider(record: dict[str, Any]) -> dict[str, Any]:
+    """Return provider metadata without credential ciphertext or plaintext."""
+    return {
+        "connection_id": record["connection_id"],
+        "template_id": record["template_id"],
+        "name": record["name"],
+        "base_url": record["base_url"],
+        "driver": record["driver"],
+        "credential_present": bool(record.get("credential_present")),
+    }
+
+
 def _load_template(template_id: str) -> dict[str, Any]:
     try:
         return _template_registry.get_template(template_id)
@@ -76,7 +89,7 @@ def list_templates() -> dict[str, dict[str, Any]]:
 
 @router.get("/providers")
 def list_providers() -> dict[str, object]:
-    items = list(_provider_connections.values())
+    items = [_serialize_provider(record) for record in _provider_connections.values()]
     return {"items": items, "total": len(items)}
 
 
@@ -95,7 +108,7 @@ def delete_provider(connection_id: str) -> dict[str, object]:
 def get_provider(connection_id: str) -> dict[str, object]:
     if connection_id not in _provider_connections:
         raise HTTPException(status_code=404, detail="provider not found")
-    return dict(_provider_connections[connection_id])
+    return _serialize_provider(_provider_connections[connection_id])
 
 
 @router.post("/providers", status_code=201)
@@ -122,10 +135,12 @@ def create_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         "base_url": base_url,
         "driver": template.get("driver"),
         "credential_present": bool(payload.get("api_key")),
+        # Stored only as Fernet ciphertext; serializers below never expose it.
+        "credential_encrypted": encrypt_secret(str(payload["api_key"])) if payload.get("api_key") else None,
     }
     _provider_connections[connection_id] = record
     _ensure_active_revision()
-    return dict(record)
+    return _serialize_provider(record)
 
 
 @router.get("/routes")
