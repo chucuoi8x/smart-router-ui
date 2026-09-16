@@ -251,6 +251,48 @@ def list_audit(
     return {"items": paged, "total": total, "limit": limit, "offset": offset}
 
 
+@router.get("/models")
+def list_models(route_id: str | None = Query(default=None)) -> dict[str, Any]:
+    """List model resources from active revision — Control Plane view (AC-13)."""
+    active = _ensure_active_revision()
+    snapshot = active.get("snapshot_data") or {}
+    routes = snapshot.get("routes") if isinstance(snapshot, dict) else {}
+    if not isinstance(routes, dict):
+        routes = {}
+    out: list[dict[str, Any]] = []
+    for rid, cfg in routes.items():
+        if route_id is not None and rid != route_id:
+            continue
+        cands = cfg.get("candidates") if isinstance(cfg, dict) else None
+        if not isinstance(cands, list):
+            continue
+        for cand in cands:
+            if not isinstance(cand, dict):
+                continue
+            out.append(
+                {
+                    "route_id": rid,
+                    "upstream": cand.get("upstream"),
+                    "model": cand.get("model"),
+                    "weight": cand.get("weight", 1),
+                }
+            )
+        # include fallback tier if present
+        for cand in (cfg.get("fallback") if isinstance(cfg, dict) else None) or []:
+            if not isinstance(cand, dict):
+                continue
+            out.append(
+                {
+                    "route_id": rid,
+                    "upstream": cand.get("upstream"),
+                    "model": cand.get("model"),
+                    "weight": cand.get("weight", 1),
+                    "tier": "fallback",
+                }
+            )
+    return {"items": out, "total": len(out)}
+
+
 # ── ledger query endpoints ─────────────────────────────────────────────
 
 async def _dt_range(start: str | None, end: str | None) -> tuple[Any, Any]:
