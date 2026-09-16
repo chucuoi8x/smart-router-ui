@@ -73,3 +73,7 @@ Chạy `pytest -q` phải xanh trước khi release (hiện 401 passed).
 - Migration 400: YAML không phải mapping hoặc thiếu `yaml_data`.
 - Provider test 502: driver `validate_connection` lỗi — kiểm tra `base_url`/network.
 - Secret lộ: kiểm tra mọi response/audit không chứa `sk-` hay plaintext key.
+
+## 9. SLOs
+
+Xem `docs/SLO.md` — availability 99.5%, p50 <200ms, p99 <2000ms, quota accuracy 100%, secret exposure 0.
