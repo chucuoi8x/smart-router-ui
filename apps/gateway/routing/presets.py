@@ -266,6 +266,25 @@ def all_presets_dict() -> dict[str, dict[str, Any]]:
     return {name: preset.to_dict() for name, preset in _PRESETS.items()}
 
 
+def hard_state_eligible(meta: dict) -> bool:
+    """Hard eligibility không phụ thuộc smart scheduler (README §18.2).
+
+    Loại khi resource disabled/deprecated/hidden hoặc circuit đang mở.
+    Thiếu metadata thì fail-open.
+    """
+    if meta.get("enabled") is False:
+        return False
+    if meta.get("deprecated") is True:
+        return False
+    state = str(meta.get("model_state", meta.get("state", ""))).strip().lower()
+    if state in {"deprecated", "hidden", "disabled", "unavailable", "revoked"}:
+        return False
+    circuit = str(meta.get("circuit_state", "")).strip().lower()
+    if circuit == "open":
+        return False
+    return True
+
+
 def _raw_meta_lookup(meta: dict, keys) -> object:
     caps = meta.get("capabilities") if isinstance(meta.get("capabilities"), dict) else {}
     for key in keys:

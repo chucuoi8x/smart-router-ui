@@ -2184,3 +2184,25 @@ Outcome:
 Follow-up risks / TODOs:
 - Chưa nối live circuit/auth/budget concurrency như §21/§8 — vẫn snapshot-based eligibility.
 - Cần e2e integration qua gateway khi live counters sẵn sàng.
+## Step 98 — M5 hard state eligibility luôn bật (2026-09-16)
+
+Implemented:
+- `apps/gateway/routing/presets.py`: thêm `hard_state_eligible(meta)` — hard filter không phụ thuộc scheduler (README §18.2): loại `enabled is False`, `deprecated is True`, `model_state|state ∈ {deprecated, hidden, disabled, unavailable, revoked}`, `circuit_state == open`. Thiếu metadata thì fail-open.
+- `apps/gateway/routing/engine.py`: `_apply_policy_constraints()` gọi `hard_state_eligible` trước khi kiểm tra `enabled`; thêm `_hard_state_only()` helper. Scheduler tắt vẫn chặn disabled/circuit.
+- `router.py`: `_apply_policy_constraints()` đồng bộ hard-state pre-filter; `_candidate_metadata()` giữ thêm `circuit_state`.
+- `apps/gateway/config/compiler.py`: `_candidate_metadata()` giữ `circuit_state` + `max_output_tokens/max_output` cho telemetry routing.
+- `apps/gateway/routing/simulation.py`: `_eligibility_for_candidate()` thêm `circuit_open` và đồng bộ 3 hard diagnostics trước policy thresholds.
+- `tests/unit/test_m5_hard_state_always_on.py`: 2 tests — RouterEngine và legacy SmartRouter đều loại disabled + circuit open khi `ScoringConfig()` tắt.
+
+Verification:
+- RED: 2/2 tests fail — hard candidates vẫn pass khi scheduler disabled.
+- GREEN: `pytest test_m5_hard_state_always_on + test_m5_state_output_eligibility + test_m5_policy_wiring -q` → `12 passed`; full suite `pytest -q --tb=short` → `327 passed, 6 skipped, 1 warning`.
+- `git diff --check` sạch (chỉ CRLF). Secret scan 0 match.
+
+Outcome:
+- Eligibility cứng (disabled/deprecated/circuit) giờ là safety gate độc lập với preset — không bị bypass khi admin tắt scheduler.
+- Policy quality/cost vẫn giữ disabled behavior như cũ.
+
+Follow-up risks / TODOs:
+- Chưa nối live credential revocation và budget exhaustion như §18.2 — vẫn snapshot metadata.
+- Cần e2e qua gateway khi live auth/budget counters sẵn sàng.

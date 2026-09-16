@@ -7,7 +7,7 @@ from typing import Any, List, Optional
 from apps.gateway.routing.models import ResourceRef, ResourceCandidate
 from apps.gateway.config.snapshot import RuntimeConfigSnapshot
 from apps.gateway.routing.scoring import ScoringConfig
-from apps.gateway.routing.presets import filter_candidates_for_policy
+from apps.gateway.routing.presets import filter_candidates_for_policy, hard_state_eligible
 
 class InMemoryCircuitRepository:
     def __init__(self):
@@ -102,6 +102,8 @@ class RouterEngine:
         Scheduler disabled/shadow giữ nguyên legacy behavior.  Metadata thiếu
         thì filter fail-open, trừ paid resource thiếu giá trong fallback.
         """
+        # Hard resource state luôn chặn — không phụ thuộc smart scheduler (§18.2).
+        candidates = [c for c in candidates if hard_state_eligible(c.metadata)]
         if not self._should_apply_smart_scoring(route_name):
             return candidates
         try:
@@ -112,6 +114,9 @@ class RouterEngine:
             )
         except Exception:
             return candidates  # Policy lỗi không được làm hỏng data plane
+
+    def _hard_state_only(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
+        return [c for c in candidates if hard_state_eligible(c.metadata)]
 
     def select_candidates(
         self,

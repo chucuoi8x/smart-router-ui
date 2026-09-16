@@ -51,6 +51,8 @@ def _eligibility_for_candidate(
     state = str(meta.get("model_state", meta.get("state", ""))).strip().lower()
     if state in {"deprecated", "hidden", "disabled", "unavailable", "revoked"}:
         failed.append(f"state_unavailable:{state}")
+    if str(meta.get("circuit_state", "")).strip().lower() == "open":
+        failed.append("circuit_open")
 
     if constraints.min_quality > 0:
         qscore = meta.get("quality_score")

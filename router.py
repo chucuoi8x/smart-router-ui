@@ -262,7 +262,7 @@ class SmartRouter:
             "expiry_urgency", "scarcity", "retry_expected_cost_per_request", "uncertainty_score",
             "capabilities", "max_context_tokens", "context_window",
             "concurrency_used", "concurrency_limit", "concurrent_requests", "max_concurrency", "inflight",
-            "enabled", "deprecated", "model_state", "state",
+            "enabled", "deprecated", "model_state", "state", "circuit_state",
             "max_output_tokens", "max_output",
         ):
             if key in item:
@@ -674,6 +674,12 @@ class SmartRouter:
         required_capabilities: dict[str, Any] | None = None,
     ) -> list[Candidate]:
         """Lọc hard constraints theo preset, không branch theo provider."""
+        # README §18.2 hard state luôn chạy — độc lập với smart scheduler.
+        try:
+            from apps.gateway.routing.presets import hard_state_eligible
+            candidates = [c for c in candidates if hard_state_eligible(c.metadata)]
+        except Exception:
+            pass
         if not self._should_apply_smart_scoring(route_name):
             return candidates
         try:
