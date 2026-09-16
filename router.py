@@ -614,6 +614,118 @@ class SmartRouter:
                 actual[rid] = total_tokens if len(resource_ids) == 1 else 1
         await self.quota_reservations.reconcile(reservation_id, actual)
 
+    async def _reserve_for_candidate(
+        self,
+        candidate: Candidate,
+        route_name: str,
+        body: dict[str, Any],
+        reservation_id: str,
+    ) -> tuple[str | None, str | None, bool]:
+        """Reserve quota for a single candidate; returns (reservation_id, resource_id, accepted)."""
+        if self.quota_reservations is None:
+            return (None, None, True)
+        rids = await self._known_candidate_quota_resource_ids(candidate)
+        if not rids:
+            try:
+                await self.quota_reservations.snapshot(f"model:{route_name}")
+                rids = [f"model:{route_name}"]
+            except KeyError:
+                rids = []
+        if not rids:
+            return (None, None, True)
+        est_in = self._estimate_input_tokens(body)
+        try:
+            est_out = int(body.get("max_tokens", 0) or 0)
+        except Exception:
+            est_out = 0
+        reqs = []
+        for rid in rids:
+            try:
+                res = await self.quota_reservations.snapshot(rid)
+                amt = self._quota_request_amount(res, est_in, est_out)
+                risk = self._quota_risk_buffer(res, amt, route_name)
+            except Exception:
+                amt = 1
+                risk = 0
+            from apps.gateway.quota.reservations import QuotaReservationRequest
+            reqs.append(QuotaReservationRequest(rid, amount=amt, risk_buffer=risk))
+        try:
+            res = await self.quota_reservations.reserve_many(reservation_id=reservation_id, requests=reqs)
+        except (KeyError, ValueError):
+            return (None, None, True)
+        if res.accepted:
+            return (reservation_id, ",".join(rids), True)
+        return (None, None, False)
+
+    async def _maybe_transfer_reservation(
+        self,
+        current_reservation_id: str | None,
+        current_resource_id: str | None,
+        candidates: list,
+        current_index: int,
+        route_name: str,
+        body: dict,
+        request_id: str | None,
+        classification: dict | None = None,
+    ) -> tuple[str | None, str | None]:
+        """Release current reservation and reserve for next eligible candidate (Step 107)."""
+        if current_reservation_id is None or current_resource_id is None or self.quota_reservations is None:
+            return (current_reservation_id, current_resource_id)
+        if current_index + 1 >= len(candidates):
+            return (current_reservation_id, current_resource_id)
+        # If next candidate shares same quota resources, keep current reservation (no transfer)
+        try:
+            current_rids = set(rid for rid in (current_resource_id or "").split(",") if rid)
+            nxt_candidate = candidates[current_index + 1] if current_index + 1 < len(candidates) else None
+            if nxt_candidate is not None:
+                nxt_rids = set(await self._known_candidate_quota_resource_ids(nxt_candidate))
+                if not nxt_rids:
+                    try:
+                        await self.quota_reservations.snapshot(f"model:{nxt_candidate.model}")
+                        nxt_rids = {f"model:{nxt_candidate.model}"}
+                    except KeyError:
+                        nxt_rids = set()
+                if current_rids and nxt_rids and current_rids == nxt_rids:
+                    return (current_reservation_id, current_resource_id)
+        except Exception:
+            pass
+        # For QUOTA_EXHAUSTED we must preserve exhaustion (reconcile, not release)
+        kind = str((classification or {}).get("kind") or "").upper()
+        if kind == "QUOTA_EXHAUSTED":
+            try:
+                await self._reconcile_reservation_usage(current_reservation_id, current_resource_id, total_tokens=1)
+            except Exception:
+                try:
+                    await self.quota_reservations.release(current_reservation_id)
+                except Exception:
+                    pass
+        else:
+            try:
+                await self.quota_reservations.release(current_reservation_id)
+            except Exception:
+                pass
+        # Try to reserve next candidate; if quota exhausted skip to subsequent ones
+        for offset in range(1, len(candidates) - current_index):
+            nxt_idx = current_index + offset
+            nxt = candidates[nxt_idx]
+            new_rid = f"{request_id}:{nxt_idx}" if request_id else __import__("uuid").uuid4().hex
+            # _reserve_for_candidate handles fallback model: and empty rids
+            try:
+                rid, rsc, accepted = await self._reserve_for_candidate(nxt, route_name, body, new_rid)
+            except Exception:
+                continue
+            if accepted:
+                # rid is new_rid when accepted and has quota, or None when no quota needed
+                # _reserve_for_candidate returns (reservation_id, resource_id, accepted)
+                # For no-quota candidates it returns (None, None, True) — keep None
+                return (rid, rsc)
+            # not accepted -> quota exhausted, try next candidate (already released previous)
+            # Need to clean up the rejected reservation entry? reserve_many stores rejected result under new_rid
+            # No release needed for rejected (was not counted)
+            continue
+        # No remaining candidate could be reserved — return None to indicate no reservation
+        return (None, None)
+
     def _candidate_quota_resource_ids(self, candidate: Candidate) -> list[str]:
         resource_ids = candidate.metadata.get("quota_resource_ids")
         if (
@@ -1637,6 +1749,9 @@ class SmartRouter:
                                 retry_budget.record_retry(extra_input_tokens=self._estimate_input_tokens(body), extra_latency_ms=int(elapsed_ms))
                             except Exception:
                                 pass
+                        reservation_id, resource_id = await self._maybe_transfer_reservation(
+                            reservation_id, resource_id, candidates, index, route_name, body, request_id, classification,
+                        )
                         continue
                     break
                 if response.status_code >= 400:
@@ -1668,6 +1783,9 @@ class SmartRouter:
                                 retry_budget.record_retry(extra_input_tokens=self._estimate_input_tokens(body), extra_latency_ms=int((time.monotonic() - _start) * 1000))
                             except Exception:
                                 pass
+                        reservation_id, resource_id = await self._maybe_transfer_reservation(
+                            reservation_id, resource_id, candidates, index, route_name, body, request_id, classification,
+                        )
                         continue
                     await self._finalize_error_reservation(reservation_id, resource_id, classification, decision)
                     return Response(
@@ -1764,6 +1882,9 @@ class SmartRouter:
                             retry_budget.record_retry(extra_input_tokens=self._estimate_input_tokens(body), extra_latency_ms=int(elapsed_ms))
                         except Exception:
                             pass
+                    reservation_id, resource_id = await self._maybe_transfer_reservation(
+                        reservation_id, resource_id, candidates, index, route_name, body, request_id,
+                    )
                     continue
                 break
             status_code = result["status_code"]
@@ -1799,6 +1920,9 @@ class SmartRouter:
                             )
                         except Exception:
                             pass
+                    reservation_id, resource_id = await self._maybe_transfer_reservation(
+                        reservation_id, resource_id, candidates, index, route_name, body, request_id,
+                    )
                     continue
                 await self._finalize_error_reservation(reservation_id, resource_id, classification, decision)
                 # Convert body string to bytes for Response
@@ -1915,6 +2039,9 @@ class SmartRouter:
                                 retry_budget.record_retry(extra_input_tokens=self._estimate_input_tokens(body), extra_latency_ms=int(_elapsed_ms))
                             except Exception:
                                 pass
+                        reservation_id, resource_id = await self._maybe_transfer_reservation(
+                            reservation_id, resource_id, candidates, index, route_name, body, request_id, classification,
+                        )
                         continue
                     # Non-retryable error Response (e.g. invalid request);
                     # no stream was opened, so we cannot know actual token usage.

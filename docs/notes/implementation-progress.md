@@ -2321,3 +2321,11 @@ Follow-up risks / TODOs:
   - `test_dry_run_uses_preset_ratio`: preset `critical` 0.08 → required 108.
   - `test_simulate_route_reports_required_tokens`: route `coding` 1000 tokens, preset coding 0.05 → expected_reservation required 1050, ratio 0.05.
 - Kết quả: targeted `3 passed`, full `347 passed, 6 skipped` (warnings StarletteDeprecationWarning).
+
+## Step 107 — Chuyển reservation khi failover candidate (M5)
+- Vấn đề: khi failover do upstream error (429/503), `router.py` giữ nguyên reservation của candidate đầu tiên nhưng candidate tiếp theo không có quota được reserve → lãng phí quota, potential double-counting trên cùng request.
+- Sửa `router.py`: thêm helper `_reserve_for_candidate()` (tách logic từ `handle_messages` — tính resource IDs, estimate tokens, dispatch QuotaReservationRequest); thêm `_maybe_transfer_reservation(current_rid, current_resource_id, candidates, index, body, request_id, classification)` giải phóng reservation hiện tại và reserve cho candidate kế tiếp.
+- Logic transfer: (1) nếu candidate kế tiếp dùng chung quota resources thì giữ nguyên (không chuyển); (2) QUOTA_EXHAUSTED → reconcile thay vì release để bảo toàn exhaustion state; (3) các kind khác → release sau đó thử reserve từng candidate liên tiếp qua `len(candidates)-index` offset; (4) trả về (None,None) nếu không candidate nào accept được.
+- Đính kèm vào 5 vị trí trong `_non_stream_messages`, `_stream_messages`, `_non_stream_chat`, `_stream_chat`, `_chat`: sau mỗi decision.retry_continue/break.
+- Test `tests/unit/test_m5_reservation_transfer.py`: primary `account:primary` 2 reqs → 503 triggers failover → backup `account:backup` gọi thành công 200 → `primary.used==0`, `backup.used==1`.
+- Kết quả: targeted `1 passed`, full `348 passed, 6 skipped` (cùng count như sau Step106).
