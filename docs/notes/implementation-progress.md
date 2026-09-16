@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 123 (404p) — Ops runbook
+- Last completed: Step 124 (408p) — acceptance smoke AC-01/14/16
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 124 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 125 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2443,3 +2443,9 @@ Follow-up risks / TODOs:
 - Tạo `docs/ops/runbook.md`: hướng dẫn compose stack start/rebuild/migration/yaml, overview endpoint, health check, ledger query/detail/stats, audit log, acceptance criteria mapping (AC-01 add/test/discover/import, AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 compose+backup, AC-16 legacy migration), troubleshooting common errors.
 - Test `tests/unit/test_ops_runbook.py` 3 tests: runbook tồn tại, cover các keyword bắt buộc (compose, migration, overview, health, ledger, audit, acceptance, troubleshoot), backup-restore vẫn có.
 - Kết quả: targeted 3 passed, full `404 passed, 6 skipped`.
+
+## Step 124 — 1.0 acceptance smoke AC-01/03/13/14/16 (M6)
+- Vấn đề: các slice M6 đã đủ nhưng thiếu gate acceptance tích hợp kiểm chứng AC end-to-end (provider flow, redaction, audit, migration) trong một suite.
+- Thêm `tests/integration/test_acceptance_smoke.py` 4 tests: auth guard cho các endpoint AC-13, provider secret không lộ qua response/audit/overview (AC-14), create→test→discover→import→route hoạt động provider-agnostic (AC-01), migration YAML activate và audit (AC-16).
+- Không cần sửa `admin.py`; các endpoint wire sẵn thỏa acceptance cho phần Control Plane đã implement.
+- Kết quả: targeted 4 passed, full `408 passed, 6 skipped`.
