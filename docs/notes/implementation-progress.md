@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 154 (508p) — CHANGELOG/release hardening AC-07/10/11
+- Last completed: Step 156 (510p) — quota backend readiness + engine lifecycle fix
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 155 — final 1.0 docs polish / tag readiness
+- Next suggested: Step 157 — post-1.0 quota/ledger hardening tiep theo
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2657,8 +2657,17 @@ Follow-up risks / TODOs:
 ## RESUME 1.0 — current
 
 - Branch: `feature/admin-api-baseline`
-- HEAD before final verification: `f093ec0`; version `1.0.0`
+- HEAD after Step 156: `f0cd875` -> next commit; full `510 passed, 6 skipped`
 - Full suite: `508 passed, 6 skipped, 1 warning`
 - AC-01 through AC-16 covered by implementation/tests/docs.
 - `.claude/` remains untracked and must not be committed.
 - Post-1.0 backlog: Redis distributed quota runtime, durable usage ledger wiring, worker collector integration, Docker runtime verification, load benchmarking.
+
+## Step 156 — Quota backend readiness + engine lifecycle fix
+
+- Van de 1 (AC-15 post-1.0 backlog): `/health/ready` va `/metrics` chua expose loai quota backend; ops khong biet nhan nao dung `redis` distributed hay `memory` fallback.
+- Van de 2 (bug blocker phat hien khi test): `apps/gateway/db/session.py:dispose_engine()` goi sync tren coroutine `AsyncEngine.dispose()` gay `RuntimeWarning: coroutine was never awaited` (ro ri connection pool).
+- Sua 1 — `router.py`: them helper `_quota_backend_kind(service)` detect `Redis*` qua class name (ca `AsyncQuotaFacade._backend`), them `checks.quota:{status:ok, backend:memory|redis}` vao `GET /health/ready` va `quota_backend` vao `GET /metrics`; khong lo `REDIS_URL`/password.
+- Sua 2 — `apps/gateway/db/session.py`: doi `dispose_engine() -> None` thanh `async def dispose_engine()` va `await _engine.dispose()`; `init_engine()` khong con goi sync dispose; `router.py:lifespan` doi thanh `await dispose_engine()`.
+- Test `tests/unit/test_quota_backend_health.py` 2 tests: health ready bao `backend in {memory,redis}` khong chua `redis://`/password; metrics bao `quota_backend` khong chua `REDIS_URL`.
+- Ket qua: targeted `2 passed` (warning `AsyncEngine.dispose` da het, con lai chi 1 Starlette deprecation), full `510 passed, 6 skipped, 1 warning`.

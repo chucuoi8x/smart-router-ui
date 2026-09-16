@@ -41,9 +41,12 @@ def init_engine(url: str | None = None) -> AsyncEngine:
         # Verify URL matches (ignore connection-string params ordering)
         if _engine.url.__str__() == target_url:
             return _engine
-        # Different URL requested → dispose old and recreate
-        dispose_engine()
-
+        # Different URL requested → drop old reference; caller is
+        # responsible for awaiting dispose_engine() to avoid leaked
+        # pools, but we clear state here to allow recreation even
+        # if old engine was not yet disposed.
+        _engine = None
+        _async_session_factory = None
     _engine = create_async_engine(target_url, echo=False)
     _async_session_factory = async_sessionmaker(
         _engine,
@@ -53,11 +56,11 @@ def init_engine(url: str | None = None) -> AsyncEngine:
     return _engine
 
 
-def dispose_engine() -> None:
+async def dispose_engine() -> None:
     """Close pools and invalidate the global engine/session factory."""
     global _engine, _async_session_factory
     if _engine is not None:
-        _engine.dispose()
+        await _engine.dispose()
         _engine = None
     _async_session_factory = None
 

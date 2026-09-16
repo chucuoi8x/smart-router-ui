@@ -2746,7 +2746,7 @@ async def lifespan(app: FastAPI):
     finally:
         await service.close()
     # ── Database engine lifecycle ─────────────────────────────────────
-    dispose_engine()  # close pools; no-op if nothing was created
+    await dispose_engine()  # close pools; no-op if nothing was created
 
 
 app = FastAPI(title="Claude Smart Router", version="1.0.0", lifespan=lifespan)
@@ -2772,10 +2772,25 @@ async def health_live() -> dict[str, Any]:
     }
 
 
+def _quota_backend_kind(service: Any | None) -> str:
+    if service is not None:
+        quota = getattr(service, "quota_reservations", None)
+        if quota is not None:
+            name = quota.__class__.__name__
+            if "Redis" in name:
+                return "redis"
+            # AsyncQuotaFacade wrapping InMemory -> treat as memory
+            backend = getattr(quota, "_backend", None)
+            if backend is not None and "Redis" in backend.__class__.__name__:
+                return "redis"
+    return "memory"
+
+
 @app.get("/health/ready")
 async def health_ready(request: Request) -> dict[str, Any]:
     service = getattr(request.app.state, "router", None)
     upstream_count = len(service.clients) if service is not None else 0
+    qkind = _quota_backend_kind(service)
     return {
         "status": "ok",
         "service": "smart-router",
@@ -2784,6 +2799,7 @@ async def health_ready(request: Request) -> dict[str, Any]:
         "upstream_count": upstream_count,
         "checks": {
             "upstreams": {"status": "ok", "count": upstream_count},
+            "quota": {"status": "ok", "backend": qkind},
             "database": {"status": "unknown"},
             "redis": {"status": "unknown"},
         },
@@ -2818,6 +2834,7 @@ async def metrics(request: Request) -> dict[str, Any]:
         "uptime_seconds": int(time.monotonic() - _STARTED_AT_MONO),
         "upstream_count": upstream_count,
         "upstreams": upstream_count,
+        "quota_backend": _quota_backend_kind(service),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
