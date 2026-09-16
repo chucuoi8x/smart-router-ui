@@ -2301,3 +2301,13 @@ Follow-up risks / TODOs:
   - `test_retry_same_request_reuses_reservation_id`: retry TRANSIENT_NETWORK dùng chung `x-request-id: req-104` → chỉ gọi `reserve_many` 1 lần, reserved_id = "req-104".
   - `test_new_request_gets_new_reservation`: 3 request với x-request-id riêng biệt → 3 reservations distinct, `used==3` sau reconcile.
 - Kết quả: targeted `2 passed`, full `342 passed, 6 skipped` (warnings StarletteDeprecationWarning).
+## Step 105 — Reservation risk_buffer theo ReservationPolicy (M5)
+- Vấn đề: `ReservationPolicy.safety_buffer_ratio` (0.03-0.08 theo preset) chưa được wiring vào `QuotaReservationRequest.risk_buffer`; reservation chỉ dùng `amount` nên không phản ánh safety margin cho token/TPM quota.
+- Sửa `router.py`:
+  - Thêm `import math` và helper `_quota_risk_buffer(resource, amount, route_name)` — đọc `preset.reservation.safety_buffer_ratio` qua `ScoringConfig.effective_preset_for_route`, trả `ceil(amount * ratio)` cho metric token/tpm, `0` cho `requests`/`concurrency`; fail-open khi thiếu preset.
+  - Vá `handle_messages` ở cả hai nhánh: nhánh empty-candidates (`check_many`) và nhánh reserve chính (`reserve_many`) — mỗi `QuotaReservationRequest` giờ có `risk_buffer=_quota_risk_buffer(...)`.
+  - Sửa regression `_quota_request_amount` thiếu `return 1` cho non-token metric.
+- Test `tests/unit/test_m5_safety_buffer.py`:
+  - `test_token_reservation_includes_safety_buffer`: preset `critical` ratio 0.08, resource `tpm:primary` limit 10, estimate 10 tokens → required 11 > limit → 503 `quota_exhausted`.
+  - `test_requests_metric_not_affected_by_token_buffer`: resource `requests` limit 1, preset critical → vẫn 200, chứng minh requests không bị cộng buffer.
+- Kết quả: targeted `2 passed`, full `344 passed, 6 skipped` (warnings StarletteDeprecationWarning).

@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import math
 import time
 import types
 import uuid
@@ -573,6 +574,24 @@ class SmartRouter:
         if metric in {"tokens", "input_tokens", "tpm", "tokens_per_minute", "tpm_tokens"}:
             return max(1, int(estimated_input_tokens) + max(0, int(estimated_output_tokens)))
         return 1
+
+    def _quota_risk_buffer(self, resource: object, amount: int, route_name: str | None = None) -> int:
+        """Risk buffer theo ReservationPolicy.safety_buffer_ratio cho token metrics."""
+        try:
+            metric = str(getattr(resource, "metric", "") or "").lower()
+            if metric in {"requests", "request", "concurrency"}:
+                return 0
+            ratio = 0.0
+            try:
+                preset = self._scoring_config.effective_preset_for_route(route_name)
+                ratio = float(getattr(preset.reservation, "safety_buffer_ratio", 0.0) or 0.0)
+            except Exception:
+                ratio = 0.0
+            if ratio <= 0:
+                return 0
+            return int(math.ceil(amount * ratio))
+        except Exception:
+            return 0
 
     async def _reconcile_reservation_usage(
         self,
@@ -1434,6 +1453,7 @@ class SmartRouter:
                     try:
                         _check_reqs = []
                         for _rid in rids:
+                            _risk = 0
                             try:
                                 _r = await self.quota_reservations.snapshot(_rid)
                                 _amt = self._quota_request_amount(
@@ -1441,9 +1461,11 @@ class SmartRouter:
                                     self._estimate_input_tokens(body),
                                     int(body.get("max_tokens", 0) or 0),
                                 )
+                                _risk = self._quota_risk_buffer(_r, _amt, route_name)
                             except Exception:
                                 _amt = 1
-                            _check_reqs.append(QuotaReservationRequest(_rid, amount=_amt))
+                                _risk = 0
+                            _check_reqs.append(QuotaReservationRequest(_rid, amount=_amt, risk_buffer=_risk))
                         adm = await self.quota_reservations.check_many(_check_reqs)
                     except KeyError:
                         continue
@@ -1497,6 +1519,7 @@ class SmartRouter:
                 # Build amount per metric: requests=1, tokens/tpm=estimated_input_tokens
                 reqs: list[QuotaReservationRequest] = []
                 for rid in rids:
+                    risk = 0
                     try:
                         _res = await self.quota_reservations.snapshot(rid)
                         amt = self._quota_request_amount(
@@ -1504,9 +1527,11 @@ class SmartRouter:
                             _estimated_for_quota,
                             _estimated_output_for_quota,
                         )
+                        risk = self._quota_risk_buffer(_res, amt, route_name)
                     except Exception:
                         amt = 1
-                    reqs.append(QuotaReservationRequest(rid, amount=amt))
+                        risk = 0
+                    reqs.append(QuotaReservationRequest(rid, amount=amt, risk_buffer=risk))
                 try:
                     res = await self.quota_reservations.reserve_many(reservation_id=tmp_id, requests=reqs)
                 except (KeyError, ValueError):
