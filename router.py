@@ -1378,7 +1378,13 @@ class SmartRouter:
 
     async def handle_messages(self, body: dict[str, Any], incoming_headers: Any, path: str) -> Response:
         route_name = body.get("model")
-        request_id = uuid.uuid4().hex
+        request_id = None
+        if incoming_headers is not None:
+            try:
+                request_id = incoming_headers.get("x-request-id") or incoming_headers.get("X-Request-ID")
+            except AttributeError:
+                request_id = None
+        request_id = str(request_id or uuid.uuid4().hex)
         if not isinstance(route_name, str) or route_name not in self.routes:
             await self._record_usage_request(
                 request_id=request_id,
@@ -1487,7 +1493,7 @@ class SmartRouter:
                     if idx != 0:
                         candidates = [cand] + candidates[:idx] + candidates[idx+1:]
                     break
-                tmp_id = uuid.uuid4().hex
+                tmp_id = request_id if idx == 0 else f"{request_id}:{idx}"
                 # Build amount per metric: requests=1, tokens/tpm=estimated_input_tokens
                 reqs: list[QuotaReservationRequest] = []
                 for rid in rids:
@@ -1503,7 +1509,7 @@ class SmartRouter:
                     reqs.append(QuotaReservationRequest(rid, amount=amt))
                 try:
                     res = await self.quota_reservations.reserve_many(reservation_id=tmp_id, requests=reqs)
-                except KeyError:
+                except (KeyError, ValueError):
                     reservation_id = None
                     resource_id = None
                     reserved = True

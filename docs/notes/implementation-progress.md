@@ -2291,3 +2291,13 @@ Follow-up risks / TODOs:
 - Sửa `router.py`: thêm `_quota_request_amount(resource, input, output)` và `_reconcile_reservation_usage(reservation_id, resource_id, total_tokens)` (metric-aware, split `resource_id` dạng `",".join(rids)`); tính `_estimated_output_for_quota = body.get("max_tokens")`; reservation amount = input+output cho metric `tokens/tpm`, giữ `1` cho `requests`; reconcile tất cả resource trong batch theo metric (tokens→`total_tokens`, requests→`1`).
 - Test `tests/unit/test_m5_reservation_reconciliation.py`: (1) `tpm:primary` limit 30, request input 23 + max_tokens 10 → 503 `quota_exhausted` (chứng minh cộng output); (2) candidate `quota_resource_ids=[account:primary, tpm:primary]` → sau 200 cả hai resource `used==1` (chứng minh batch reconcile).
 - Kết quả: targeted `3 passed`, full `340 passed, 6 skipped` (warnings: StarletteDeprecationWarning).
+## Step 104 — Idempotent reservation per request/attempt (M5)
+- Vấn đề: `handle_messages` dùng `uuid.uuid4().hex` cho cả `request_id` lẫn `reservation_id`; mỗi retry sinh ID mới → quota bị reserve nhiều lần cho cùng một request.
+- Sửa `router.py`:
+  - `handle_messages` lấy `x-request-id` từ headers (`incoming_headers.get("x-request-id")`), fallback `uuid.uuid4().hex`.
+  - `tmp_id = request_id if idx == 0 else f"{request_id}:{idx}"` để retry candidate khác giữ chung root ID nhưng phân biệt attempt.
+  - Catch `ValueError` trong `except KeyError` khi conflict reservation.
+- Test `tests/unit/test_m5_idempotent_reservation.py`:
+  - `test_retry_same_request_reuses_reservation_id`: retry TRANSIENT_NETWORK dùng chung `x-request-id: req-104` → chỉ gọi `reserve_many` 1 lần, reserved_id = "req-104".
+  - `test_new_request_gets_new_reservation`: 3 request với x-request-id riêng biệt → 3 reservations distinct, `used==3` sau reconcile.
+- Kết quả: targeted `2 passed`, full `342 passed, 6 skipped` (warnings StarletteDeprecationWarning).
