@@ -74,6 +74,19 @@ def list_templates() -> dict[str, dict[str, Any]]:
     }
 
 
+@router.get("/providers")
+def list_providers() -> dict[str, object]:
+    items = list(_provider_connections.values())
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/providers/{connection_id}")
+def get_provider(connection_id: str) -> dict[str, object]:
+    if connection_id not in _provider_connections:
+        raise HTTPException(status_code=404, detail="provider not found")
+    return dict(_provider_connections[connection_id])
+
+
 @router.post("/providers", status_code=201)
 def create_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     template_id = str(payload.get("template_id") or "")
