@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 153 (508p) — acceptance smoke AC-07/AC-10
+- Last completed: Step 154 (508p) — CHANGELOG/release hardening AC-07/10/11
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 154 — docs/release hardening con lai
+- Next suggested: Step 155 — final 1.0 docs polish / tag readiness
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2638,3 +2638,9 @@ Follow-up risks / TODOs:
 - Mo rong `tests/integration/test_acceptance_smoke.py` tu 4 len 6 tests: them `test_ac07_provider_health_exposes_runtime_state_without_secret` kiem `GET /providers/{id}/health` tra `runtime_state:{state:"rate_limited", retryable:true}` khong lo secret; them `test_ac10_simulation_exposes_policy_and_budget_gate` kiem `POST /routes/simulate` voi project+budget+paid-fallback policy tra `policy:{paid_fallback_enabled:true}` va `budget:{eligible:true, remaining:100.0}`.
 - Khong doi production code; chi bo sung chung cu 1.0 cho AC-07/AC-10.
 - Ket qua: targeted `6 passed`, full `508 passed, 6 skipped, 1 warning`.
+
+## Step 154 — CHANGELOG/release hardening AC-07/10/11
+
+- Cap nhat `CHANGELOG.md` 1.0.0: mo ta runtime distinction `RATE_LIMIT` vs `QUOTA_EXHAUSTED` (AC-07), simulation expose `budget`+`policy:paid_fallback` (AC-10), streaming acceptance regression + health `runtime_state` (AC-11/AC-07), va cap nhat verification `508 passed, 6 skipped` at Step 153.
+- Khong doi production code; chi dong bo tai lieu phat hanh voi chung cu da co tu Step 150-153.
+- Ket qua: docs sync, full `508 passed, 6 skipped` giu nguyen.
