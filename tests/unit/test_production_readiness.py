@@ -30,7 +30,7 @@ def test_worker_image_contains_runtime_config_and_state_path():
 
 def test_runbook_has_current_verification_count_and_no_stale_count():
     text = (ROOT / "docs/ops/runbook.md").read_text(encoding="utf-8")
-    assert "519 passed, 6 skipped" in text
+    assert "528 passed, 6 skipped" in text
     assert "401 passed" not in text
 
 
