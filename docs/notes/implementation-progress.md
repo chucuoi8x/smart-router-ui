@@ -2719,3 +2719,10 @@ Follow-up risks / TODOs:
    + khong embed secret, khong dua loai auth nao len server
 - Test moi: `tests/unit/test_control_plane_ui.py` 2 tests: nav/auth/input nam trong, khong co api_key/embedded credential.
 - Ket qua: targeted `2 passed`, full `528 passed, 6 skipped, 1 warning`.
+
+## Step 163 — Admin auth runtime alignment + release docs drift
+
+- Van de 1 (blocker ready): `apps/gateway/api/admin.py` hard-coded `Bearer test-admin-key` nen khi gateway chay voi `SMART_ROUTER_KEY=...` (docker-compose, uvicorn) thi Control Plane that bai 401. Live smoke `GET /api/admin/v1/overview` voi `Bearer smoke-local-key` that bai truoc fix.
+- Sua: them `ADMIN_AUTH_TOKEN_FALLBACK` + `_admin_expected_authorization()` doc `SMART_ROUTER_KEY` (hoac `SMART_ROUTER_ADMIN_KEY`) tu env, fallback ve `Bearer test-admin-key` khi khong co env. Khong doi tests.
+- Van de 2 (docs drift): `CHANGELOG.md` va `docs/release-notes/1.0.md` con `508 passed`; sau Step 162 count la `528 passed, 6 skipped`.
+- Ket qua: unit `test_admin_api` ok, full `528 passed, 6 skipped, 1 warning`; live smoke `200-expected 200` cho overview voi cung token voi gateway.

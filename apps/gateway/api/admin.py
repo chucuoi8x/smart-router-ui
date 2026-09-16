@@ -21,11 +21,29 @@ from apps.gateway.providers.base import DriverNotFoundError
 from apps.gateway.security.crypto import encrypt_secret
 
 
-ADMIN_AUTH_TOKEN = "Bearer test-admin-key"
+ADMIN_AUTH_TOKEN_FALLBACK = "Bearer test-admin-key"
+
+
+def _admin_expected_authorization() -> str:
+    """Return the expected admin Authorization header value.
+
+    In real/test deployments the gateway sets SMART_ROUTER_KEY. In unit
+    tests the default is still the legacy constant so no test change is
+    required. Prefer explicit env when available to align Control Plane
+    auth with the gateway lifecycle.
+    """
+    key = os.getenv("SMART_ROUTER_KEY") or os.getenv("SMART_ROUTER_ADMIN_KEY")
+    if key and key.strip():
+        bearer = key.strip()
+        if not bearer.lower().startswith("bearer "):
+            bearer = f"Bearer {bearer}"
+        return bearer
+    return ADMIN_AUTH_TOKEN_FALLBACK
 
 
 def require_admin_auth(authorization: str = Header(default="")) -> None:
-    if authorization != ADMIN_AUTH_TOKEN:
+    expected = _admin_expected_authorization()
+    if authorization != expected:
         raise HTTPException(status_code=401, detail="invalid admin credential")
 
 

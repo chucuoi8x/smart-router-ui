@@ -30,5 +30,5 @@ All notable changes to Smart Router are documented here.
 
 ### Verification
 
-- Full automated suite: `508 passed, 6 skipped` at Step 153.
+- Full automated suite: `528 passed, 6 skipped
 - Acceptance smoke tests cover provider onboarding, redaction, migration, provider health runtime state (AC-07), simulation policy/budget gate (AC-10) and Control Plane auth.
