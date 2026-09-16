@@ -34,12 +34,22 @@ router = APIRouter(dependencies=[Depends(require_admin_auth)])
 _template_registry = ProviderTemplateRegistry()
 _revision_manager = ConfigRevisionManager()
 _provider_connections: dict[str, dict[str, Any]] = {}
+_provider_credentials: dict[str, list[dict[str, Any]]] = {}
 _audit_events: list[dict[str, Any]] = []
 _settings: dict[str, Any] = {"log_level": "INFO"}
 _driver_registry = default_driver_registry()
 
 
 # ── helpers ────────────────────────────────────────────────────────────
+
+def _serialize_credential(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "credential_id": record.get("credential_id"),
+        "alias": record.get("alias"),
+        "connection_id": record.get("connection_id"),
+        "credential_present": True,
+    }
+
 
 def _serialize_revision(revision: dict[str, Any]) -> dict[str, Any]:
     result = dict(revision)
@@ -206,6 +216,35 @@ async def discover_provider_models(connection_id: str) -> dict[str, Any]:
         else:
             normalized.append({"id": str(m)})
     return {"connection_id": connection_id, "models": normalized, "count": len(normalized)}
+
+
+@router.post("/providers/{connection_id}/credentials", status_code=201)
+def add_provider_credential(connection_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    record = _provider_connections.get(connection_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    api_key = str(payload.get("api_key") or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api_key is required")
+    alias = str(payload.get("alias") or payload.get("name") or f"cred_{uuid.uuid4().hex[:8]}").strip()
+    cred_id = f"cred_{uuid.uuid4().hex[:12]}"
+    cred = {
+        "credential_id": cred_id,
+        "connection_id": connection_id,
+        "alias": alias,
+        "credential_encrypted": encrypt_secret(api_key),
+    }
+    _provider_credentials.setdefault(connection_id, []).append(cred)
+    _audit_events.append({"action": "credential.added", "connection_id": connection_id, "credential_id": cred_id, "alias": alias, "created_at": datetime.now(UTC).isoformat()})
+    return _serialize_credential(cred)
+
+
+@router.get("/providers/{connection_id}/credentials")
+def list_provider_credentials(connection_id: str) -> dict[str, Any]:
+    if connection_id not in _provider_connections:
+        raise HTTPException(status_code=404, detail="provider not found")
+    items = [_serialize_credential(c) for c in _provider_credentials.get(connection_id, [])]
+    return {"items": items, "total": len(items), "connection_id": connection_id}
 
 
 @router.get("/routes")

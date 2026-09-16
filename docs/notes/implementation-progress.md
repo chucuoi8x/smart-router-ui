@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 120 (392p) — Provider test + model discovery AC-01
+- Last completed: Step 121 (397p) — Multi-credential AC-03
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 121 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 122 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2423,3 +2423,10 @@ Follow-up risks / TODOs:
 - `create_provider` nhận optional `driver` override để driver capability quyết định behavior; không trả/stash secret plaintext trong response.
 - Test `tests/unit/test_m6_provider_test_discover.py` 5 tests: auth, unknown connection, driver test, model discovery, redaction. Fake driver chứng minh không hardcode provider-name.
 - Kết quả: targeted 5 passed, full `392 passed, 6 skipped`.
+
+## Step 121 — Multi-credential per provider connection AC-03 (M6)
+- Vấn đề: `ProviderConnection` chỉ lưu một credential; Control Plane chưa có lifecycle cho nhiều credential độc lập.
+- Sửa `admin.py`: thêm credential store scoped theo `connection_id`, `POST /providers/{id}/credentials` mã hóa bằng Fernet, sinh `credential_id`/alias độc lập, `GET /providers/{id}/credentials` chỉ trả metadata redacted, audit `credential.added` không có secret.
+- Credential unknown provider trả 404, thiếu api_key trả 400.
+- Test `tests/unit/test_m6_multi_credential.py` 5 tests: auth, add/list redaction, unknown provider add/list, nhiều credential có ID độc lập.
+- Kết quả: targeted 5 passed, full `397 passed, 6 skipped`.
