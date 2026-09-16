@@ -37,6 +37,7 @@ _provider_connections: dict[str, dict[str, Any]] = {}
 _provider_credentials: dict[str, list[dict[str, Any]]] = {}
 _projects: dict[str, dict[str, Any]] = {}
 _project_keys: dict[str, list[dict[str, Any]]] = {}
+_project_budgets: dict[str, dict[str, Any]] = {}
 _alerts: list[dict[str, Any]] = []
 _quota_resources: dict[str, dict[str, Any]] = {}
 _audit_events: list[dict[str, Any]] = []
@@ -520,6 +521,60 @@ def revoke_project_key(project_id: str, key_id: str) -> dict[str, Any]:
         target["revoked_at"] = datetime.now(UTC).isoformat()
         _audit_events.append({"action": "project.key.revoked", "project_id": project_id, "key_id": key_id, "created_at": target["revoked_at"]})
     return {"project_id": project_id, "key_id": key_id, "revoked": True, "active": False, "revoked_at": target["revoked_at"]}
+
+
+@router.put("/projects/{project_id}/budget")
+def upsert_project_budget(project_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    project = _projects.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    ceiling_raw = payload.get("ceiling")
+    if ceiling_raw is None:
+        raise HTTPException(status_code=400, detail="ceiling is required")
+    try:
+        ceiling = float(ceiling_raw)
+        used = float(payload.get("used", 0))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="ceiling/used must be numbers") from exc
+    if ceiling < 0 or used < 0 or used > ceiling:
+        raise HTTPException(status_code=400, detail="invalid budget bounds: used must be between 0 and ceiling")
+    currency = str(payload.get("currency") or "USD").strip().upper()
+    if not currency:
+        currency = "USD"
+    allow_paid = bool(payload.get("allow_paid_fallback", True)) if "allow_paid_fallback" in payload else True
+    # if explicitly passed allow_paid_fallback keep that value
+    if "allow_paid_fallback" in payload:
+        allow_paid = bool(payload["allow_paid_fallback"])
+    remaining = ceiling - used
+    record = {
+        "project_id": project_id,
+        "currency": currency,
+        "ceiling": ceiling,
+        "used": used,
+        "remaining": remaining,
+        "allow_paid_fallback": allow_paid,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    _project_budgets[project_id] = record
+    _audit_events.append({"action": "project.budget.updated", "project_id": project_id, "ceiling": ceiling, "used": used, "created_at": record["updated_at"]})
+    return dict(record)
+
+
+@router.get("/projects/{project_id}/budget")
+def get_project_budget(project_id: str) -> dict[str, Any]:
+    project = _projects.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    record = _project_budgets.get(project_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="budget not found")
+    return dict(record)
+
+
+@router.get("/budgets")
+def list_budgets() -> dict[str, Any]:
+    items = [dict(v) for v in _project_budgets.values()]
+    return {"items": items, "total": len(items)}
 
 
 @router.get("/projects/{project_id}")

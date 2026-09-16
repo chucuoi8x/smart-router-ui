@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 144 (482p) — project key revocation
+- Last completed: Step 145 (486p) — budget ceiling AC-10
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 145 — budget ceiling enforcement AC-10
+- Next suggested: Step 146 — paid fallback policy control AC-10
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2578,3 +2578,9 @@ Follow-up risks / TODOs:
 - Thu tu route dang ky truoc GET /projects/{id} de tranh param shadowing.
 - Test `tests/unit/test_m6_project_key_revoke.py` 4 tests: create key, revoke invalidates, list excludes/flags, 404 unknown.
 - Ket qua: targeted 4 passed, full `482 passed, 6 skipped`.
+
+## Step 145 — Budget ceiling enforcement AC-10 (M7)
+- Van de: chua co quan ly budget cho project; khong co hard ceiling hoac allow_paid_fallback gate trong routing core.
+- Them `_project_budgets` store + `PUT /projects/{id}/budget` (validate bounds, audit), `GET /projects/{id}/budget`, `GET /budgets` list trong `apps/gateway/api/admin.py`.
+- Test `tests/unit/test_m6_budget_ceiling.py` 4 tests: auth 401, create+list redacted, negative/over-ceiling 400, unknown 404.
+- Ket qua: targeted 4 passed, full `486 passed, 6 skipped`.
