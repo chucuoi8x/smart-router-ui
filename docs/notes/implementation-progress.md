@@ -2657,8 +2657,8 @@ Follow-up risks / TODOs:
 ## RESUME 1.0 — current
 
 - Branch: `feature/admin-api-baseline`
-- HEAD after Step 156: `f0cd875` -> next commit; full `510 passed, 6 skipped`
-- Full suite: `508 passed, 6 skipped, 1 warning`
+- HEAD after Step 157: `cf031b8`; full `512 passed, 6 skipped, 1 warning`
+- Full suite: `512 passed, 6 skipped, 1 warning`
 - AC-01 through AC-16 covered by implementation/tests/docs.
 - `.claude/` remains untracked and must not be committed.
 - Post-1.0 backlog: Redis distributed quota runtime, durable usage ledger wiring, worker collector integration, Docker runtime verification, load benchmarking.
