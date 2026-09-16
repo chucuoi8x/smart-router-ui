@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 148 (495p) — simulation budget gate AC-10
+- Last completed: Step 149 (497p) — simulation paid-fallback policy awareness AC-10
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 149 — simulation paid-fallback awareness + remaining ACs
+- Next suggested: Step 150 — simulation remaining ACs / docs hardening
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2603,3 +2603,10 @@ Follow-up risks / TODOs:
 - Them project budget gate trong `apps/gateway/api/admin.py:simulate_route_endpoint` (truoc khi compile snapshot): `project_id` truyen qua payload, 404 neu project khong ton tai, 200 voi `reason=project_budget_exhausted` + `budget:{project_id,eligible:false,remaining:0}` khi budget het, neu con headroom van tra simulation binh thuong kem `budget:{eligible:true,remaining}`; project chua co budget van eligible.
 - Test `tests/unit/test_m6_simulation_budget.py` 3 tests: exhausted rejects, headroom proceeds, unknown 404 — goi `claude-router-main`.
 - Ket qua: targeted 3 passed, full `495 passed, 6 skipped`.
+
+## Step 149 — Simulation paid-fallback policy awareness AC-10
+
+- Van de: `POST /routes/simulate` da ton trong budget gate (Step 148) nhung chua phan anh `paid_fallback` policy; response dry-run khong cho biet layout paid fallback co duoc phep hay khong.
+- Them snapshot policy effective-scope trong `apps/gateway/api/admin.py:simulate_route_endpoint`: lay `_policies["paid-fallback"]`, chi coi `paid_fallback_enabled=true` khi `enabled=true` va (`project_id is None` hoac trung `payload.project_id`); giam rach cua project scope. Gan `policy:{paid_fallback_enabled,requires_budget,project_id}` vao ca normal response va `project_budget_exhausted` early-return (ke truoc compile snapshot) de UI van thay policy ngay khi budget het.
+- Test `tests/unit/test_m6_simulation_paid_policy.py` 2 tests: disabled (default) tra `paid_fallback_enabled=false, requires_budget=true`, enabled+budget project tra `paid_fallback_enabled=true, project_id` dung; dam bao policy hien o ca hai nhanh.
+- Ket qua: targeted `2 passed`, full `497 passed, 6 skipped`.

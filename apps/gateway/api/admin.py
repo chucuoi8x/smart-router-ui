@@ -1402,6 +1402,19 @@ async def simulate_route_endpoint(
     # AC-10: optional project budget gate for simulation visibility
     project_id = payload.get("project_id") or payload.get("project") or payload.get("projectId")
     budget_context: dict[str, object] | None = None
+    configured_policy = _policies.get(
+        "paid-fallback",
+        {"enabled": False, "requires_budget": True, "project_id": None},
+    )
+    configured_policy_project = configured_policy.get("project_id")
+    policy_enabled = bool(configured_policy.get("enabled")) and (
+        configured_policy_project is None or configured_policy_project == project_id
+    )
+    policy_context: dict[str, object] = {
+        "paid_fallback_enabled": policy_enabled,
+        "requires_budget": bool(configured_policy.get("requires_budget", True)),
+        "project_id": project_id if policy_enabled else None,
+    }
     if isinstance(project_id, str) and project_id.strip():
         project_id = project_id.strip()
         if project_id not in _projects:
@@ -1429,6 +1442,7 @@ async def simulate_route_endpoint(
                     "reason": "project_budget_exhausted",
                     "expected_reservation": None,
                     "budget": budget_context,
+                    "policy": policy_context,
                 }
         else:
             # Project exists but no explicit budget → treat as eligible with no ceiling
@@ -1474,4 +1488,5 @@ async def simulate_route_endpoint(
     }
     if budget_context is not None:
         response["budget"] = budget_context
+    response["policy"] = policy_context
     return response
