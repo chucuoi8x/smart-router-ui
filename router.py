@@ -395,12 +395,73 @@ class SmartRouter:
         base = str(self._upstream_config(upstream).get("base_url", "")).rstrip("/")
         return f"{base}{path}"
 
-    async def _candidate_order(self, route_name: str) -> list[Candidate]:
+    def _conversation_thread_hint(self, body: dict[str, Any] | None, incoming_headers: Any | None) -> str | None:
+        """Trích session hint một cách an toàn — chỉ lưu ID, không lưu prompt/secret.
+
+        Header ưu tiên hơn body. Chấp nhận `x-session-id`, `x-conversation-id`,
+        `session_id`, `conversation_id`, `thread_id`. Trả về None nếu thiếu/empty.
+        """
+        candidate: str | None = None
+        if incoming_headers is not None:
+            try:
+                # Headers có thể là Starlette Headers hoặc dict thường
+                get = getattr(incoming_headers, "get", None)
+                if callable(get):
+                    for key in ("x-session-id", "x-conversation-id", "x-thread-id"):
+                        value = get(key)  # type: ignore[call-arg]
+                        if isinstance(value, str) and value.strip():
+                            return value.strip()
+                        # Starlette headers are case-insensitive but dict .get is not — try lower?
+                        if isinstance(incoming_headers, dict):
+                            # check lowercased keys already via get above with original case;
+                            # dict fallback: try case-insensitive scan once
+                            pass
+                    # Fallback case-insensitive scan for dict headers
+                    if isinstance(incoming_headers, dict):
+                        lower_map = {str(k).lower(): v for k, v in incoming_headers.items()}
+                        for key in ("x-session-id", "x-conversation-id", "x-thread-id"):
+                            value = lower_map.get(key)
+                            if isinstance(value, str) and value.strip():
+                                return value.strip()
+                # else: no .get -> ignore
+            except Exception:
+                pass
+        if isinstance(body, dict):
+            for key in ("session_id", "conversation_id", "thread_id", "sessionId", "conversationId"):
+                value = body.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
+
+    def _remember_session_affinity(self, conversation_thread: str | None, candidate_key: str) -> None:
+        if not conversation_thread:
+            return
+        self._ensure_scoring()
+        if self._score_calculator is None:
+            return
+        if getattr(self.router_engine, "_score_calculator", None) is not None and hasattr(self.router_engine, "_score_calculator"):
+            # Engine có store riêng khi bật RouterEngine mode — đồng bộ cả hai
+            try:
+                eng_calc = self.router_engine._score_calculator  # type: ignore[union-attr]
+                if eng_calc is not None:
+                    eng_calc.remember_affinity(conversation_thread, candidate_key)
+            except Exception:
+                pass
+        try:
+            self._score_calculator.remember_affinity(conversation_thread, candidate_key)
+        except Exception:
+            pass
+
+    async def _candidate_order(self, route_name: str, conversation_thread: str | None = None) -> list[Candidate]:
         if self.router_engine is not None:
             if getattr(self.router_engine, "quota_reservations", None) is not None:
-                resource_candidates = await self.router_engine.select_candidates_async(route_name)
+                resource_candidates = await self.router_engine.select_candidates_async(
+                    route_name, conversation_thread=conversation_thread
+                )
             else:
-                resource_candidates = self.router_engine.select_candidates(route_name)
+                resource_candidates = self.router_engine.select_candidates(
+                    route_name, conversation_thread=conversation_thread
+                )
             return self._convert_resource_candidates(resource_candidates)
         async with self.state_lock:
             route = self.routes.get(route_name)
@@ -434,7 +495,7 @@ class SmartRouter:
             ordered = list(primary)
         ordered = ordered + fallback
         # Apply smart scoring as an optimization layer (graceful no-op when disabled)
-        ordered = await self._async_apply_scoring(ordered, route_name)
+        ordered = await self._async_apply_scoring(ordered, route_name, conversation_thread=conversation_thread)
         return ordered
 
     async def _quota_available_candidates(self, candidates: list[Candidate]) -> list[Candidate]:
@@ -458,6 +519,8 @@ class SmartRouter:
         return admission.accepted
 
     async def _known_candidate_quota_resource_ids(self, candidate: Candidate) -> list[str]:
+        if self.quota_reservations is None:
+            return []
         known: list[str] = []
         seen_groups: set[str] = set()
         for resource_id in self._candidate_quota_resource_ids(candidate):
@@ -547,6 +610,7 @@ class SmartRouter:
         self,
         candidates: list[Candidate],
         route_name: str,
+        conversation_thread: str | None = None,
     ) -> list[Candidate]:
         """Re-order candidates using multi-dimensional scoring."""
         if not self._should_apply_smart_scoring(route_name):
@@ -562,6 +626,7 @@ class SmartRouter:
                 candidates=candidates,
                 candidate_keys=candidate_keys,
                 metrics_by_key=metrics_by_key,
+                conversation_thread=conversation_thread,
                 weights=route_weights,
             )
             if self._scoring_config.mode == "shadow":
@@ -582,6 +647,7 @@ class SmartRouter:
         self,
         candidates: list[Candidate],
         route_name: str,
+        conversation_thread: str | None = None,
     ) -> list[Candidate]:
         """Async-aware scoring — queries quota resources for burn-rate urgency."""
         if not self._should_apply_smart_scoring(route_name):
@@ -597,6 +663,7 @@ class SmartRouter:
                 candidates=candidates,
                 candidate_keys=candidate_keys,
                 metrics_by_key=metrics_by_key,
+                conversation_thread=conversation_thread,
                 weights=route_weights,
             )
             if self._scoring_config.mode == "shadow":
@@ -1220,7 +1287,10 @@ class SmartRouter:
                 reservation_id = None
                 resource_id = None
 
-        candidates = await self._candidate_order(route_name)
+        # Session hint: chỉ lấy ID để scoring affinity — không đụng payload/secret
+        conversation_thread = self._conversation_thread_hint(body, incoming_headers)
+
+        candidates = await self._candidate_order(route_name, conversation_thread=conversation_thread)
         if not candidates:
             # If we had a reservation, release it before returning overloaded
             if reservation_id is not None and resource_id is not None:
@@ -1238,8 +1308,8 @@ class SmartRouter:
         await self._record_usage_request(request_id=request_id, route_name=route_name)
 
         if bool(body.get("stream", False)) and path.endswith("/messages"):
-            return await self._stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id, request_id)
-        return await self._non_stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id, request_id)
+            return await self._stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id, request_id, conversation_thread)
+        return await self._non_stream_messages(body, incoming_headers, candidates, route_name, path, reservation_id, resource_id, request_id, conversation_thread)
 
     async def _non_stream_messages(
         self,
@@ -1251,6 +1321,7 @@ class SmartRouter:
         reservation_id: str | None = None,
         resource_id: str | None = None,
         request_id: str | None = None,
+        conversation_thread: str | None = None,
     ) -> Response:
         last_failure: str | None = None
         for index, candidate in enumerate(candidates):
@@ -1350,6 +1421,7 @@ class SmartRouter:
                 elapsed_ms = (time.monotonic() - _start) * 1000
                 if self._score_calculator:
                     self._latency_tracker.record(candidate.key, elapsed_ms)
+                self._remember_session_affinity(conversation_thread, candidate.key)
                 return Response(
                     content=response.content,
                     status_code=response.status_code,
@@ -1460,6 +1532,7 @@ class SmartRouter:
             elapsed_ms = (time.monotonic() - _start) * 1000
             if self._score_calculator:
                 self._latency_tracker.record(candidate.key, elapsed_ms)
+            self._remember_session_affinity(conversation_thread, candidate.key)
             # Convert body to bytes
             body_bytes = result["body"].encode("utf-8") if isinstance(result["body"], str) else result["body"]
             return Response(
@@ -1486,6 +1559,7 @@ class SmartRouter:
         reservation_id: str | None = None,
         resource_id: str | None = None,
         request_id: str | None = None,
+        conversation_thread: str | None = None,
     ) -> Response:
         last_failure: str | None = None
         for index, candidate in enumerate(candidates):
@@ -1558,6 +1632,7 @@ class SmartRouter:
                         candidate=_candidate,
                         sse_buffer=_sse_buf,
                     )
+                    self._remember_session_affinity(conversation_thread, _candidate.key)
                     if reservation_id is not None and resource_id is not None:
                         tokens = self._get_latest_usage_tokens(attempt_id=attempt_id)
                         total_tokens = tokens["total_tokens"]

@@ -2039,3 +2039,26 @@ Outcome:
 Follow-up risks / TODOs:
 - `compiler._candidate_metadata` hiện giữ 4 chiều mới dạng float; chưa có validation range [0,1] cho scarcity/uncertainty.
 - Session/cache affinity wiring vẫn stub (engine/router hydrate 0.0); cần wiring đầy đủ cho session affinity §20.
+
+## Step 91 — M5 session affinity xuyên RouterEngine và request execution (2026-09-16)
+
+Implemented:
+- `router.py`: thêm `_conversation_thread_hint()` trích session hint theo thứ tự `x-session-id`/`x-conversation-id`/`x-thread-id` (header) rồi `session_id`/`conversation_id`/`thread_id` (body). Chỉ dùng ID cho routing, không lưu message/prompt hay credential header. Thêm `_remember_session_affinity()` đồng bộ affinity store giữa RouterEngine và legacy scoring.
+- `router.py`: `handle_messages()` trích hint một lần và truyền qua `_candidate_order()` → `_async_apply_scoring()`/`_apply_smart_scoring()` và qua `RouterEngine.select_candidates*()`. Sau non-stream thành công (direct client và driver path) và sau stream hoàn tất thành công, gọi remember để bind session → candidate cho request sau. Không bind khi request/stream lỗi.
+- `apps/gateway/routing/engine.py`: `select_candidates()`/`select_candidates_async()` nhận `conversation_thread` và truyền vào `_apply_smart_scoring()` cho cả primary/fallback; `_apply_smart_scoring()` truyền hint vào `SmartScoreCalculator.compute_scores()`.
+- `router.py`: sửa graceful-degrade trong `_known_candidate_quota_resource_ids()` (return [] khi `quota_reservations is None`) để scheduler vẫn scoring khi chưa cấu hình quota.
+- Thêm `tests/unit/test_m5_session_affinity.py` (5 tests: scoring bonus, Router candidate order, header-over-body, body conversation_id, RouterEngine affinity). Cập nhật `tests/unit/test_router_engine.py:530` assertion signature `select_candidates(..., conversation_thread=None)`.
+
+Verification:
+- RED: `test_router_candidate_order_uses_session_affinity` fail trước wiring với `unexpected keyword argument 'conversation_thread'`.
+- Targeted sau wiring: `pytest tests/unit/test_m5_session_affinity.py tests/unit/test_router_engine.py tests/unit/test_smart_scorer.py -q` → `52 passed`; với `test_smart_scheduler_integration` → `65 passed`.
+- Full: `pytest -q --tb=short` → `304 passed, 6 skipped in 20.59s`.
+- `git diff --check` sạch (chỉ cảnh báo CRLF ở `test_router_engine.py`). Quét secret mới trong `router.py`/`engine.py` không có giá trị secret; test helper chỉ dùng ID giả `session-1`/`conv-123`.
+
+Outcome:
+- Session affinity đã thành tín hiệu routing end-to-end: session ID ưu tiên candidate đã chọn trước đó, và execution thành công làm mới binding cho request sau.
+- Không gửi session hint sang upstream và không nhánh theo provider-name; giữ router provider-agnostic.
+
+Follow-up risks / TODOs:
+- Route simulation/dry-run và telemetry persistence cho các scoring feature còn là slice M5 tiếp theo theo README §20.
+- Cần thêm integration test cho stream affinity end-to-end (hiện chỉ unit cho non-stream ordering).

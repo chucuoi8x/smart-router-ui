@@ -109,7 +109,7 @@ class RouterEngine:
         except Exception:
             return candidates  # Policy lỗi không được làm hỏng data plane
 
-    def select_candidates(self, route_name: str) -> List[ResourceCandidate]:
+    def select_candidates(self, route_name: str, conversation_thread: str | None = None) -> List[ResourceCandidate]:
         route = self.snapshot.routes.get(route_name)
         if route is None:
             return []
@@ -119,11 +119,11 @@ class RouterEngine:
         fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True)
         scored_primary = self._quota_rank_sync(primary)
         scored_fallback = self._quota_rank_sync(fallback)
-        return list(self._apply_smart_scoring(scored_primary, route_name)) + list(
-            self._apply_smart_scoring(scored_fallback, route_name)
+        return list(self._apply_smart_scoring(scored_primary, route_name, conversation_thread=conversation_thread)) + list(
+            self._apply_smart_scoring(scored_fallback, route_name, conversation_thread=conversation_thread)
         )
 
-    async def select_candidates_async(self, route_name: str) -> List[ResourceCandidate]:
+    async def select_candidates_async(self, route_name: str, conversation_thread: str | None = None) -> List[ResourceCandidate]:
         route = self.snapshot.routes.get(route_name)
         if route is None:
             return []
@@ -135,8 +135,8 @@ class RouterEngine:
 
         scored_primary = await self._quota_rank(primary)
         scored_fallback = await self._quota_rank(fallback)
-        return list(self._apply_smart_scoring(scored_primary, route_name)) + list(
-            self._apply_smart_scoring(scored_fallback, route_name)
+        return list(self._apply_smart_scoring(scored_primary, route_name, conversation_thread=conversation_thread)) + list(
+            self._apply_smart_scoring(scored_fallback, route_name, conversation_thread=conversation_thread)
         )
 
     def resolve_route(self, route_name: str) -> List[ResourceCandidate]:
@@ -280,7 +280,12 @@ class RouterEngine:
         allowlist = getattr(self._scoring_config, "route_allowlist", [])
         return not allowlist or route_name in allowlist
 
-    def _apply_smart_scoring(self, candidates: list[ResourceCandidate], route_name: str) -> list[ResourceCandidate]:
+    def _apply_smart_scoring(
+        self,
+        candidates: list[ResourceCandidate],
+        route_name: str,
+        conversation_thread: str | None = None,
+    ) -> list[ResourceCandidate]:
         """Re-order candidates via smart scoring if enabled and calculator exists."""
         if self._score_calculator is None or not candidates or not self._should_apply_smart_scoring(route_name):
             return candidates
@@ -331,6 +336,7 @@ class RouterEngine:
                 candidates=candidates,
                 candidate_keys=keys,
                 metrics_by_key=metrics,
+                conversation_thread=conversation_thread,
                 weights=route_weights,
             )
             if self._scoring_config and self._scoring_config.mode == "shadow":
