@@ -85,6 +85,8 @@ def _serialize_provider(record: dict[str, Any]) -> dict[str, Any]:
         "name": record["name"],
         "base_url": record["base_url"],
         "driver": record["driver"],
+        "active": bool(record.get("active", True)),
+        "disabled": not bool(record.get("active", True)),
         "credential_present": bool(record.get("credential_present")),
     }
 
@@ -165,6 +167,28 @@ def get_provider_health(connection_id: str) -> dict[str, Any]:
     }
 
 
+@router.post("/providers/{connection_id}/deactivate")
+def deactivate_provider(connection_id: str) -> dict[str, Any]:
+    record = _provider_connections.get(connection_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    record["active"] = False
+    timestamp = datetime.now(UTC).isoformat()
+    _audit_events.append({"action": "provider.deactivated", "connection_id": connection_id, "created_at": timestamp})
+    return {"connection_id": connection_id, "active": False, "disabled": True, "changed_at": timestamp}
+
+
+@router.post("/providers/{connection_id}/reactivate")
+def reactivate_provider(connection_id: str) -> dict[str, Any]:
+    record = _provider_connections.get(connection_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="provider not found")
+    record["active"] = True
+    timestamp = datetime.now(UTC).isoformat()
+    _audit_events.append({"action": "provider.reactivated", "connection_id": connection_id, "created_at": timestamp})
+    return {"connection_id": connection_id, "active": True, "disabled": False, "changed_at": timestamp}
+
+
 @router.get("/providers/{connection_id}")
 def get_provider(connection_id: str) -> dict[str, object]:
     if connection_id not in _provider_connections:
@@ -195,6 +219,7 @@ def create_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
         "name": name,
         "base_url": base_url,
         "driver": str(payload.get("driver") or template.get("driver") or ""),
+        "active": True,
         "credential_present": bool(payload.get("api_key")),
         # Stored only as Fernet ciphertext; serializers below never expose it.
         "credential_encrypted": encrypt_secret(str(payload["api_key"])) if payload.get("api_key") else None,

@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 139 (463p) — provider health probe
+- Last completed: Step 140 (467p) — provider deactivate/reactivate
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 140 — provider health failure handling + deactivation flow
+- Next suggested: Step 141 — provider health degraded + retry semantics M7
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2546,3 +2546,9 @@ Follow-up risks / TODOs:
 - Thêm `_provider_health_cache` trong `apps/gateway/api/admin.py`; `POST /providers/{id}/test` ghi cache với `status=healthy` khi driver trả `ok/healthy/success` (redacted credential), `checked_at` ISO; `GET /providers/{id}/health` và `GET /providers/health` đọc cache (fallback `unknown`).
 - Test `tests/unit/test_m6_provider_health_probe.py` 3 tests: unknown trước test, healthy sau test, summary phản ánh probe; trước sau đều redacted.
 - Kết quả: targeted 3 passed (Step 139), tổng health 7 passed, full `463 passed, 6 skipped`.
+
+## Step 140 — Provider deactivate/reactivate flow (AC-01/02/12)
+- Vấn đề: provider listing thiếu trạng thái active/disabled; không có endpoint tạm dừng/kích hoạt lại provider qua Control Plane.
+- Cập nhật `apps/gateway/api/admin.py`: serializer `_serialize_provider` bổ sung `active`/`disabled`; `create_provider` mặc định `active=True`; thêm `POST /providers/{id}/deactivate` và `POST /providers/{id}/reactivate` (404 nếu không tồn tại, ghi audit `provider.deactivated/reactivated`, trả `connection_id/active/disabled/changed_at`).
+- Test `tests/unit/test_m6_provider_deactivation.py` 4 tests: health sau test, deactivate trả disabled, listing phản ánh disabled, reactivate khôi phục active — đều redacted.
+- Kết quả: targeted 4 passed, full `467 passed, 6 skipped`.
