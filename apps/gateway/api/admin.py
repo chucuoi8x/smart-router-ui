@@ -37,6 +37,7 @@ _provider_connections: dict[str, dict[str, Any]] = {}
 _provider_credentials: dict[str, list[dict[str, Any]]] = {}
 _projects: dict[str, dict[str, Any]] = {}
 _alerts: list[dict[str, Any]] = []
+_quota_resources: dict[str, dict[str, Any]] = {}
 _audit_events: list[dict[str, Any]] = []
 _settings: dict[str, Any] = {"log_level": "INFO"}
 _driver_registry = default_driver_registry()
@@ -412,6 +413,61 @@ def update_alert(alert_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
     target["status"] = new_status
     _audit_events.append({"action":"alert.updated","alert_id":alert_id,"status":new_status,"created_at":datetime.now(UTC).isoformat()})
     return dict(target)
+
+
+def _serialize_quota_resource(record: dict[str, Any]) -> dict[str, Any]:
+    result = dict(record)
+    result["remaining"] = max(0, int(result["limit"]) - int(result.get("used", 0)) - int(result.get("safety_buffer", 0)))
+    return result
+
+
+@router.post("/quota/resources", status_code=201)
+def create_quota_resource(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    resource_id = str(payload.get("resource_id") or "").strip()
+    scope = str(payload.get("scope") or "").strip()
+    metric = str(payload.get("metric") or "").strip()
+    if not resource_id or not scope or not metric:
+        raise HTTPException(status_code=400, detail="resource_id, scope and metric are required")
+    if resource_id in _quota_resources:
+        raise HTTPException(status_code=409, detail="quota resource already exists")
+    try:
+        limit = int(payload.get("limit"))
+        window_seconds = int(payload.get("window_seconds"))
+        used = int(payload.get("used", 0))
+        safety_buffer = int(payload.get("safety_buffer", 0))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="limit/window_seconds/used/safety_buffer must be integers") from exc
+    if limit < 0 or window_seconds <= 0 or used < 0 or used > limit or safety_buffer < 0 or safety_buffer > limit:
+        raise HTTPException(status_code=400, detail="invalid quota resource bounds")
+    record = {
+        "resource_id": resource_id, "scope": scope, "metric": metric, "limit": limit,
+        "used": used, "window_seconds": window_seconds, "safety_buffer": safety_buffer,
+        "hard_limit": bool(payload.get("hard_limit", True)),
+        "shared_group_id": payload.get("shared_group_id"),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    _quota_resources[resource_id] = record
+    _audit_events.append({"action":"quota.resource.created","resource_id":resource_id,"metric":metric,"created_at":record["created_at"]})
+    return _serialize_quota_resource(record)
+
+
+@router.get("/quota/resources")
+def list_quota_resources(scope: str | None = Query(default=None), metric: str | None = Query(default=None)) -> dict[str, Any]:
+    items = list(_quota_resources.values())
+    if scope:
+        items = [r for r in items if r["scope"] == scope]
+    if metric:
+        items = [r for r in items if r["metric"] == metric]
+    data = [_serialize_quota_resource(r) for r in items]
+    return {"items": data, "total": len(data)}
+
+
+@router.get("/quota/resources/{resource_id}")
+def get_quota_resource(resource_id: str) -> dict[str, Any]:
+    record = _quota_resources.get(resource_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="quota resource not found")
+    return _serialize_quota_resource(record)
 
 
 @router.get("/routes")

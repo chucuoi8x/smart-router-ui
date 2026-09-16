@@ -2336,11 +2336,11 @@ Follow-up risks / TODOs:
 - Test `tests/unit/test_m6_overview.py` 3 tests: 401 khi thiếu/sai token, 200 với admin token và kiểm tra keys `providers/revisions/usage|stats/status` và không lộ `sk-`/`ghp_`.
 - Kết quả: targeted 3 passed, full `351 passed, 6 skipped`.
 ## RESUME 1.0 — auto-continue pointer (do not delete until 1.0)
-- Last completed: Step 134 (446p) — chaos error-resilience M7
+- Last completed: Step 135 (450p) — quota views AC-05/06
 - Directive: tiếp tục tự động đến bản 1.0 khi user nói "Tiếp tục thực hiện cho đến khi đạt bản 1.0. Nếu hết quota tool-call thì tự động tạo session mới và tiếp tục". Session mới phải: đọc README §32 roadmap + §33 AC-01..16, đọc RESUME này, đọc git log, chạy `pytest -q`, rồi làm slice kế tiếp theo TDD (RED → GREEN → verify full → ghi note → git diff --check + secret scan → commit tiếng Việt → push feature/admin-api-baseline) không hỏi lại.
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
-- Next suggested: Step 135 — 1.0 release notes — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+- Next suggested: Step 136 — health/readiness endpoint AC-15 M7 (uptime + dependency checks)
 
 ## Step 109 — Revision history listing cho Control Plane (M6)
 - Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
@@ -2515,3 +2515,9 @@ Follow-up risks / TODOs:
 - Tạo `tests/chaos/test_error_resilience.py` 6 tests: 5xx -> TRANSIENT_NETWORK retryable, 503 retryable, 429 rate-limit có retry_after, quota_exhausted khác rate_limit và không retryable, invalid_request và context_too_large không retryable.
 - Sửa expected theo contract thực `classify_provider_error`: kind uppercase, field `retry_after` (string).
 - Kết quả: targeted 6 passed, full `446 passed, 6 skipped`.
+
+## Step 135 — Quota resource views AC-05/06 (M7)
+- Vấn đề: M7 thiếu endpoint quota cho Control Plane — README yêu cầu quản lý quota resources qua admin API.
+- Tạo `tests/unit/test_m6_quota_views.py` 4 tests: auth 401 khi thiếu token, create+list quota resources, validation (empty id, negative limit), detail 404 cho unknown.
+- Implement trong `apps/gateway/api/admin.py`: store `_quota_resources`, helper `_serialize_quota_resource` (remaining = limit - used - safety_buffer), endpoints POST /quota/resources (201, 400/409), GET /quota/resources (filter scope/metric), GET /quota/resources/{resource_id} (404), audit `quota.resource.created`, không lộ secret.
+- Kết quả: targeted 4 passed, full `450 passed, 6 skipped`.
