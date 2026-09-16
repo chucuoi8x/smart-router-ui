@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -101,6 +102,57 @@ def create_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     _provider_connections[connection_id] = record
     _ensure_active_revision()
     return dict(record)
+
+
+@router.get("/routes")
+def list_routes() -> dict[str, Any]:
+    """List routes from active immutable configuration revision."""
+    active = _ensure_active_revision()
+    snapshot = active.get("snapshot_data") or {}
+    routes = snapshot.get("routes") if isinstance(snapshot, dict) else {}
+    routes = routes if isinstance(routes, dict) else {}
+    items = [
+        {"route_id": route_id, "config": copy.deepcopy(config)}
+        for route_id, config in routes.items()
+    ]
+    return {"items": items, "total": len(items), "revision_id": active["revision_id"]}
+
+
+@router.put("/routes/{route_id}")
+def update_route(route_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Create and activate a validated revision containing updated route policy."""
+    allowed_strategies = {"priority", "weighted", "smart", "failover"}
+    strategy = payload.get("strategy")
+    if strategy is not None and str(strategy) not in allowed_strategies:
+        raise HTTPException(status_code=400, detail="unsupported route strategy")
+
+    active = _ensure_active_revision()
+    snapshot = copy.deepcopy(active.get("snapshot_data") or {})
+    routes = snapshot.get("routes")
+    if not isinstance(routes, dict) or route_id not in routes:
+        raise HTTPException(status_code=404, detail="route not found")
+
+    updated = copy.deepcopy(payload)
+    routes[route_id] = updated
+    snapshot["routes"] = routes
+    revision_id = _revision_manager.create_draft(snapshot)
+    valid, errors = _revision_manager.validate(revision_id)
+    if not valid:
+        raise HTTPException(status_code=400, detail=errors)
+    _revision_manager.activate(revision_id)
+    _audit_events.append(
+        {
+            "action": "route.updated",
+            "route_id": route_id,
+            "revision_id": revision_id,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    return {
+        "route_id": route_id,
+        "config": updated,
+        "revision_id": revision_id,
+    }
 
 
 @router.get("/revisions/active")
