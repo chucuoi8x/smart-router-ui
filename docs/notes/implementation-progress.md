@@ -2657,11 +2657,10 @@ Follow-up risks / TODOs:
 ## RESUME 1.0 — current
 
 - Branch: `feature/admin-api-baseline`
-- HEAD after Step 158: `21eddab` -> next; full `515 passed, 6 skipped, 1 warning`
-- Full suite: `512 passed, 6 skipped, 1 warning`
+- HEAD after Step 159: next; full `519 passed, 6 skipped, 1 warning`
 - AC-01 through AC-16 covered by implementation/tests/docs.
 - `.claude/` remains untracked and must not be committed.
-- Post-1.0 backlog: Redis distributed quota runtime, durable usage ledger wiring, worker collector integration, Docker runtime verification, load benchmarking.
+- Post-1.0 backlog: Redis distributed quota runtime, durable usage ledger wiring, Docker runtime verification, load benchmarking.
 
 ## Step 156 — Quota backend readiness + engine lifecycle fix
 
@@ -2684,3 +2683,9 @@ Follow-up risks / TODOs:
 - Van de: `USAGE_LEDGER_DB_ENABLED` chua document trong `.env.example`; thu nghiem DB opt-in chua co regression coverage.
 - Them `.env.example` entry `USAGE_LEDGER_DB_ENABLED=false` kem ghi chu opt-in (can DATABASE_URL + migrations); sua `tests/unit/test_usage_ledger_optin.py` 3 tests: `.env.example` chua co, disabled -> dependency yield None, va construction lazy khi DB unreachable (khong I/O/timeout).
 - Ket qua: targeted `3 passed`, full `515 passed, 6 skipped, 1 warning`.
+## Step 159 — Worker collector resilience
+
+- Vấn đề: `apps/worker/main.py:_sync_catalogs_once` có `except Exception` trước `except ImportError` nên nhánh ImportError unreachable; thiếu xử lý khi `sync_catalog` missing; worker có thể crash nếu collector lỗi.
+- Sửa `apps/worker/main.py`: import `aibox_catalog` as module, dùng `getattr(_catalog, "sync_catalog", None)` để trả 0 khi thiếu, tách `except ImportError` trước `except Exception`, comment tiếng Việt.
+- Test `tests/unit/test_worker_resilience.py` 4 tests: collector import fails -> 0, sync_catalog missing -> 0, sync_catalog raises -> 0, success count -> 12; dùng sys.modules injection thay vì giả định attr tồn tại.
+- Kết quả: targeted `4 passed`, full `519 passed, 6 skipped, 1 warning` (Starlette deprecation duy nhất).

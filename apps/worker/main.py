@@ -24,16 +24,21 @@ def _handle_stop(signum: int, _frame: Any) -> None:
 
 
 def _sync_catalogs_once() -> int:
-    """Trigger catalog sync for all configured collectors. Returns record count."""
+    """Trigger catalog sync cho collectors đã cấu hình. Trả về số record."""
     try:
-        from apps.worker.collectors.aibox_catalog import sync_catalog  # type: ignore[attr-defined]
+        from apps.worker.collectors import aibox_catalog as _catalog
 
-        return int(sync_catalog() or 0)
+        sync = getattr(_catalog, "sync_catalog", None)
+        if sync is None:
+            logger.debug("aibox_catalog.sync_catalog chưa có — bỏ qua")
+            return 0
+        return int(sync() or 0)
+    except ImportError as exc:
+        logger.debug("aibox_catalog không import được — bỏ qua: %s", exc)
+        return 0
     except Exception as exc:
-        logger.debug("aibox catalog sync unavailable: %s", exc)
-    except ImportError:
-        logger.debug("aibox_catalog.sync_catalog not importable — skipping")
-    return 0
+        logger.debug("aibox catalog sync không khả dụng: %s", exc)
+        return 0
 
 
 def main() -> int:
