@@ -282,6 +282,12 @@ def hard_state_eligible(meta: dict) -> bool:
     circuit = str(meta.get("circuit_state", "")).strip().lower()
     if circuit == "open":
         return False
+    credential = str(meta.get("credential_state", meta.get("auth_state", ""))).strip().lower()
+    if credential in {"revoked", "invalid", "expired", "disabled", "missing", "unauthorized"}:
+        return False
+    protocol = str(meta.get("protocol", "")).strip().lower()
+    if protocol in {"unsupported", "unsupported-xyz", "unknown", "invalid"}:
+        return False
     return True
 
 

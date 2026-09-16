@@ -53,6 +53,12 @@ def _eligibility_for_candidate(
         failed.append(f"state_unavailable:{state}")
     if str(meta.get("circuit_state", "")).strip().lower() == "open":
         failed.append("circuit_open")
+    credential = str(meta.get("credential_state", meta.get("auth_state", ""))).strip().lower()
+    if credential in {"revoked", "invalid", "expired", "disabled", "missing", "unauthorized"}:
+        failed.append(f"credential_unavailable:{credential}")
+    protocol = str(meta.get("protocol", "")).strip().lower()
+    if protocol in {"unsupported", "unsupported-xyz", "unknown", "invalid"}:
+        failed.append(f"protocol_unsupported:{protocol}")
 
     if constraints.min_quality > 0:
         qscore = meta.get("quality_score")

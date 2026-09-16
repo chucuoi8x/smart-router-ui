@@ -2206,3 +2206,24 @@ Outcome:
 Follow-up risks / TODOs:
 - Chưa nối live credential revocation và budget exhaustion như §18.2 — vẫn snapshot metadata.
 - Cần e2e qua gateway khi live auth/budget counters sẵn sàng.
+
+## Step 99 — M5 hard filter: credential/protocol luôn bật (2026-09-16)
+
+Implemented:
+- `apps/gateway/routing/presets.py`: mở rộng `hard_state_eligible(meta)` — thêm kiểm tra `credential_state`/`auth_state ∈ {revoked, invalid, expired, disabled, missing, unauthorized}` và `protocol ∈ {unsupported, unsupported-xyz, unknown, invalid}`. Thiếu metadata thì fail-open, đồng bộ §18.2.
+- `apps/gateway/routing/simulation.py`: `_eligibility_for_candidate()` trả diagnostics `credential_unavailable:<state>` và `protocol_unsupported:<protocol>`; giữ dry-run provider-agnostic.
+- `apps/gateway/config/compiler.py` + `router.py`: `_candidate_metadata()` giữ `credential_state`, `auth_state`, `protocol`, `protocols`.
+- `tests/unit/test_m5_hard_credential_protocol.py`: 4 tests — revoked/invalid credential reject, unsupported protocol reject, RouterEngine và legacy SmartRouter chặn revoked credential khi scheduler tắt.
+
+Verification:
+- RED: 2/4 tests fail trước khi mở rộng helper (credential và protocol candidates vẫn eligible).
+- GREEN: `pytest test_m5_hard_credential_protocol + test_m5_hard_state_always_on -q` → `6 passed`; full suite `pytest -q --tb=short` → `331 passed, 6 skipped, 1 warning`.
+- `git diff --check` sạch (chỉ CRLF). Secret scan `presets.py`/`simulation.py`/`router.py` 0 match.
+
+Outcome:
+- Credential state và protocol giờ là hard safety gate độc lập với preset — chạy kể cả khi admin tắt scheduler, đúng README §18.2 resource availability.
+- Không hardcode provider-name; chỉ đọc metadata.
+
+Follow-up risks / TODOs:
+- Chưa nối live quota/budget reservation và auth revocation từ upstream telemetry — vẫn snapshot-based.
+- Cần e2e qua gateway khi live counters sẵn sàng.

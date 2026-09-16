@@ -129,6 +129,7 @@ class LegacyConfigCompiler:
             "capabilities", "max_context_tokens", "context_window",
             "concurrency_used", "concurrency_limit", "concurrent_requests", "max_concurrency", "inflight",
             "enabled", "deprecated", "model_state", "state", "circuit_state",
+            "credential_state", "auth_state", "protocol", "protocols",
             "max_output_tokens", "max_output",
         ):
             if key in item:
