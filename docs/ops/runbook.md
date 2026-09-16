@@ -63,7 +63,7 @@ Mỗi request có `x-request-id`, mỗi attempt có `attempt_id`. Usage ghi `sou
 - AC-15 compose đầy đủ: `docker-compose.yml` + volumes + backup/restore (`docs/ops/backup-restore.md`).
 - AC-16 legacy migration: `POST /migration/yaml`.
 
-Chạy `pytest -q` phải xanh trước khi release (hiện 401 passed).
+Chạy `pytest -q` phải xanh trước khi release (hiện 519 passed, 6 skipped).
 
 ## 8. Troubleshoot
 

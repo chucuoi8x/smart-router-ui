@@ -2657,10 +2657,10 @@ Follow-up risks / TODOs:
 ## RESUME 1.0 — current
 
 - Branch: `feature/admin-api-baseline`
-- HEAD after Step 159: next; full `519 passed, 6 skipped, 1 warning`
+- HEAD after Step 160 (ready audit); full `524 passed, 6 skipped, 1 warning`
 - AC-01 through AC-16 covered by implementation/tests/docs.
 - `.claude/` remains untracked and must not be committed.
-- Post-1.0 backlog: Redis distributed quota runtime, durable usage ledger wiring, Docker runtime verification, load benchmarking.
+- Post-1.0 backlog: Docker compose smoke tren host co Docker (gateway/worker/web/postgres/redis + alembic upgrade), load benchmark, UI dist build pipeline.
 
 ## Step 156 — Quota backend readiness + engine lifecycle fix
 
@@ -2689,3 +2689,15 @@ Follow-up risks / TODOs:
 - Sửa `apps/worker/main.py`: import `aibox_catalog` as module, dùng `getattr(_catalog, "sync_catalog", None)` để trả 0 khi thiếu, tách `except ImportError` trước `except Exception`, comment tiếng Việt.
 - Test `tests/unit/test_worker_resilience.py` 4 tests: collector import fails -> 0, sync_catalog missing -> 0, sync_catalog raises -> 0, success count -> 12; dùng sys.modules injection thay vì giả định attr tồn tại.
 - Kết quả: targeted `4 passed`, full `519 passed, 6 skipped, 1 warning` (Starlette deprecation duy nhất).
+
+## Step 160 — Production readiness audit (packaging + config + docs)
+
+- Ban: user yeu cau tiep den khi ready; tien hanh audit bao tri (compose, Dockerfile, .env.example, runbook, gitignore, secret scan).
+- Gap phat hien va sua:
+  1. `.env.example` thieu `PROXYPAL_API_KEY`, `XKIRO_API_KEY`, `AIBOX_API_KEY`, `WORKER_POLL_SECONDS` -> them placeholder + chu thich.
+  2. `docker-compose.yml` worker thieu `SMART_ROUTER_CONFIG`, thieu `config.yaml:ro` mount -> them de collector doc config du thieu sync_catalog.
+  3. `Dockerfile.worker` thieu thu muc `/app/state` -> `RUN mkdir -p /app/state` de worker write catalog khong fail.
+  4. `docs/ops/runbook.md` con `401 passed` -> dong bo `519 passed, 6 skipped`.
+- Test moi `tests/unit/test_production_readiness.py` 5 tests: env.example du key, worker compose env/volume, Dockerfile worker state, runbook khong stale, gitignore co `__pycache__`/`state/`/`.env`.
+- Ket qua: targeted `5 passed`, full `524 passed, 6 skipped, 1 warning`; YAML/config parse OK; secret scan tren tracked files: 0 match.
+- Docker runtime van chua chay duoc tren may nay (khong co Docker); ready = package + config + docs + test verification. Nguoi dung can Docker Desktop tren Windows de compose smoke.

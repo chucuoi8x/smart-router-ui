@@ -12,6 +12,7 @@ COPY apps ./apps
 COPY config.yaml ./
 COPY alembic.ini ./
 COPY migrations ./migrations
+RUN mkdir -p /app/state
 
 # Worker entrypoint: catalog sync + usage aggregation loop
 CMD ["python", "-m", "apps.worker.main"]

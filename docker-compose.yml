@@ -75,9 +75,11 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     environment:
+      SMART_ROUTER_CONFIG: /app/config.yaml
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:smart_router_secret@postgres:5432/smart_router}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SMART_ROUTER_LOG_LEVEL: ${SMART_ROUTER_LOG_LEVEL:-INFO}
+      WORKER_POLL_SECONDS: ${WORKER_POLL_SECONDS:-60}
     depends_on:
       postgres:
         condition: service_healthy
@@ -85,6 +87,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     volumes:
+      - ./config.yaml:/app/config.yaml:ro
       - ./state:/app/state
 
   # ── Web (static UI served via nginx) ─────────────────────────────────
