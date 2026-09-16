@@ -2341,3 +2341,10 @@ Follow-up risks / TODOs:
 - Còn lại đến 1.0: M6 (route/policy editor, alerts, project/API-key management, security settings, audit history, revision rollback, Overview đã xong) + M7 (load/chaos/security/backup-restore/ops-docs/SLO) + AC-03 multi-credential, AC-14 encrypt-at-rest, AC-15 full compose (worker/web/pg/redis), AC-16 legacy migration, AC-02 provider-agnostic guard.
 - Rule: mỗi slice 1 commit, comment tiếng Việt dễ hiểu, không commit .claude/, không lộ secret.
 - Next suggested: Step 109 — Audit history + revision listing/rollback cho Control Plane (AC-13/M6) hoặc Project API-key management tuỳ gap lớn nhất lúc resume.
+
+## Step 109 — Revision history listing cho Control Plane (M6)
+- Vấn đề: `GET /api/admin/v1/revisions` chưa tồn tại — UI không thể liệt kê danh sách revision để rollback.
+- Sửa `revision.py`: thêm `list_revisions()` trả toàn bộ revision sorted newest-first.
+- Sửa `admin.py`: thêm `GET /revisions` serialize và trả về `{items:[], total:N}` dùng `_serialize_revision` như các endpoint khác.
+- Test `tests/unit/test_m6_revisions.py` 3 tests: 401 khi thiếu auth, list có draft mới tạo, activate bogus → 404.
+- Kết quả: targeted 3 passed, full `354 passed, 6 skipped`.

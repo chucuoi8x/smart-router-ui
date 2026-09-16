@@ -32,6 +32,10 @@ class ConfigRevisionManager:
         self._revisions[revision_id]['active'] = True
         self._active_revision_id = revision_id
 
+    def list_revisions(self) -> list[Dict[str, Any]]:
+        # newest first
+        return sorted(self._revisions.values(), key=lambda r: r.get("created_at") or "", reverse=True)
+
     def get_active_revision(self) -> Optional[Dict[str, Any]]:
         if self._active_revision_id:
             return self._revisions[self._active_revision_id]

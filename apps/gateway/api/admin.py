@@ -107,6 +107,12 @@ def get_active_revision() -> dict[str, Any]:
     return _serialize_revision(_ensure_active_revision())
 
 
+@router.get("/revisions")
+def list_revisions() -> dict[str, Any]:
+    items = [_serialize_revision(r) for r in _revision_manager.list_revisions()]
+    return {"items": items, "total": len(items)}
+
+
 @router.post("/revisions", status_code=201)
 def create_revision(payload: dict[str, Any] = Body(...)) -> dict[str, str]:
     revision_id = _revision_manager.create_draft(payload)
