@@ -2808,3 +2808,9 @@ Follow-up risks / TODOs:
 - Guardrail README §31.2: "estimated usage is never marked as exact provider truth".
 - Kết quả: targeted `1 passed`; full `560 passed, 6 skipped, 1 warning`.
 - Push: commit `4c5259d` trên `feature/admin-api-baseline`.
+## Step 178 — Provider-agnostic routing guard
+
+- Thêm `tests/unit/test_provider_agnostic.py`.
+- Kiểm chứng `ResourceCandidate` dùng connection/model động, `LegacyConfigCompiler` không áp provider name cụ thể cho upstream tùy ý, `RouterEngine` resolve route động.
+- Kết quả: targeted `3 passed`; full `563 passed, 6 skipped, 1 warning`.
+- Push: commit `fbfadb5` trên `feature/admin-api-baseline`.
