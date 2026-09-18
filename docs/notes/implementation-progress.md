@@ -2764,3 +2764,11 @@ Follow-up risks / TODOs:
 - Test `test_encoder_preserves_upstream_id_and_model_across_chunks` chứng minh: message_start -> delta -> message_delta đều cùng `id`/`model`, finish_reason đúng.
 - Kết quả: targeted 1 passed, full `552 passed, 6 skipped, 1 warning`.
 - Push: commit `ec73bbe` trên `feature/admin-api-baseline`.
+## Step 172 — HTTP streaming stateful encoder fix
+
+- Bug: `openai_stream()` trong router.py tạo mới `router_stream_to_openai([event], ...)` cho mỗi SSE event → mất state của encoder (ID/model reset về default mỗi lần).
+- Sửa: dùng `OpenAIStreamEncoder(requested_model)` xuyên suốt toàn bộ generator, gọi `.feed(event)` và `.finish()` thay vì gọi lại factory function mỗi chunk.
+- Test `test_chat_completions_streaming_translates_sse_through_http_layer` xác nhận: mọi chunks qua HTTP layer đều có cùng `id` (msg_1) và `model` (route).
+- Fix bổ sung từ Step 168: escape `\\n` -> `\n` đã đúng sau fix bằng script Python trực tiếp.
+- Kết quả: targeted 1 passed (HTTP integration), full `552 passed, 6 skipped, 1 warning`.
+- Push: commit `38cbfb0` trên `feature/admin-api-baseline`.
