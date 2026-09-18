@@ -92,7 +92,7 @@ def test_router_engine_uses_session_affinity():
         "weights": {"session_affinity_factor": 1.0},
     })
     engine = RouterEngine(snapshot, scoring_config=scoring)
-    engine._score_calculator.remember_affinity("session-1", "b:m2")
+    engine._score_calculator.remember_affinity("session-1", "b:b:m2")
 
     ordered = engine.select_candidates("chat", conversation_thread="session-1")
 

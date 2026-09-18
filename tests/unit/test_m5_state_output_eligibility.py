@@ -62,4 +62,4 @@ def test_simulation_reports_output_and_state_failures():
     assert any("deprecat" in f or "unavailable" in f for f in rows["m-dep"]["failed_constraints"])
     assert rows["m-small"]["eligibility"] is False
     assert any("output" in f for f in rows["m-small"]["failed_constraints"])
-    assert res.selected_resource == "conn:m-ok"
+    assert res.selected_resource == "conn:conn:m-ok"

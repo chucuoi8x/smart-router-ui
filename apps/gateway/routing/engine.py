@@ -14,7 +14,7 @@ class InMemoryCircuitRepository:
         self._states = {}
 
     def _key(self, ref: ResourceRef) -> str:
-        return f"{ref.provider_connection_id}:{ref.model_id}"
+        return ref.key
 
     def is_available(self, ref: ResourceRef) -> bool:
         key = self._key(ref)
@@ -309,7 +309,7 @@ class RouterEngine:
         if self._score_calculator is None or not candidates or not self._should_apply_smart_scoring(route_name):
             return candidates
         try:
-            keys = [c.resource_ref.provider_connection_id + ":" + c.resource_ref.model_id for c in candidates]
+            keys = [c.resource_ref.key for c in candidates]
             # Build minimal metrics dict from catalog/quota data
             from apps.gateway.routing.scoring import CandidateMetrics
             metrics: dict[str, CandidateMetrics] = {}

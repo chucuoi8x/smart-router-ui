@@ -45,10 +45,10 @@ def test_simulation_exposes_expected_reservation_per_candidate_and_top_level():
     assert "account:primary" in result.expected_reservation["resource_ids"]
 
     # 2. Per-candidate expected_reservation
-    c1 = next(r for r in result.candidates if r["candidate_key"] == "primary:primary-model")
+    c1 = next(r for r in result.candidates if r["candidate_key"] == "primary:primary:primary-model")
     assert "expected_reservation" in c1
     assert c1["expected_reservation"]["resource_ids"] == ["account:primary", "model:primary-model"]
     assert c1["expected_reservation"]["estimated_tokens_per_request"] == 45000
 
-    c2 = next(r for r in result.candidates if r["candidate_key"] == "backup:backup-model")
+    c2 = next(r for r in result.candidates if r["candidate_key"] == "backup:backup:backup-model")
     assert "model:backup-model" in c2["expected_reservation"]["resource_ids"]

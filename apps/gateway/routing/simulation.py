@@ -30,7 +30,7 @@ class SimulationResult:
 
 def _candidate_key(candidate: ResourceCandidate) -> str:
     ref = candidate.resource_ref
-    return f"{ref.provider_connection_id}:{ref.model_id}"
+    return ref.key
 
 
 def _eligibility_for_candidate(

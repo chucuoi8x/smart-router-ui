@@ -36,8 +36,8 @@ def test_simulation_rejects_low_quality_candidate():
     )
     assert result.route_name == "coding"
     considered = {row["candidate_key"] for row in result.candidates}
-    assert "free-conn:good" in considered
-    low = next(row for row in result.candidates if row["candidate_key"] == "slow-conn:cheap")
+    assert "free-conn:free-conn:good" in considered
+    low = next(row for row in result.candidates if row["candidate_key"] == "slow-conn:slow-conn:cheap")
     assert low["eligibility"] is False
     assert any("quality" in str(reason).lower() for reason in low["failed_constraints"])  # type: ignore[arg-type]
 
@@ -79,7 +79,7 @@ def test_simulation_respects_policy_change():
         estimated_input_tokens=1000,
     )
     # Review có min_quality cao hơn nên candidate low_quality vẫn bị loại
-    low_af = next(r for r in auto_free.candidates if r["candidate_key"] == "slow-conn:cheap")
-    low_rv = next(r for r in review.candidates if r["candidate_key"] == "slow-conn:cheap")
+    low_af = next(r for r in auto_free.candidates if r["candidate_key"] == "slow-conn:slow-conn:cheap")
+    low_rv = next(r for r in review.candidates if r["candidate_key"] == "slow-conn:slow-conn:cheap")
     assert low_af["eligibility"] is False
     assert low_rv["eligibility"] is False
