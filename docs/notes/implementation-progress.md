@@ -2818,3 +2818,7 @@ Follow-up risks / TODOs:
 ## Step 179 — Usage ledger fail-safe invariant
 
 Added regression coverage proving exceptions from usage-ledger writes do not propagate into routing/data-plane callers. Test injects a failing ledger, confirms write methods are attempted, and verifies exceptions are swallowed by `SmartRouter` ledger integration. Focused test and full suite pass.
+
+## Step 180 — OpenAI `/v1/responses` compatibility
+
+Added `/v1/responses` compatibility boundary. Converts Responses `input` string/message items into router-native `messages`, delegates through existing routing service, and converts native response envelope into OpenAI Responses shape with `id`, `object`, `model`, `output`, and token usage. Added HTTP integration coverage for translation, output envelope, list input, and invalid JSON. Full suite passed.
