@@ -63,3 +63,11 @@ async def test_chat_completions_streaming_translates_sse_through_http_layer():
     assert '"content":"hi"' in response.text
     assert '"finish_reason":"stop"' in response.text
     assert response.text.count("data: [DONE]") == 1
+
+    chunks = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and line[6:] != "[DONE]"
+    ]
+    assert {chunk["id"] for chunk in chunks} == {"msg_1"}
+    assert {chunk["model"] for chunk in chunks} == {"route"}

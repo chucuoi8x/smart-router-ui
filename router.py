@@ -2896,6 +2896,8 @@ async def chat_completions(
         requested_model = str(openai_body.get("model") or "")
         if bool(openai_body.get("stream", False)):
             async def openai_stream() -> AsyncIterator[str]:
+                from apps.gateway.openai_compat import OpenAIStreamEncoder as _Enc
+                encoder = _Enc(requested_model)
                 buffer = ""
                 async for raw_chunk in response.body_iterator:
                     buffer += raw_chunk.decode("utf-8", "replace") if isinstance(raw_chunk, bytes) else str(raw_chunk)
@@ -2911,20 +2913,23 @@ async def chat_completions(
                             event = json.loads(data)
                         except (TypeError, ValueError, json.JSONDecodeError):
                             continue
-                        for converted in router_stream_to_openai([event], requested_model):
+                        for converted in encoder.feed(event):
                             if converted != "data: [DONE]\n\n":
                                 yield converted
+                # drain any remaining partial buffer into encoder
                 if buffer.strip():
                     data_lines = [line[5:].strip() for line in buffer.splitlines() if line.startswith("data:")]
                     try:
-                        event = json.loads("\n".join(data_lines))
+                        remaining_data = "\n".join(data_lines)
+                        remaining_event = json.loads(remaining_data)
                     except (TypeError, ValueError, json.JSONDecodeError):
-                        event = None
-                    if event:
-                        for converted in router_stream_to_openai([event], requested_model):
+                        remaining_event = None
+                    if remaining_event:
+                        for converted in encoder.feed(remaining_event):
                             if converted != "data: [DONE]\n\n":
                                 yield converted
-                yield "data: [DONE]\n\n"
+                for _chunk in encoder.finish():
+                    yield _chunk
 
             return StreamingResponse(
                 openai_stream(),
