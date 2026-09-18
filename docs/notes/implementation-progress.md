@@ -2784,3 +2784,10 @@ Follow-up risks / TODOs:
 - Kiểm tra đầy đủ upstream connections, route chính, auth metadata và tính tương đương giữa `compile_file()` với `compile_dict()`.
 - Kết quả: targeted `2 passed`; full `555 passed, 6 skipped, 1 warning`.
 - Push: commit `10722d1` trên `feature/admin-api-baseline`.
+## Step 175 — Legacy config compiler edge cases
+
+- Test compile_dict với empty dict → snapshot rỗng (không raise).
+- Test config chỉ có server section nhưng không có upstreams/routes → hợp lệ, trả snapshot rỗng.
+- Test weight và strategy được giữ nguyên sau khi compile từ dict.
+- Kết quả: targeted `3 passed` mới (+ 2 cũ = 5 total); full `558 passed, 6 skipped, 1 warning`.
+- Push: commit `695a9b0` trên `feature/admin-api-baseline`.
