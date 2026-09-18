@@ -2654,19 +2654,27 @@ Follow-up risks / TODOs:
 - Release docs synced: `CHANGELOG.md`, `docs/release-notes/1.0.md`, `docs/SLO.md`, `docs/security.md`, `docs/ops/runbook.md`.
 - Remote branch includes commit `f093ec0`; ready for annotated tag `v1.0.0`.
 
-## Step 164 — Fix Control Plane UI missing "Bearer token" text and add "Overview" nav
+## Step 166 — OpenAI `/v1/chat/completions` streaming support
 
-- Vấn đề: `test_control_plane_ui.py::test_control_plane_ui_has_operational_navigation_and_auth_input` fail vì HTML thiếu literal "Bearer token" (chỉ có placeholder) và thiếu mục "Overview" trong sidebar navigation.
-- Sửa `web/dist/index.html`: thêm `<label for="tkin">Bearer token</label>` trước input auth field, thêm link `"📊 Overview"` vào sidebar dưới Dashboard, thêm page container `<div id="p-overview" class="pg">` với card tiêu đề System Overview.
-- Không thay đổi logic JavaScript; chỉ bổ sung metadata kiểm tra static scan.
-- Kết quả: focused `2 passed`, full `550 passed, 6 skipped, 1 warning`.
+- Vấn đề: endpoint `/v1/chat/completions` mới chỉ hỗ trợ non-stream; client OpenAI SDK yêu cầu streaming SSE.
+- Sửa `router.py`: bỏ guard `streaming not supported`, thêm logic dịch Anthropic-style SSE sang OpenAI SSE chunk-by-chunk dùng `router_stream_to_openai()` từ `openai_compat.py`, trả `StreamingResponse` với `media_type="text/event-stream"`.
+- Sửa `apps/gateway/openai_compat.py`: refactor `router_stream_to_openai()` thành class `OpenAIStreamEncoder` có state (`started`, `finished`) để tránh emit `[DONE]` nhiều lần khi gọi incremental.
+- Test `tests/unit/test_openai_adapter.py`: thêm `test_incremental_encoder_emits_done_only_on_finish` chứng minh `[DONE]` chỉ xuất hiện ở `finish()`.
+- Kết quả: focused `4 passed` (stream tests), full `550 passed, 6 skipped, 1 warning`.
 
-## Step 165 — Update README header to reflect 1.0 complete status
+## Step 167 — Dọn worktree và push remote
 
-- Vấn đề: header README vẫn ghi Status: "Architecture and implementation baseline" dù 1.0 đã hoàn thành (Step 163).
-- Sửa: đổi thành "1.0 implementation complete; post-1.0 hardening backlog remains", Version → "1.0.0".
-- Không thay đổi contract, scope hay ADR — chỉ đồng bộ metadata header với thực tế.
-- Next steps remaining: Docker runtime verification (compose smoke trên host có Docker), load benchmark, real user acceptance testing.
+- Commit `5d4f72e`: streaming OpenAI completions (Step 166).
+- Commit `060108a`: catalog sync + test artifacts (Step 167) — bao gồm `aibox_catalog.py`, `config.yaml`, `nginx/default.conf`, script test live, `catalog.json`.
+- Secret scan: 0 match thực (chỉ placeholder/test-admin-key).
+- Push thành công: `origin/feature/admin-api-baseline` advanced từ `31524af` → `060108a`.
+- Còn lại `.claude/settings.local.json` (local permissions, không commit theo quy ước).
+
+## Step 168 — Cập nhật progress note
+
+- Thêm Step 166-167 vào `docs/notes/implementation-progress.md`.
+- Đồng bộ test count: `550 passed, 6 skipped, 1 warning`.
+- Next post-1.0 backlog: Docker compose smoke trên host có Docker, load benchmark, real user acceptance testing.
 
 ## Step 156 — Quota backend readiness + engine lifecycle fix
 
