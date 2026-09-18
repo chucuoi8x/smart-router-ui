@@ -2755,3 +2755,12 @@ Follow-up risks / TODOs:
 - Secret scan tracked files: không phát hiện credential pattern.
 - README §38 request ID đã tồn tại; `SmartRouter` hiện đóng vai trò routing engine testable, nên không tạo lớp facade rỗng trùng logic.
 - Next: Docker runtime smoke khi có Docker Desktop; nếu chưa có Docker, tiếp tục contract hardening không phụ thuộc runtime.
+## Step 171 — Encoder ID/model preservation fix
+
+- Bug phát hiện trong streaming: `OpenAIStreamEncoder` hard-coded `chatcmpl-smart-router` làm ID và `requested_model` làm model cho mọi delta/final chunks thay vì giữ nguyên từ upstream `message_start`.
+- Sửa `__init__`: thêm `self.response_id = "chatcmpl-smart-router"` và `self.response_model = requested_model`.
+- Sửa `message_start`: lưu `response_id`/`response_model` từ event lênstream.
+- Sửa `content_block_delta` và `message_delta` chunk: dùng `self.response_id` và `self.response_model` thay vì hardcoded.
+- Test `test_encoder_preserves_upstream_id_and_model_across_chunks` chứng minh: message_start -> delta -> message_delta đều cùng `id`/`model`, finish_reason đúng.
+- Kết quả: targeted 1 passed, full `552 passed, 6 skipped, 1 warning`.
+- Push: commit `ec73bbe` trên `feature/admin-api-baseline`.
