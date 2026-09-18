@@ -64,6 +64,8 @@ class OpenAIStreamEncoder:
 
     def __init__(self, requested_model: str) -> None:
         self.requested_model = requested_model
+        self.response_id = "chatcmpl-smart-router"
+        self.response_model = requested_model
         self.started = False
         self.finished = False
 
@@ -74,18 +76,20 @@ class OpenAIStreamEncoder:
         if kind == "message_start" and not self.started:
             msg = event.get("message") if isinstance(event.get("message"), dict) else {}
             self.started = True
-            chunk = {"id": msg.get("id", "chatcmpl-smart-router"), "object": "chat.completion.chunk", "created": 0, "model": msg.get("model", self.requested_model), "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]}
+            self.response_id = str(msg.get("id") or self.response_id)
+            self.response_model = str(msg.get("model") or self.response_model)
+            chunk = {"id": self.response_id, "object": "chat.completion.chunk", "created": 0, "model": self.response_model, "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]}
             return ["data: " + json.dumps(chunk, separators=(",", ":")) + "\n\n"]
         if kind == "content_block_delta":
             delta = event.get("delta") if isinstance(event.get("delta"), dict) else {}
             text = delta.get("text", "")
             if text:
-                chunk = {"id": "chatcmpl-smart-router", "object": "chat.completion.chunk", "created": 0, "model": self.requested_model, "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]}
+                chunk = {"id": self.response_id, "object": "chat.completion.chunk", "created": 0, "model": self.response_model, "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]}
                 return ["data: " + json.dumps(chunk, separators=(",", ":")) + "\n\n"]
         if kind == "message_delta":
             reason = (event.get("delta") or {}).get("stop_reason")
             if reason:
-                chunk = {"id": "chatcmpl-smart-router", "object": "chat.completion.chunk", "created": 0, "model": self.requested_model, "choices": [{"index": 0, "delta": {}, "finish_reason": "length" if reason in ("max_tokens", "length") else "stop"}]}
+                chunk = {"id": self.response_id, "object": "chat.completion.chunk", "created": 0, "model": self.response_model, "choices": [{"index": 0, "delta": {}, "finish_reason": "length" if reason in ("max_tokens", "length") else "stop"}]}
                 return ["data: " + json.dumps(chunk, separators=(",", ":")) + "\n\n"]
         return []
 

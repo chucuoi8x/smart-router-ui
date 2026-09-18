@@ -197,3 +197,22 @@ class TestStreamTransformer:
         assert any('"content":"Hi"' in line for line in delta)
         assert not any("[DONE]" in line for line in first + delta)
         assert encoder.finish()[-1] == "data: [DONE]\n\n"
+
+    def test_encoder_preserves_upstream_id_and_model_across_chunks(self):
+        """OpenAI SDK groups chunks by `id`; all chunks of one response must share it."""
+        from apps.gateway.openai_compat import OpenAIStreamEncoder
+
+        encoder = OpenAIStreamEncoder("requested-route")
+        encoder.feed({
+            "type": "message_start",
+            "message": {"id": "msg_upstream_42", "model": "actual-model", "role": "assistant"},
+        })
+        lines = encoder.feed({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hi"}})
+        assert len(lines) == 1
+        chunk = json.loads(lines[0][len("data: "):].strip())
+        assert chunk["id"] == "msg_upstream_42"
+        assert chunk["model"] == "actual-model"
+        final = encoder.feed({"type": "message_delta", "delta": {"stop_reason": "max_tokens"}})
+        final_chunk = json.loads(final[0][len("data: "):].strip())
+        assert final_chunk["id"] == "msg_upstream_42"
+        assert final_chunk["choices"][0]["finish_reason"] == "length"
