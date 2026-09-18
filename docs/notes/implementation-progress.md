@@ -2802,3 +2802,9 @@ Follow-up risks / TODOs:
 - Tăng assertion test `test_http_chat_completions_stream_produces_full_response`: kiểm chứng mọi chunk giữ cùng upstream `id`, `model` ổn định, content delta đúng thứ tự ["Hello ", "world!"], finish_reason == "stop", đúng 1 `[DONE]`.
 - Kết quả: targeted `1 passed` (cùng file, tăng coverage); full `559 passed, 6 skipped, 1 warning`.
 - Push: commit `23dd84e` trên `feature/admin-api-baseline`.
+## Step 177 — AC invariant: estimated usage not exact
+
+- Test `test_estimated_usage_never_becomes_exact_provider_truth` chứng minh `UsageEvent.from_parsed_usage()` giữ `confidence="estimated"` → `event.estimated=True`.
+- Guardrail README §31.2: "estimated usage is never marked as exact provider truth".
+- Kết quả: targeted `1 passed`; full `560 passed, 6 skipped, 1 warning`.
+- Push: commit `4c5259d` trên `feature/admin-api-baseline`.
