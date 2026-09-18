@@ -57,6 +57,16 @@ async def test_http_chat_completions_stream_produces_full_response():
         if line.startswith("data: ") and line[6:] != "[DONE]":
             data_lines.append(line[6:])
 
-    # Should have content deltas (the raw engine events are fed to encoder)
-    # The stateful encoder should produce at least one OpenAI-style chunk
-    assert len(data_lines) >= 1
+    # Each native Messages event must translate to OpenAI chunks with stable identity.
+    import json
+
+    chunks = [json.loads(line) for line in data_lines]
+    assert {chunk["id"] for chunk in chunks} == {"msg_e2e"}
+    assert {chunk["model"] for chunk in chunks} == {"route"}
+    assert [
+        chunk["choices"][0]["delta"].get("content")
+        for chunk in chunks
+        if chunk["choices"][0]["delta"].get("content")
+    ] == ["Hello ", "world!"]
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+    assert resp.text.count("data: [DONE]") == 1
