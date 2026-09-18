@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 
@@ -65,6 +66,55 @@ class UsageLedgerTests(unittest.TestCase):
         self.assertEqual(event.source, "local_estimate")
         self.assertEqual(event.confidence, "estimated")
         self.assertTrue(event.estimated)
+
+    def test_manager_api_failure_does_not_break_data_plane(self):
+        """When ledger.record_request fails with exception, routing must still return."""
+        import asyncio
+
+        from apps.gateway.usage.ledger import InMemoryUsageLedger
+        from router import SmartRouter
+
+        class BrokenLedger(InMemoryUsageLedger):
+            def __init__(self):
+                super().__init__()
+                self.call_count = 0
+            def record_request(self, *args, **kwargs):
+                self.call_count += 1
+                raise RuntimeError("DB connection failed")
+            def record_attempt(self, *args, **kwargs):
+                self.call_count += 1
+                raise RuntimeError("DB connection failed")
+            def record_usage(self, *args, **kwargs):
+                self.call_count += 1
+                raise RuntimeError("DB connection failed")
+
+        broken = BrokenLedger()
+
+        router = SmartRouter({
+            "routes": {"route-ok": {"strategy": "priority", "candidates": [{"upstream": "a", "model": "m"}]}},
+            "logging": {"level": "CRITICAL"},
+        })
+        # Inject the broken ledger as the fallback (used when no per-request contextvar set)
+        router._usage_ledger = broken
+
+        # Directly call the private methods that use ledger — these should swallow exceptions
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(router._record_usage_request(request_id="req-x", route_name="route-ok"))
+            from router import Candidate
+            cand = Candidate("a", "m")
+            loop.run_until_complete(
+                router._record_usage_attempt(
+                    request_id="req-x", attempt_id="att-1", candidate=cand, status="success"
+                )
+            )
+        except Exception as exc:
+            self.fail(f"Ledger failure propagated to caller: {exc}")
+        finally:
+            loop.close()
+
+        # Ledger path must have been exercised
+        self.assertGreater(broken.call_count, 0, "ledger must be attempted before swallowing failure")
 
     def test_request_totals_include_all_attempts(self):
         from apps.gateway.usage.ledger import InMemoryUsageLedger, UsageEvent
