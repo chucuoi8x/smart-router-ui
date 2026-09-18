@@ -45,6 +45,27 @@ class UsageLedgerTests(unittest.TestCase):
         self.assertEqual(event.confidence, "exact")
         self.assertFalse(event.estimated)
 
+    def test_estimated_usage_never_becomes_exact_provider_truth(self):
+        from apps.gateway.usage.ledger import UsageEvent
+
+        event = UsageEvent.from_parsed_usage(
+            request_id="req_estimated",
+            attempt_id="att_estimated",
+            provider_connection_id="conn_1",
+            credential_id=None,
+            model_resource_id="model_1",
+            usage={
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "source": "local_estimate",
+                "confidence": "estimated",
+            },
+        )
+
+        self.assertEqual(event.source, "local_estimate")
+        self.assertEqual(event.confidence, "estimated")
+        self.assertTrue(event.estimated)
+
     def test_request_totals_include_all_attempts(self):
         from apps.gateway.usage.ledger import InMemoryUsageLedger, UsageEvent
 
