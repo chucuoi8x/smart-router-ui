@@ -2778,3 +2778,9 @@ Follow-up risks / TODOs:
 - Xác nhận response native Messages được đổi thành OpenAI `chat.completion`, gồm message role/content, finish reason và usage token totals.
 - Kết quả: targeted `1 passed`; full `553 passed, 6 skipped, 1 warning`.
 - Push: commit `d9ca3b6` trên `feature/admin-api-baseline`.
+## Step 174 — Legacy config migration smoke coverage
+
+- Thêm `tests/unit/test_migration_smoke.py` để kiểm chứng `LegacyConfigCompiler` biên dịch `config.yaml` hiện tại thành `RuntimeConfigSnapshot`.
+- Kiểm tra đầy đủ upstream connections, route chính, auth metadata và tính tương đương giữa `compile_file()` với `compile_dict()`.
+- Kết quả: targeted `2 passed`; full `555 passed, 6 skipped, 1 warning`.
+- Push: commit `10722d1` trên `feature/admin-api-baseline`.
