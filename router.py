@@ -3014,6 +3014,73 @@ async def aibox_catalog(service: SmartRouter = Depends(get_authorized_service)) 
     }
 
 
+# --- OpenAI /v1/responses compatibility ---
+
+
+@app.post("/v1/responses")
+async def responses(
+    request: Request,
+    service: SmartRouter = Depends(get_authorized_service),
+    usage_ledger: Any | None = Depends(get_optional_usage_ledger_repo),
+) -> Response:
+    """OpenAI Responses API compatibility endpoint."""
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="request body must be JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body must be an object")
+    model = str(body.get("model", "default-route"))
+    input_data = body.get("input", [])
+    messages = []
+    for item in input_data if isinstance(input_data, list) else [input_data]:
+        if isinstance(item, str):
+            messages.append({"role": "user", "content": item})
+        elif isinstance(item, dict):
+            role = item.get("role", "user")
+            content = item.get("content", "")
+            messages.append({"role": role, "content": content})
+    router_body = {
+        "model": model,
+        "messages": messages,
+        **{k: v for k, v in body.items() if k not in ("model", "input")},
+    }
+    ledger_token = _REQUEST_USAGE_LEDGER.set(usage_ledger)
+    events_token = _REQUEST_USAGE_EVENTS.set([])
+    try:
+        response = await service.handle_messages(router_body, request.headers, "/v1/responses")
+        if response.status_code >= 400:
+            return response
+        payload = json.loads(response.body) if hasattr(response, "body") and response.body else {}
+        # Translate native Messages envelope → OpenAI Responses envelope
+        output_items = payload.get("content", [{"type": "text", "text": ""}])
+        output_list = []
+        for oi in (output_items if isinstance(output_items, list) else [output_items]):
+            if isinstance(oi, dict):
+                output_list.append({"object": "message", "role": "assistant", "content": [oi]})
+            else:
+                output_list.append({"object": "message", "role": "assistant", "content": [{"type": "text", "text": str(oi)}]})
+        usage = payload.get("usage", {})
+        total = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+        openai_resp = {
+            "id": payload.get("id", "res-smart-router"),
+            "object": "response",
+            "model": model,
+            "created_at": int(time.time()) if "time" in dir() else 0,
+            "output": output_list,
+            "usage": {"input_tokens": usage.get("input_tokens", 0), "output_tokens": usage.get("output_tokens", 0), "total_tokens": total},
+        }
+        openai_resp["created_at"] = int(time.time())
+        return JSONResponse(
+            status_code=response.status_code,
+            content=openai_resp,
+            headers=_response_headers(response.headers) if hasattr(response, "headers") else None,
+        )
+    finally:
+        _REQUEST_USAGE_EVENTS.reset(events_token)
+        _REQUEST_USAGE_LEDGER.reset(ledger_token)
+
+
 @app.get("/router/status")
 async def router_status(service: SmartRouter = Depends(get_authorized_service)) -> dict[str, Any]:
     return service.status_payload()
