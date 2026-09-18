@@ -1,8 +1,8 @@
 # Smart Router
 
-> **Implementation baseline for AI coding agents and human contributors**
-> Version: **1.0**
-> Status: **Architecture and implementation baseline**
+> **Implementation baseline and current 1.0 status**
+> Version: **1.0.0**
+> Status: **1.0 implementation complete; post-1.0 hardening backlog remains**
 > Scope: **Gateway + Provider Registry + Usage Ledger + Universal Quota Engine + Smart Scheduler + Control Plane**
 
 Smart Router is a self-hosted, provider-agnostic AI resource orchestrator. It evolves the current `smart-router-ui` codebase from a hardcoded multi-upstream failover proxy into a system where users can add and manage AI providers, credentials, models, quotas, budgets, and routing policies without changing the routing core.

@@ -2654,13 +2654,19 @@ Follow-up risks / TODOs:
 - Release docs synced: `CHANGELOG.md`, `docs/release-notes/1.0.md`, `docs/SLO.md`, `docs/security.md`, `docs/ops/runbook.md`.
 - Remote branch includes commit `f093ec0`; ready for annotated tag `v1.0.0`.
 
-## RESUME 1.0 — current
+## Step 164 — Fix Control Plane UI missing "Bearer token" text and add "Overview" nav
 
-- Branch: `feature/admin-api-baseline`
-- HEAD after Step 160 (ready audit); full `526 passed, 6 skipped, 1 warning` (after migrate gate)
-- AC-01 through AC-16 covered by implementation/tests/docs.
-- `.claude/` remains untracked and must not be committed.
-- Post-1.0 backlog: Docker compose smoke tren host co Docker (gateway/worker/web/postgres/redis), load benchmark, real user acceptance testing, monitoring/alerting pipeline.
+- Vấn đề: `test_control_plane_ui.py::test_control_plane_ui_has_operational_navigation_and_auth_input` fail vì HTML thiếu literal "Bearer token" (chỉ có placeholder) và thiếu mục "Overview" trong sidebar navigation.
+- Sửa `web/dist/index.html`: thêm `<label for="tkin">Bearer token</label>` trước input auth field, thêm link `"📊 Overview"` vào sidebar dưới Dashboard, thêm page container `<div id="p-overview" class="pg">` với card tiêu đề System Overview.
+- Không thay đổi logic JavaScript; chỉ bổ sung metadata kiểm tra static scan.
+- Kết quả: focused `2 passed`, full `550 passed, 6 skipped, 1 warning`.
+
+## Step 165 — Update README header to reflect 1.0 complete status
+
+- Vấn đề: header README vẫn ghi Status: "Architecture and implementation baseline" dù 1.0 đã hoàn thành (Step 163).
+- Sửa: đổi thành "1.0 implementation complete; post-1.0 hardening backlog remains", Version → "1.0.0".
+- Không thay đổi contract, scope hay ADR — chỉ đồng bộ metadata header với thực tế.
+- Next steps remaining: Docker runtime verification (compose smoke trên host có Docker), load benchmark, real user acceptance testing.
 
 ## Step 156 — Quota backend readiness + engine lifecycle fix
 

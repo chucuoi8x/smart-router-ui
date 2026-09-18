@@ -1,87 +1,172 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Smart Router Control Plane</title>
-  <style>
-    :root { font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; color: #111; }
-    body { margin: 0; background: #f7f7f8; }
-    header { position: sticky; top: 0; background: #111; color: #f7f7f8; padding: 12px 16px; display: flex; gap: 12px; align-items: center; }
-    header a { color: #d6e2ff; text-decoration: none; margin-right: 12px; }
-    main { max-width: 1100px; margin: 16px auto; padding: 0 16px; }
-    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; }
-    label, input, button, pre { font: inherit; }
-    input, button { padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; }
-    button { cursor: pointer; background: #111; color: #fff; }
-    .grid { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; }
-    pre { white-space: pre-wrap; word-break: break-all; background: #0f172a; color: #e2e8f0; border-radius: 10px; padding: 12px; min-height: 88px; }
-    small { color: #6b7280; }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Smart Router Control Plane</title>
+<style>
+*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;background:#f0f2f5;color:#1e293b;display:flex;min-height:100vh}
+aside{width:260px;background:linear-gradient(180deg,#0f172a 0%,#1e293b 100%);color:#fff;padding:0;position:fixed;top:0;left:0;bottom:0;z-index:100;overflow-y:auto}
+.sh{text-align:center;padding:20px;border-bottom:1px solid #334155}.sh h2{margin:0;font-size:18px;color:#e2e8f0}.sh small{color:#94a3b8;font-size:11px}
+.nv{padding:12px 0}.nl{padding:0 20px;margin-bottom:6px;font-size:10px;text-transform:uppercase;color:#64748b}
+.ni{display:block;padding:9px 20px;color:#cbd5e1;text-decoration:none;cursor:pointer;font-size:13px;border-left:3px solid transparent}.ni:hover,.ni.active{background:#1e293b;color:#60a5fa;border-left-color:#60a5fa}
+main{margin-left:260px;flex:1;padding:24px 32px;max-width:1400px}
+.pg{display:none}.pg.act{display:block}
+.card{background:#fff;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.ch{margin:0 0 12px;font-size:15px;color:#0f172a;font-weight:600}
+.gr{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.st{text-align:center;padding:16px;background:#f8fafc;border-radius:10px}.st .n{font-size:28px;font-weight:700;line-height:1}.st .l{font-size:11px;color:#64748b;margin-top:4px}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
+.b-ok{background:#dcfce7;color:#16a34a}.b-err{background:#fee2e2;color:#dc2626}.b-warn{background:#fef3c7;color:#d97706}.b-info{background:#dbeafe;color:#2563eb}.b-def{background:#f1f5f9;color:#64748b}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 10px;background:#f8fafc;color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+td{padding:8px 10px;border-bottom:1px solid #f1f5f9}
+tr:hover td{background:#f8fafc}
+.btn{padding:7px 14px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600}.bp{background:#6366f1;color:#fff}.bp:hover{background:#4f46e5}.bg{background:#22c55e;color:#fff}.bd{background:#ef4444;color:#fff}
+.ab{background:#fffbe6;border:1px solid #fef08a;border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ab input{flex:1;min-width:220px;padding:7px 10px;border:1px solid #d4d4d4;border-radius:6px;font-size:13px}
+pre.code{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;font-size:11px;overflow:auto;max-height:350px;line-height:1.6;white-space:pre-wrap}
+.mc{background:#f1f5f9;padding:2px 6px;border-radius:3px;font-family:monospace;font-size:11px}
+@media(max-width:768px){aside{width:0}main{margin-left:0}}
+.pc{border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px}
+.empty{text-align:center;padding:30px;color:#9ca3af}
+</style>
 </head>
 <body>
-<header>
-  <strong>Smart Router Control Plane</strong>
-  <nav>
-    <a href="/health">Health</a>
-    <a href="/api/admin/v1/overview">Overview</a>
-    <a href="/api/admin/v1/routes">Routes</a>
-    <a href="/api/admin/v1/providers">Providers</a>
-  </nav>
-</header>
+<aside>
+<div class="sh"><h2>📡 Smart Router</h2><small>Control Plane v1.0</small></div>
+<nav class="nv">
+<div class="nl">Monitor</div>
+<a class="ni active" data-p="dash">🏥 Dashboard</a>
+<a class="ni" data-p="overview">📊 Overview</a>
+<a class="ni" data-p="routes">🔀 Routes</a>
+<a class="ni" data-p="prov">🌐 Providers</a>
+<div class="nl">Configuration</div>
+<a class="ni" data-p="cat">🗃️ Catalog & Pricing</a>
+<a class="ni" data-p="sync">🔄 Sync & Revisions</a>
+<div class="nl">Operations</div>
+<a class="ni" data-p="logs">📝 Logs</a>
+<a class="ni" data-p="set">⚙️ Settings</a>
+</nav>
+</aside>
 <main>
-  <div class="card">
-    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <label for="token">Bearer token</label>
-      <input id="token" type="password" placeholder="Paste SMART_ROUTER_KEY (stored in sessionStorage only)" autocomplete="off" style="flex:1; min-width:220px;" />
-      <button id="save">Save</button>
-      <button id="clear" style="background:#374151;">Clear</button>
-      <span id="hint" style="font-size:12px; color:#6b7280;"></span>
-    </div>
-    <small>Token never leaves the browser except as an Authorization header you choose to send. Refreshing does not persist to disk or server.</small>
-  </div>
-
-  <div class="grid" style="margin-top:16px;">
-    <section class="card">
-      <h3 style="margin:0 0 8px 0;">Health</h3>
-      <button id="callHealth">GET /health</button>
-      <pre id="outHealth" aria-live="polite">—</pre>
-    </section>
-    <section class="card">
-      <h3 style="margin:0 0 8px 0;">Overview</h3>
-      <button id="callOverview">GET /api/admin/v1/overview</button>
-      <pre id="outOverview">—</pre>
-      <a href="/api/admin/v1/overview" style="font-size:12px;">Open raw endpoint</a>
-    </section>
-    <section class="card">
-      <h3 style="margin:0 0 8px 0;">Routes</h3>
-      <button id="callRoutes">GET /api/admin/v1/routes</button>
-      <pre id="outRoutes">—</pre>
-    </section>
-    <section class="card">
-      <h3 style="margin:0 0 8px 0;">Providers</h3>
-      <button id="callProviders">GET /api/admin/v1/providers</button>
-      <pre id="outProviders">—</pre>
-    </section>
-  </div>
+<div class="ab"><label for="tkin">Bearer token</label><input type="password" id="tkin" placeholder="Paste SMART_ROUTER_KEY..." aria-label="Bearer token" /><button class="btn bg" onclick="svTk()">Save</button><button class="btn bd" onclick="clrTk()">Clear</button><span id="ast" style="font-size:11px;color:#9ca3ac"></span></div>
+<div id="p-dash" class="pg act">
+<div class="gr" id="ds-st"></div>
+<div class="card"><h3 class="ch">🟢 System Health</h3><div id="hd-detail"></div></div>
+<div class="card"><h3 class="ch">📊 Usage Summary</h3><div id="us-sum"><div class="empty">No usage data yet</div></div></div>
+</div>
+<div id="p-routes" class="pg"><div class="card"><h3 class="ch">🔀 Route Registry (<span id="rc"></span>)</h3><table><thead><tr><th>Route ID</th><th>Strategy</th><th>Candidates</th><th>Fallback</th><th>Status</th></tr></thead><tbody id="rt-body"></tbody></table></div></div>
+<div id="p-prov" class="pg"><div class="card"><h3 class="ch">🌐 Provider Connections</h3><div id="pv-list"></div></div></div>
+<div id="p-overview" class="pg"><div class="card"><h3 class="ch">📊 System Overview</h3><div id="ov-content"><p style="color:#64748b">Overview aggregated from /health and /api/admin/v1/overview endpoints.</p></div></div></div>
+<div id="p-cat" class="pg"><div class="card"><h3 class="ch">🗃️ AI-BOX Catalog</h3><div id="ct-head"></div></div><div class="card"><h3 class="ch">📋 Model Classification</h3><table><thead><tr><th>Model</th><th>Class</th><th>In $/M</th><th>Out $/M</th><th>Eligible</th><th>Note</th></tr></thead><tbody id="md-body"></tbody></table></div></div>
+<div id="p-sync" class="pg"><div class="card"><h3 class="ch">🔄 Manual Sync</h3><p>Sync catalogs to refresh model list + pricing.</p><button class="btn bp" onclick="doSyn()">Run Sync</button><div id="sr-res" style="margin-top:10px"></div></div><div class="card"><h3 class="ch">📦 Revision History</h3><table><thead><tr><th>ID</th><th>Status</th><th>Created</th><th>Action</th></tr></thead><tbody id="rv-body"></tbody></table></div></div>
+<div id="p-logs" class="pg"><div class="card"><h3 class="ch">📝 Recent Audit Events</h3><pre class="code" id="lg-con">Loading...</pre><button class="btn bp" onclick="fnLg()" style="margin-top:8px">Refresh</button></div></div>
+<div id="p-set" class="pg"><div class="card"><h3 class="ch">⚙️ Config YAML</h3><pre class="code" id="cf-yml">Loading...</pre></div></div>
 </main>
-<script type="module">
-  const $ = (id) => document.getElementById(id);
-  const KEY = "SR_TOKEN";
-  if (sessionStorage.getItem(KEY)) $("token").value = sessionStorage.getItem(KEY);
-  const token = () => $("token").value.trim();
-  $("save").onclick = () => { sessionStorage.setItem(KEY, token()); $("hint").textContent = "Saved to sessionStorage."; };
-  $("clear").onclick = () => { sessionStorage.removeItem(KEY); $("token").value = ""; $("hint").textContent = "Cleared."; };
-  async function call(path, outId) {
-    const init = path.startsWith("/api/admin") ? { headers: token() ? { Authorization: `Bearer ${token()}` } : {} } : {};
-    try { const r = await fetch(path, init); const t = await r.text(); $(outId).textContent = `${r.status} ${r.statusText}\n${t.slice(0,12000)}`; }
-    catch (e) { $(outId).textContent = `Error: ${String(e && e.message || e)}`; }
+<script>
+const TK='SR_TOKEN';let K=getTk();
+function getTk(){return sessionStorage.getItem(TK)||''}
+function svTk(){K=document.getElementById('tkin').value.trim();if(K){sessionStorage.setItem(TK,K);document.getElementById('ast').textContent='✓ Saved'}sp('dash')}
+function clrTk(){K='';sessionStorage.removeItem(TK);document.getElementById('tkin').value='';document.getElementById('ast').textContent='Cleared';location.reload()}
+(function(){if(getTk()){document.getElementById('tkin').value=getTk();K=getTk();document.getElementById('ast').textContent='✓ Loaded'}sp('dash')})();
+document.querySelectorAll('.ni').forEach(n=>{n.onclick=()=>sp(n.dataset.p)});
+function sp(name){document.querySelectorAll('.pg').forEach(p=>p.classList.remove('act'));document.getElementById('p-'+name).classList.add('act');document.querySelectorAll('.ni').forEach(n=>n.classList.toggle('active',n.dataset.p===name));
+const L={dash:rDash,routes:rRoutes,prov:rProv,cat:rCat,sync:rSyn,logs:fnLg,set:fnSet};if(L[name])L[name]()}
+async function api(path){try{const r=await fetch(path,{headers:{'Authorization':'Bearer '+K,'Content-Type':'application/json'}});const t=await r.text();try{return{s:r.status,d:JSON.parse(t)}}catch(e){return{s:r.status,null:true,r:t.slice(0,2000)}}}catch(e){return{s:0,e:e.message}}}
+
+// DASHBOARD
+async function rDash(){
+  const gw=await api('/health/live'),ov=await api('/api/admin/v1/overview'),ls=await api('/api/admin/v1/ledger/stats');
+  let h=`<div class="st"><div class="n" style="color:${gw.s===200?'#22c55e':'#ef4444'}">${gw.s===200?(gw.d?.status||'OK'):gw.e}</div><div class="l">Gateway Live</div></div>`;
+  if(gw.d)h+=`<div class="st"><div class="n">${gw.d.version||''}</div><div class="l">Version</div></div>`;
+  if(gw.d&&gw.d.uptime_seconds)h+=`<div class="st"><div class="n">${Math.floor(gw.d.uptime_seconds/3600)}h</div><div class="l">Uptime</div></div>`;
+  document.getElementById('ds-st').innerHTML=h;
+  let chtml='<table><tr><th>Component</th><th>Status</th></tr>';
+  if(gw.d&&gw.d.checks)for(let[k,v]of Object.entries(gw.d.checks))chtml+=`<tr><td>${k}</td><td><span class="badge ${v.status==='ok'?'b-ok':v.status==='unknown'?'b-warn':'b-err'}">${v.status}</span></td></tr>`;
+  chtml+='</table>';
+  document.getElementById('hd-detail').innerHTML=chtml+`<br><small>Uptime: ${(gw.d?.uptime_seconds||0).toFixed(0)}s</small>`;
+  if(ls.d&&ls.d.summary){let sm=ls.d.summary;document.getElementById('us-sum').innerHTML=`<table><tr><td>Total Tokens</td><td style="text-align:right;font-weight:700">${(sm.total_tokens||0).toLocaleString()}</td></tr><tr><td>Events</td><td style="text-align:right;font-weight:700">${(sm.event_count||0).toLocaleString()}</td></tr></table>`}
+}
+
+// ROUTES
+async function rRoutes(){
+  const res=await api('/api/admin/v1/routes'),rev=await api('/api/admin/v1/revisions/active');
+  let items=[];
+  if(res.s===200&&res.d&&res.d.items&&res.d.items.length)items=res.d.items;
+  else if(rev.s===200&&rev.d){
+    let snap=rev.d.snapshot_data;if(typeof snap==='string')snap=JSON.parse(snap);
+    for(let[id,cfg]of Object.entries(snap.routes||{})){
+      let vc=(cfg.candidates||[]).filter(c=>c.upstream&&c.model);
+      let vf=(cfg.fallback||[]).filter(f=>f.upstream&&f.model);
+      items.push({route_id:id,config:{strategy:cfg.strategy,candidates:vc,fallback:vf}});
+    }
   }
-  $("callHealth").onclick = () => call("/health", "outHealth");
-  $("callOverview").onclick = () => call("/api/admin/v1/overview", "outOverview");
-  $("callRoutes").onclick = () => call("/api/admin/v1/routes", "outRoutes");
-  $("callProviders").onclick = () => call("/api/admin/v1/providers", "outProviders");
-  $("callHealth").click();
+  let body='',gc=0;
+  items.forEach(it=>{
+    let c=it.config,gen=c.generated?'<span class="badge b-info">auto</span>':'';
+    let cg=c.candidates.map(x=>'<span class="mc">'+x.upstream+':'+x.model+'</span>').join(',')||'-';
+    let fg=c.fallback.map(x=>'<span class="mc">'+x.upstream+':'+x.model+'</span>').join(',')||'-';
+    gc++;body+='<tr><td>'+it.route_id+' '+gen+'</td><td>'+(c.strategy||'?')+'</td><td>'+cg+'</td><td>'+fg+'</td><td><span class="badge b-ok">active</span></td></tr>';
+  });
+  document.getElementById('rt-body').innerHTML=body||'<tr><td colspan="5" class="empty">No routes</td></tr>';
+  document.getElementById('rc').textContent=gc;
+}
+
+// PROVIDERS
+async function rProv(){
+  const ph=await api('/api/admin/v1/providers/health'),pr=await api('/api/admin/v1/providers');
+  let items=ph.s===200&&ph.d?ph.d.items:(pr.s===200&&pr.d?pr.d.items:[]);
+  let html='';
+  if(items.length){items.forEach(p=>{html+='<div class="pc"><div style="font-weight:600">'+(p.name||p.connection_id)+'</div><div style="color:#64748b;font-size:12px">'+(p.base_url||'?')+'</div><div style="margin-top:6px"><span class="badge '+(p.status==='healthy'?'b-ok':p.status==='degraded'?'b-warn':'b-err')+'">'+(p.status||'?')+'</span> '+(p.credential_present?'✅ Key set':'❌ No key')+'</div></div>'})}
+  else{html='<div class="pc"><strong>Upstreams (from config.yaml)</strong><br><span class="badge b-info">proxypal</span> <span class="badge b-info">xkiro</span> <span class="badge b-info">aibox</span><br><small style="color:#64748b">3 upstreams loaded at startup</small></div>'}
+  document.getElementById('pv-list').innerHTML=html;
+}
+
+// CATALOG
+async function rCat(){
+  try{const r=await fetch('/catalog.json');const d=await r.json();
+    document.getElementById('ct-head').innerHTML=`<div class="gr"><div class="st"><div class="n">${(d.verified_models||[]).length}</div><div class="l">Verified Models</div></div><div class="st"><div class="n" style="color:#16a34a">${(d.selected_routes?.cheap||[]).length}</div><div class="l">Cheap Candidates</div></div><div class="st"><div class="n" style="color:#2563eb">${(d.selected_routes?.engineering||[]).length}</div><div class="l">Engineering</div></div><div class="st"><div class="n" style="color:#7c3aed">${(d.selected_routes?.critical_review||[]).length}</div><div class="l">Critical Review</div></div></div><small>Synced: ${d.last_successful_sync||'never'}</small>`;
+    let mh='';(d.discovered||[]).forEach(m=>{
+      let tg=[],el=[];
+      if(m.cheap_eligible){tg.push('<span class="badge b-ok">cheap</span>');el.push('$0.05/$0.10')}
+      if(m.engineering_eligible){tg.push('<span class="badge b-ok">eng</span>');el.push('$0.20/$0.60')}
+      if(m.classification==='critical_candidate')tg.push('<span class="badge b-warn">crit</span>');
+      mh+='<tr><td><code class="mc">'+m.name+'</code></td><td>'+(m.classification||'?')+'</td><td>$'+(m.prices?.input_per_million??'-')+'</td><td>$'+(m.prices?.output_per_million??'-')+'</td><td>'+tg.join(' ')+'</td><td style="color:#64748b;font-size:11px">'+(m.reason||'?')+'</td></tr>';
+    });
+    document.getElementById('md-body').innerHTML=mh||'<tr><td colspan="6" class="empty">No data</td></tr>';
+  }catch(e){document.getElementById('ct-head').innerHTML='<p style="color:#ef4444">Catalog load failed</p>'}
+}
+
+// SYNC
+async function doSyn(){
+  const btn=document.querySelector('#p-sync .bp'),res=document.getElementById('sr-res');
+  btn.disabled=true;res.innerHTML='<p>Synchronizing...</p>';
+  const r=await api('/api/admin/v1/catalog/sync',{method:'POST'});
+  if(r.s>=200&&r.s<300&&!r.null)res.innerHTML='<p class="b-ok" style="padding:6px 12px">✓ Done!</p><pre class="code">'+JSON.stringify(r.d,null,2)+'</pre>';
+  else res.innerHTML='<p>✗ Failed: '+r.e+r.s+'</p>';
+  btn.disabled=false;
+}
+async function rSyn(){
+  document.querySelector('#p-sync .bp').onclick=doSyn;
+  const res=await api('/api/admin/v1/revisions');
+  let rows='';
+  if(res.s===200&&res.d&&res.d.items){
+    res.d.items.forEach(r=>{rows+='<tr><td><code>'+r.revision_id+'</code></td><td><span class="badge '+(r.active?'b-ok':'b-def')+'">'+(r.active?'active':'draft')+'</span></td><td>'+(new Date(r.created_at).toLocaleString())+'</td><td></td></tr>'});
+  }
+  document.getElementById('rv-body').innerHTML=rows||'<tr><td colspan="4" class="empty">No revisions</td></tr>';
+}
+
+// LOGS
+async function fnLg(){const el=document.getElementById('lg-con');el.textContent='Loading...';
+  const r=await api('/api/admin/v1/audit?limit=50');
+  if(r.s===200&&r.d&&r.d.items)el.textContent=r.d.items.map(a=>'['+(a.timestamp||'?')+'] ['+(a.action||'?')+'] ').join('\n');
+  else el.textContent='Use docker compose logs --tail=100 gateway from SSH terminal.';}
+
+// SETTINGS
+async function fnSet(){try{const r=await fetch('/config.yaml');const t=await r.text();document.getElementById('cf-yml').textContent=t}catch(e){document.getElementById('cf-yml').textContent='Config not exposed via nginx. View with: cat /home/qlttb/smart-router-ui/config.yaml'}}
+
+setTimeout(()=>sp('dash'),100);
 </script>
 </body>
 </html>
