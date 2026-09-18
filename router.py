@@ -2912,19 +2912,19 @@ async def chat_completions(
                         except (TypeError, ValueError, json.JSONDecodeError):
                             continue
                         for converted in router_stream_to_openai([event], requested_model):
-                            if converted != "data: [DONE]\\n\\n":
+                            if converted != "data: [DONE]\n\n":
                                 yield converted
                 if buffer.strip():
                     data_lines = [line[5:].strip() for line in buffer.splitlines() if line.startswith("data:")]
                     try:
-                        event = json.loads("\\n".join(data_lines))
+                        event = json.loads("\n".join(data_lines))
                     except (TypeError, ValueError, json.JSONDecodeError):
                         event = None
                     if event:
                         for converted in router_stream_to_openai([event], requested_model):
-                            if converted != "data: [DONE]\\n\\n":
+                            if converted != "data: [DONE]\n\n":
                                 yield converted
-                yield "data: [DONE]\\n\\n"
+                yield "data: [DONE]\n\n"
 
             return StreamingResponse(
                 openai_stream(),
