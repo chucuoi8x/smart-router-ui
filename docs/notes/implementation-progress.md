@@ -2772,3 +2772,9 @@ Follow-up risks / TODOs:
 - Fix bổ sung từ Step 168: escape `\\n` -> `\n` đã đúng sau fix bằng script Python trực tiếp.
 - Kết quả: targeted 1 passed (HTTP integration), full `552 passed, 6 skipped, 1 warning`.
 - Push: commit `38cbfb0` trên `feature/admin-api-baseline`.
+## Step 173 — HTTP non-streaming compatibility coverage
+
+- Thêm `tests/integration/test_openai_completions_endpoint.py` để kiểm chứng toàn bộ non-stream `/v1/chat/completions` qua `httpx.ASGITransport`.
+- Xác nhận response native Messages được đổi thành OpenAI `chat.completion`, gồm message role/content, finish reason và usage token totals.
+- Kết quả: targeted `1 passed`; full `553 passed, 6 skipped, 1 warning`.
+- Push: commit `d9ca3b6` trên `feature/admin-api-baseline`.
