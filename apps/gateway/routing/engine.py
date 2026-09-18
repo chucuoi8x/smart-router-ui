@@ -246,13 +246,51 @@ class RouterEngine:
             "quota_remaining_by_resource": admission.remaining_by_resource,
         }
         if self._has_valid_quota_resource_ids(candidate):
-            metadata["quota_resource_ids"] = resource_ids
+            # Preserve every declared quota dimension for downstream atomic reservation.
+            # `resource_ids` may contain only request-metric IDs used for admission;
+            # dropping token/budget IDs here would violate multidimensional quota semantics.
+            # Keep one request-metric ID per shared group (admission order),
+            # plus every known non-request dimension (tokens/budget) that the
+            # downstream atomic reservation still needs.
+            metadata["quota_resource_ids"] = self._preserved_quota_resource_ids(
+                candidate, resource_ids, quota_graph=quota_graph
+            )
         else:
             metadata["quota_resource_id"] = resource_ids[0]
         if admission.soft_pressure_by_resource:
             metadata["quota_soft_pressure_by_resource"] = admission.soft_pressure_by_resource
 
         return replace(candidate, metadata=metadata)
+
+    def _preserved_quota_resource_ids(
+        self,
+        candidate: ResourceCandidate,
+        admission_ids: list[str],
+        *,
+        quota_graph: Any | None = None,
+    ) -> list[str]:
+        """Merge deduplicated request-metric IDs with other quota dimensions.
+
+        ``admission_ids`` already holds at most one request-metric resource per
+        shared group (P0-07 dedup).  Re-add declared non-request dimensions
+        (tokens/budget) so multi-resource reconcile keeps every metric, but drop
+        duplicate request-metric IDs that were collapsed during admission.
+        """
+        preserved = list(admission_ids)
+        for resource_id in candidate.metadata["quota_resource_ids"]:
+            if resource_id in preserved:
+                continue
+            try:
+                resource = (
+                    quota_graph.get_resource(resource_id)
+                    if quota_graph is not None
+                    else self._quota_snap(resource_id)
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if resource.metric != "requests":
+                preserved.append(resource_id)
+        return preserved
 
     def _known_quota_resource_ids(self, resource_ids: list[str], *, quota_graph: Any | None = None) -> list[str]:
         known: list[str] = []

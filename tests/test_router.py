@@ -151,6 +151,9 @@ class WeightedRouterTests(unittest.TestCase):
             }
         )
         router.circuits.setdefault("aibox:z", CircuitState()).cooldown_until = 10 ** 9
+        # Bridge: cũng trip engine circuit repository cho test
+        from apps.gateway.routing.models import ResourceRef
+        router.router_engine.circuit_repository.trip(ResourceRef("aibox", "aibox", "z"), cooldown_seconds=10**9)
 
         async def order():
             return await router._candidate_order("r")

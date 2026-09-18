@@ -168,20 +168,25 @@ class SmartRouter:
         self._latency_tracker = LatencyTracker(self._scoring_config.max_latency_history)
         self._session_store = SessionAffinityStore(self._scoring_config.session_affinity_ttl_seconds)
         self._score_calculator: SmartScoreCalculator | None = None
-        self.router_engine = None
-        if os.getenv("USE_ROUTER_ENGINE", "false").lower() == "true":
-            compiler = LegacyConfigCompiler()
-            snapshot = compiler.compile_dict(config)
-            engine_quota = quota_reservations
-            # Ensure RouterEngine gets an async-compatible backend too.
-            if engine_quota is not None and not asyncio.iscoroutinefunction(
-                getattr(engine_quota, "check_many", None),
-            ):
-                from apps.gateway.quota.adapter import AsyncQuotaFacade
-                engine_quota = AsyncQuotaFacade(engine_quota)
-            self.router_engine = RouterEngine(
-                snapshot, quota_reservations=engine_quota, scoring_config=self._scoring_config,
-            )
+        # ── Single production RouterEngine ───────────────────────────────
+        compiler = LegacyConfigCompiler()
+        snapshot = compiler.compile_dict(config)
+        engine_quota = quota_reservations
+        if engine_quota is not None and not asyncio.iscoroutinefunction(
+            getattr(engine_quota, "check_many", None),
+        ):
+            from apps.gateway.quota.adapter import AsyncQuotaFacade
+            engine_quota = AsyncQuotaFacade(engine_quota)
+        self.router_engine = RouterEngine(
+            snapshot, quota_reservations=engine_quota, scoring_config=self._scoring_config,
+        )
+        # Bridge session store so remember_affinity() affects both calculators
+        if self._score_calculator is not None and getattr(self.router_engine, "_score_calculator", None) is not None:
+            eng_calc = self.router_engine._score_calculator  # type: ignore[union-attr]
+            try:
+                eng_calc._session_store = self._score_calculator._session_store  # type: ignore[attr-defined]
+            except Exception:
+                pass
         # Ensure our own quota_reservations is async-compatible.
         if (self.quota_reservations is not None
                 and not asyncio.iscoroutinefunction(getattr(self.quota_reservations, "check_many", None))):
@@ -478,40 +483,48 @@ class SmartRouter:
         conversation_thread: str | None = None,
         required_capabilities: dict[str, Any] | None = None,
     ) -> list[Candidate]:
-        if self.router_engine is not None:
-            if getattr(self.router_engine, "quota_reservations", None) is not None:
-                resource_candidates = await self.router_engine.select_candidates_async(
-                    route_name, conversation_thread=conversation_thread,
-                    required_capabilities=required_capabilities,
-                )
-            else:
-                resource_candidates = self.router_engine.select_candidates(
-                    route_name, conversation_thread=conversation_thread,
-                    required_capabilities=required_capabilities,
-                )
-            return self._convert_resource_candidates(resource_candidates)
+        """Route selection logic — uses RouterEngine except where legacy strategies apply."""
+        route_cfg = self.routes.get(route_name) or {}
+        strategy = route_cfg.get("strategy", "priority")
+        
+        # Legacy smooth_weighted_rr cycles locally — engine doesn't replicate this
+        if strategy == "smooth_weighted_rr":
+            return await self._legacy_candidate_order(
+                route_name, conversation_thread, required_capabilities
+            )
+        
+        # Production path: delegate to RouterEngine
+        resource_candidates = await self.router_engine.select_candidates_async(
+            route_name,
+            conversation_thread=conversation_thread,
+            required_capabilities=required_capabilities,
+        )
+        return self._convert_resource_candidates(resource_candidates)
+
+    async def _legacy_candidate_order(
+        self,
+        route_name: str,
+        conversation_thread: str | None = None,
+        required_capabilities: dict[str, Any] | None = None,
+    ) -> list[Candidate]:
+        """Legacy routing path for smooth_weighted_rr strategy."""
         async with self.state_lock:
             route = self.routes.get(route_name)
             if route is None:
                 return []
-            # Primary candidates are ordered by the route strategy; fallback
-            # candidates are only reached after every primary candidate has been
-            # tried and failed (e.g. proxypal exhausted -> aibox backup).
             primary = await self._quota_available_candidates(
                 [c for c in route["candidates"] if self._is_available(c)]
             )
             fallback = await self._quota_available_candidates(
                 [c for c in route.get("fallback", []) if self._is_available(c)]
             )
-        # Policy constraints: hard filter per group (primary vs fallback have
-        # different paid-fallback semantics). No-op when scheduler disabled.
         primary = self._apply_policy_constraints(
             primary, route_name, is_fallback=False, required_capabilities=required_capabilities
         )
         fallback = self._apply_policy_constraints(
             fallback, route_name, is_fallback=True, required_capabilities=required_capabilities
         )
-        if route["strategy"] == "smooth_weighted_rr" and len(primary) >= 2:
+        if len(primary) >= 2:
             async with self.state_lock:
                 current = self.rr_current.setdefault(route_name, {})
                 total = sum(c.weight for c in primary)
@@ -525,9 +538,9 @@ class SmartRouter:
         else:
             ordered = list(primary)
         ordered = ordered + fallback
-        # Apply smart scoring as an optimization layer (graceful no-op when disabled)
         ordered = await self._async_apply_scoring(ordered, route_name, conversation_thread=conversation_thread)
         return ordered
+
 
     async def _quota_available_candidates(self, candidates: list[Candidate]) -> list[Candidate]:
         if self.quota_reservations is None:
@@ -754,7 +767,17 @@ class SmartRouter:
 
     def _is_available(self, candidate: Candidate) -> bool:
         state = self.circuits.get(candidate.key)
-        return state is None or state.cooldown_until <= time.monotonic()
+        if state is not None and state.cooldown_until > time.monotonic():
+            return False
+        # If engine is authoritative, also check engine's circuit repo
+        if self.router_engine is not None:
+            from apps.gateway.routing.models import ResourceRef
+            ref = ResourceRef(candidate.upstream, candidate.upstream, candidate.model)
+            try:
+                return self.router_engine.circuit_repository.is_available(ref)
+            except Exception:
+                pass
+        return True
 
     # ── Smart scoring helpers ──────────────────────────────────────────
 
@@ -868,6 +891,11 @@ class SmartRouter:
             session_store=self._session_store,
             catalog=self.catalog,
         )
+        # RouterEngine owns production scoring. Share this stateful store so
+        # affinity recorded by request handling is visible during selection.
+        engine_calculator = getattr(self.router_engine, "_score_calculator", None)
+        if engine_calculator is not None:
+            engine_calculator._session_store = self._session_store
 
     def _apply_smart_scoring(
         self,
@@ -2361,15 +2389,20 @@ class SmartRouter:
         return observed
 
     def _trip_router_engine_circuit(self, candidate: Candidate, cooldown_seconds: float | None) -> None:
-        if self.router_engine is None or cooldown_seconds is None or cooldown_seconds <= 0:
+        if cooldown_seconds is None or cooldown_seconds <= 0:
             return
-        try:
-            from apps.gateway.routing.models import ResourceRef
-
-            ref = ResourceRef(candidate.upstream, candidate.upstream, candidate.model)
-            self.router_engine.circuit_repository.trip(ref, cooldown_seconds)
-        except Exception:
-            self.logger.debug("router engine circuit update skipped for candidate %s", candidate.key, exc_info=True)
+        # Update legacy SmartRouter circuit state
+        if isinstance(cooldown_seconds, float):
+            state = self.circuits.setdefault(candidate.key, CircuitState())
+            state.cooldown_until = time.monotonic() + cooldown_seconds
+        # Also trip the canonical engine circuit repository
+        if self.router_engine is not None:
+            try:
+                from apps.gateway.routing.models import ResourceRef
+                ref = ResourceRef(candidate.upstream, candidate.upstream, candidate.model)
+                self.router_engine.circuit_repository.trip(ref, cooldown_seconds)
+            except Exception:
+                pass
 
     async def _finalize_error_reservation(
         self,

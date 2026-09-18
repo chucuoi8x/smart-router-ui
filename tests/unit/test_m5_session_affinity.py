@@ -49,7 +49,7 @@ async def test_router_candidate_order_uses_session_affinity():
         },
     })
     router._ensure_scoring()
-    router._score_calculator.remember_affinity("session-1", "b:m2")
+    router._score_calculator.remember_affinity("session-1", "b:b:m2")
 
     ordered = await router._candidate_order("coding", conversation_thread="session-1")
 
