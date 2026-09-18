@@ -1,7 +1,6 @@
 """M7 — Migration smoke test: compile legacy config.yaml → RuntimeConfigSnapshot."""
 from __future__ import annotations
 
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -12,13 +11,10 @@ class TestMigrationSmoke(unittest.TestCase):
         """Verify LegacyConfigCompiler().compile_file() runs on HEAD config.yaml without exception."""
         from apps.gateway.config.compiler import LegacyConfigCompiler
 
-        # Locate the repo root from this test file's location
-        test_dir = Path(__file__).resolve().parent.parent.parent
-        config_path = test_dir / "config.yaml"
+        config_path = Path(__file__).resolve().parents[2] / "config.yaml"
 
         self.assertTrue(config_path.exists(), "config.yaml must exist at project root")
 
-        # Run compilation
         compiler = LegacyConfigCompiler()
         snapshot = compiler.compile_file(config_path)
 
@@ -47,8 +43,7 @@ class TestMigrationSmoke(unittest.TestCase):
 
         from apps.gateway.config.compiler import LegacyConfigCompiler
 
-        test_dir = Path(__file__).resolve().parents[2]
-        config_path = test_dir / "config.yaml"
+        config_path = Path(__file__).resolve().parents[2] / "config.yaml"
         with open(config_path, encoding="utf-8") as fh:
             raw = yaml.safe_load(fh)
 
@@ -59,8 +54,62 @@ class TestMigrationSmoke(unittest.TestCase):
         self.assertEqual(set(snap_file.routes.keys()), set(snap_dict.routes.keys()))
         self.assertEqual(set(snap_file.connections.keys()), set(snap_dict.connections.keys()))
 
-        # Same candidates per route
         for name in snap_file.routes:
-            file_candidates = [(c.resource_ref.provider_connection_id, c.resource_ref.model_id) for c in snap_file.routes[name].candidates]
-            dict_candidates = [(c.resource_ref.provider_connection_id, c.resource_ref.model_id) for c in snap_dict.routes[name].candidates]
+            file_candidates = [
+                (c.resource_ref.provider_connection_id, c.resource_ref.model_id)
+                for c in snap_file.routes[name].candidates
+            ]
+            dict_candidates = [
+                (c.resource_ref.provider_connection_id, c.resource_ref.model_id)
+                for c in snap_dict.routes[name].candidates
+            ]
             self.assertEqual(file_candidates, dict_candidates, f"Mismatch in route {name}")
+
+    def test_compile_dict_handles_empty_config_gracefully(self):
+        """Empty dict should produce empty snapshot without raising."""
+        from apps.gateway.config.compiler import LegacyConfigCompiler
+
+        compiler = LegacyConfigCompiler()
+        snap = compiler.compile_dict({})
+
+        self.assertEqual(len(snap.routes), 0)
+        self.assertEqual(len(snap.connections), 0)
+
+    def test_compile_dict_handles_missing_upstreams_and_routes_keys(self):
+        """Config with only top-level keys but no upstreams/routes sections is valid."""
+        from apps.gateway.config.compiler import LegacyConfigCompiler
+
+        compiler = LegacyConfigCompiler()
+        snap = compiler.compile_dict({"server": {"host": "0.0.0.0", "port": 80}})
+
+        self.assertEqual(len(snap.routes), 0)
+        self.assertEqual(len(snap.connections), 0)
+
+    def test_compile_dict_preserves_weights_and_strategies(self):
+        """Verify weight and strategy are carried through compilation."""
+        from apps.gateway.config.compiler import LegacyConfigCompiler
+
+        raw = {
+            "upstreams": {
+                "aib": {
+                    "base_url": "http://aibox.local",
+                    "auth": {"mode": "bearer", "token_env": "AIBOX"},
+                }
+            },
+            "routes": {
+                "fast": {
+                    "strategy": "smooth_weighted_rr",
+                    "candidates": [
+                        {"upstream": "aib", "model": "qwen-fast", "weight": 3}
+                    ],
+                },
+            },
+        }
+
+        compiler = LegacyConfigCompiler()
+        snap = compiler.compile_dict(raw)
+
+        route = snap.routes["fast"]
+        self.assertEqual(route.strategy, "smooth_weighted_rr")
+        self.assertEqual(route.candidates[0].weight, 3)
+        self.assertEqual(route.candidates[0].resource_ref.model_id, "qwen-fast")
