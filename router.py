@@ -37,6 +37,7 @@ from apps.gateway.routing.scoring import (
     CandidateMetrics,
 )
 from apps.worker.collectors.aibox_catalog import build_records, select_routes, state_from_records
+from apps.gateway.openai_compat import openai_request_to_router, router_response_to_openai, router_stream_to_openai
 
 # ── Quota reservation factory (Redis → InMemory fallback) ─────────────
 
@@ -2865,6 +2866,87 @@ async def models(service: SmartRouter = Depends(get_authorized_service)) -> dict
         for name in service.routes
     ]
     return {"object": "list", "data": data}
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(
+    request: Request,
+    service: SmartRouter = Depends(get_authorized_service),
+    usage_ledger: Any | None = Depends(get_optional_usage_ledger_repo),
+) -> Response:
+    """OpenAI Chat Completions compatibility endpoint.
+
+    The router core remains Messages-native. This boundary translates only the
+    public request/response envelope, keeping candidate selection, retries,
+    quota accounting, and provider drivers on the same execution path.
+    """
+    try:
+        openai_body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="request body must be JSON") from exc
+    if not isinstance(openai_body, dict):
+        raise HTTPException(status_code=400, detail="request body must be an object")
+    router_body = openai_request_to_router(openai_body)
+    ledger_token = _REQUEST_USAGE_LEDGER.set(usage_ledger)
+    events_token = _REQUEST_USAGE_EVENTS.set([])
+    try:
+        response = await service.handle_messages(router_body, request.headers, "/v1/messages")
+        if response.status_code >= 400:
+            return response
+        requested_model = str(openai_body.get("model") or "")
+        if bool(openai_body.get("stream", False)):
+            async def openai_stream() -> AsyncIterator[str]:
+                buffer = ""
+                async for raw_chunk in response.body_iterator:
+                    buffer += raw_chunk.decode("utf-8", "replace") if isinstance(raw_chunk, bytes) else str(raw_chunk)
+                    while "\n\n" in buffer:
+                        frame, buffer = buffer.split("\n\n", 1)
+                        data_lines = [line[5:].strip() for line in frame.splitlines() if line.startswith("data:")]
+                        if not data_lines:
+                            continue
+                        data = "\n".join(data_lines)
+                        if data == "[DONE]":
+                            continue
+                        try:
+                            event = json.loads(data)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                        for converted in router_stream_to_openai([event], requested_model):
+                            if converted != "data: [DONE]\\n\\n":
+                                yield converted
+                if buffer.strip():
+                    data_lines = [line[5:].strip() for line in buffer.splitlines() if line.startswith("data:")]
+                    try:
+                        event = json.loads("\\n".join(data_lines))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        event = None
+                    if event:
+                        for converted in router_stream_to_openai([event], requested_model):
+                            if converted != "data: [DONE]\\n\\n":
+                                yield converted
+                yield "data: [DONE]\\n\\n"
+
+            return StreamingResponse(
+                openai_stream(),
+                status_code=response.status_code,
+                media_type="text/event-stream",
+                headers=_response_headers(response.headers),
+            )
+        try:
+            payload = json.loads(response.body)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return JSONResponse(
+                status_code=502,
+                content={"error": {"message": "upstream returned invalid JSON", "type": "server_error"}},
+            )
+        return JSONResponse(
+            status_code=response.status_code,
+            content=router_response_to_openai(payload, requested_model),
+            headers=_response_headers(response.headers),
+        )
+    finally:
+        _REQUEST_USAGE_EVENTS.reset(events_token)
+        _REQUEST_USAGE_LEDGER.reset(ledger_token)
 
 
 @app.post("/v1/messages")
