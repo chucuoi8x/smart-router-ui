@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import fnmatch
+import json
+import os
 import re
+import shutil
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
-from typing import Any, Iterable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Callable, Iterable
 
 
 FAMILIES = ("deepseek", "qwen", "glm", "kimi")
@@ -328,6 +335,140 @@ def select_routes(records: Iterable[ModelRecord], policy: dict[str, Any]) -> dic
         "engineering": [r.name for r in engineering],
         "critical_review": preferred_critical[:1],
         "critical_candidates": critical,
+    }
+
+
+def sync_catalog(
+    config: dict[str, Any] | None = None,
+    policy: dict[str, Any] | None = None,
+    fetch_text: Callable[[str], str] | None = None,
+    fetch_json: Callable[[str, dict[str, str] | None], Any] | None = None,
+    token: str | None = None,
+) -> int:
+    """Fetch AI-BOX catalog, persist last-known-good state, return record count.
+
+    Network functions are injectable for deterministic tests. Any sync failure
+    leaves existing state untouched and returns zero.
+    """
+    config = config or _load_runtime_catalog_config()
+    policy = policy or _load_runtime_policy()
+    if not token:
+        token = os.getenv("AIBOX_API_KEY")
+    if not token:
+        return 0
+
+    fetch_text = fetch_text or _http_text
+    fetch_json = fetch_json or _http_json
+    state_path = Path(str(config.get("state_file", "state/aibox-catalog.json")))
+    previous_path = Path(str(config.get("previous_state_file", "state/aibox-catalog.previous.json")))
+    generated_path = Path(str(config.get("generated_routes_file", "state/aibox-routes.generated.yaml")))
+    try:
+        docs_text = fetch_text(str(config.get("docs_url", "https://api.ai-box.vn/docs")))
+        pricing_text = fetch_text(str(config.get("pricing_url", "https://api.ai-box.vn/pricing")))
+        pricing_payload = fetch_json(
+            str(config.get("pricing_api_url", "https://api.ai-box.vn/api/pricing")), None
+        )
+        entries = pricing_payload.get("data", []) if isinstance(pricing_payload, dict) else pricing_payload
+        if not isinstance(entries, list):
+            entries = []
+        models_payload = fetch_json(
+            str(config.get("models_url", "https://api.ai-box.vn/v1/models")),
+            {"Authorization": "Bearer " + token},
+        )
+        raw_models = models_payload.get("data", models_payload) if isinstance(models_payload, dict) else models_payload
+        if not isinstance(raw_models, list):
+            return 0
+        runtime_models = [str(item.get("id")) for item in raw_models if isinstance(item, dict) and item.get("id")]
+        if not runtime_models:
+            return 0
+        records, public_names = build_records(
+            runtime_models,
+            docs_text,
+            pricing_text,
+            policy,
+            newapi_entries=entries,
+            quota_per_usd=float(config.get("quota_per_usd", QUOTA_PER_USD)),
+        )
+        if not records:
+            return 0
+        selected = select_routes(records, policy)
+        timestamp = datetime.now(UTC).isoformat()
+        warnings = []
+        if any(r.reason == "price unknown" for r in records):
+            warnings.append("some model prices are unknown; they were not auto-promoted")
+        state = state_from_records(records, runtime_models, public_names, selected, timestamp, warnings)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        if state_path.exists():
+            previous_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(state_path, previous_path)
+        _atomic_json_file(state_path, state)
+        _atomic_text_file(generated_path, _generated_routes_yaml(selected))
+        return len(records)
+    except Exception:
+        return 0
+
+
+def _http_text(url: str) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": "smart-router-catalog/1.0"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        if response.status != 200:
+            raise RuntimeError(f"catalog text HTTP {response.status}")
+        return response.read().decode("utf-8", "replace")
+
+
+def _http_json(url: str, headers: dict[str, str] | None = None) -> Any:
+    request = urllib.request.Request(url, headers=headers or {"User-Agent": "smart-router-catalog/1.0"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        if response.status != 200:
+            raise RuntimeError(f"catalog JSON HTTP {response.status}")
+        return json.loads(response.read().decode("utf-8", "replace"))
+
+
+def _atomic_json_file(path: Path, value: Any) -> None:
+    tmp = path.with_name("." + path.name + ".tmp")
+    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _atomic_text_file(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name("." + path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _generated_routes_yaml(selected: dict[str, list[str]]) -> str:
+    lines = []
+    for route_id, key in (
+        ("claude-router-aibox-cheap", "cheap"),
+        ("claude-router-aibox-engineering", "engineering"),
+        ("claude-router-aibox-review", "critical_review"),
+    ):
+        lines.extend([route_id + ":", "  strategy: priority", "  generated: true", "  candidates:"])
+        for model in selected.get(key, []):
+            lines.extend(["    - upstream: aibox", f"      model: {model}"])
+    return "\n".join(lines) + "\n"
+
+
+def _load_runtime_catalog_config() -> dict[str, Any]:
+    return {
+        "docs_url": "https://api.ai-box.vn/docs",
+        "pricing_url": "https://api.ai-box.vn/pricing",
+        "pricing_api_url": "https://api.ai-box.vn/api/pricing",
+        "models_url": "https://api.ai-box.vn/v1/models",
+        "quota_per_usd": QUOTA_PER_USD,
+        "state_file": "state/aibox-catalog.json",
+        "previous_state_file": "state/aibox-catalog.previous.json",
+        "generated_routes_file": "state/aibox-routes.generated.yaml",
+    }
+
+
+def _load_runtime_policy() -> dict[str, Any]:
+    return {
+        "cheap": {"allowed_families": ["deepseek", "qwen"], "preferred_markers": ["flash", "lite"], "max_input_price_per_million": 0.05, "max_output_price_per_million": 0.10, "max_candidates": 3},
+        "engineering": {"allowed_families": ["glm", "deepseek", "qwen", "kimi"], "preferred_markers": ["pro", "max", "code"], "max_input_price_per_million": 0.20, "max_output_price_per_million": 0.60, "max_candidates": 3},
+        "critical_review": {"manual_preference": ["qwen3.8-max"]},
+        "global_deny_patterns": ["*image*", "*embedding*", "*audio*", "*tts*", "*rerank*"],
     }
 
 

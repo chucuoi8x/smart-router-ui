@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_usage_ledger.py -q)",
+      "PowerShell(g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest tests/unit/test_usage_ledger.py tests/unit/test_db_models.py -q)",
+      "PowerShell(g:/linhnh/claude/smart-router-ui/.venv/Scripts/python.exe -m pytest -q)",
+      "Skill(update-config)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "mcp__codebase-memory__search_code"
+    ]
+  }
+}

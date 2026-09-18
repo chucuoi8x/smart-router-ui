@@ -1,0 +1,307 @@
+{
+  "last_successful_sync": "2026-09-17T09:21:55.996972+00:00",
+  "verified_models": [
+    "glm-5.2",
+    "glm-5.2-fast-preview",
+    "kimi-k2.7-code",
+    "qwen-image-2.0",
+    "qwen3-rerank",
+    "qwen3.6-flash",
+    "qwen3.7-flash",
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.8-max",
+    "text-embedding-v4",
+    "wan2.7-image-pro"
+  ],
+  "runtime_only": [],
+  "docs_only": [
+    "deepseek-v4-flash-0731",
+    "deepseek-v4-pro-0813",
+    "deepseek-v4.1-flash",
+    "ds/deepseek-flash",
+    "ds/deepseek-v4-pro",
+    "glm-5.3",
+    "happyhorse-1.0-video-edit",
+    "happyhorse-1.1-i2v",
+    "happyhorse-1.1-r2v",
+    "happyhorse-1.1-t2v",
+    "kimi-k3",
+    "kimi/kimi-k3",
+    "qwen-image-3.0",
+    "qwen-image-3.0-pro",
+    "qwen3.7-text-embedding",
+    "qwen3.8-flash",
+    "qwen3.8-max-0902",
+    "wan2.7-i2v",
+    "wan2.7-r2v",
+    "wan2.7-r2v-2026-06-12",
+    "wan2.7-t2v",
+    "wan2.7-videoedit",
+    "wan3.0-video",
+    "wan3.0-video-prime",
+    "zhipu/glm-5.2",
+    "zhipu/glm-5.3"
+  ],
+  "unclassified_runtime_models": [],
+  "prices": {
+    "glm-5.2": {
+      "input_per_million": 0.28,
+      "output_per_million": 0.87999999999996
+    },
+    "glm-5.2-fast-preview": {
+      "input_per_million": 0.56,
+      "output_per_million": 1.75999999999992
+    },
+    "kimi-k2.7-code": {
+      "input_per_million": 0.19,
+      "output_per_million": 0.79999999999991
+    },
+    "qwen-image-2.0": {
+      "input_per_million": null,
+      "output_per_million": null
+    },
+    "qwen3-rerank": {
+      "input_per_million": 0.01,
+      "output_per_million": 0.01
+    },
+    "qwen3.6-flash": {
+      "input_per_million": 0.047,
+      "output_per_million": 0.094
+    },
+    "qwen3.7-flash": {
+      "input_per_million": 0.02,
+      "output_per_million": 0.08
+    },
+    "qwen3.7-max": {
+      "input_per_million": 0.25,
+      "output_per_million": 0.75
+    },
+    "qwen3.7-plus": {
+      "input_per_million": 0.064,
+      "output_per_million": 0.265
+    },
+    "qwen3.8-max": {
+      "input_per_million": 0.4,
+      "output_per_million": 1.2000000000000002
+    },
+    "text-embedding-v4": {
+      "input_per_million": 0.014,
+      "output_per_million": 0.014
+    },
+    "wan2.7-image-pro": {
+      "input_per_million": null,
+      "output_per_million": null
+    }
+  },
+  "selected_routes": {
+    "cheap": [
+      "qwen3.7-flash",
+      "qwen3.6-flash"
+    ],
+    "engineering": [
+      "qwen3.7-plus"
+    ],
+    "critical_review": [
+      "qwen3.8-max"
+    ],
+    "critical_candidates": []
+  },
+  "critical_candidates": [],
+  "discovered": [
+    {
+      "name": "glm-5.2",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": 0.28,
+        "output_per_million": 0.87999999999996
+      },
+      "family": "glm",
+      "classification": "engineering",
+      "denied": false,
+      "cheap_eligible": false,
+      "engineering_eligible": false,
+      "reason": "input price exceeds ceiling"
+    },
+    {
+      "name": "glm-5.2-fast-preview",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": 0.56,
+        "output_per_million": 1.75999999999992
+      },
+      "family": "glm",
+      "classification": "engineering",
+      "denied": false,
+      "cheap_eligible": false,
+      "engineering_eligible": false,
+      "reason": "input price exceeds ceiling"
+    },
+    {
+      "name": "kimi-k2.7-code",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": 0.19,
+        "output_per_million": 0.79999999999991
+      },
+      "family": "kimi",
+      "classification": "engineering",
+      "denied": false,
+      "cheap_eligible": false,
+      "engineering_eligible": false,
+      "reason": "output price exceeds ceiling"
+    },
+    {
+      "name": "qwen-image-2.0",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": null,
+        "output_per_million": null
+      },
+      "family": "qwen",
+      "classification": "unknown",
+      "denied": true,
+      "cheap_eligible": false,
+      "engineering_eligible": false,
+      "reason": "global deny pattern"
+    },
+    {
+      "name": "qwen3-rerank",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": 0.01,
+        "output_per_million": 0.01
+      },
+      "family": "qwen",
+      "classification": "unknown",
+      "denied": true,
+      "cheap_eligible": false,
+      "engineering_eligible": false,
+      "reason": "global deny pattern"
+    },
+    {
+      "name": "qwen3.6-flash",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": 0.047,
+        "output_per_million": 0.094
+      },
+      "family": "qwen",
+      "classification": "cheap",
+      "denied": false,
+      "cheap_eligible": true,
+      "engineering_eligible": false,
+      "reason": "family and cheap marker matched"
+    },
+    {
+      "name": "qwen3.7-flash",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": 0.02,
+        "output_per_million": 0.08
+      },
+      "family": "qwen",
+      "classification": "cheap",
+      "denied": false,
+      "cheap_eligible": true,
+      "engineering_eligible": false,
+      "reason": "family and cheap marker matched"
+    },
+    {
+      "name": "qwen3.7-max",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": 0.25,
+        "output_per_million": 0.75
+      },
+      "family": "qwen",
+      "classification": "engineering",
+      "denied": false,
+      "cheap_eligible": false,
+      "engineering_eligible": false,
+      "reason": "input price exceeds ceiling"
+    },
+    {
+      "name": "qwen3.7-plus",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": 0.064,
+        "output_per_million": 0.265
+      },
+      "family": "qwen",
+      "classification": "engineering",
+      "denied": false,
+      "cheap_eligible": false,
+      "engineering_eligible": true,
+      "reason": "allowed engineering family matched"
+    },
+    {
+      "name": "qwen3.8-max",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": 0.4,
+        "output_per_million": 1.2000000000000002
+      },
+      "family": "qwen",
+      "classification": "engineering",
+      "denied": false,
+      "cheap_eligible": false,
+      "engineering_eligible": false,
+      "reason": "input price exceeds ceiling"
+    },
+    {
+      "name": "text-embedding-v4",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": 0.014,
+        "output_per_million": 0.014
+      },
+      "family": null,
+      "classification": "unknown",
+      "denied": true,
+      "cheap_eligible": false,
+      "engineering_eligible": false,
+      "reason": "global deny pattern"
+    },
+    {
+      "name": "wan2.7-image-pro",
+      "runtime": true,
+      "public": true,
+      "verified": true,
+      "prices": {
+        "input_per_million": null,
+        "output_per_million": null
+      },
+      "family": null,
+      "classification": "unknown",
+      "denied": true,
+      "cheap_eligible": false,
+      "engineering_eligible": false,
+      "reason": "global deny pattern"
+    }
+  ],
+  "warnings": [],
+  "provider": "aibox"
+}
