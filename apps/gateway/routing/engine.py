@@ -44,6 +44,7 @@ class RouterEngine:
         self.quota_reservations = quota_reservations
         self._scoring_config = scoring_config
         self._score_calculator: Any | None = None
+        self._rr_current: dict[str, dict[str, float]] = {}
         if scoring_config and scoring_config.enabled:
             from apps.gateway.routing.scoring import SmartScoreCalculator
             self._score_calculator = SmartScoreCalculator(config=scoring_config)
@@ -118,6 +119,37 @@ class RouterEngine:
     def _hard_state_only(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
         return [c for c in candidates if hard_state_eligible(c.metadata)]
 
+    def _weighted_rr_select(self, candidates: list[ResourceCandidate], route_name: str) -> list[ResourceCandidate]:
+        """Smooth weighted round-robin selection.
+
+        Each call advances the RR state and returns candidates ordered with
+        the selected candidate first, followed by remaining candidates sorted
+        by their current weight deficit (descending).
+        """
+        if len(candidates) < 2:
+            return list(candidates)
+
+        current = self._rr_current.setdefault(route_name, {})
+        total_weight = sum(c.weight for c in candidates)
+
+        # Increment each candidate's current weight by its weight
+        for candidate in candidates:
+            key = candidate.resource_ref.key
+            current[key] = current.get(key, 0.0) + candidate.weight
+
+        # Select the candidate with highest current weight
+        selected = max(candidates, key=lambda c: current.get(c.resource_ref.key, 0.0))
+        selected_key = selected.resource_ref.key
+
+        # Decrement selected candidate's current weight by total weight
+        current[selected_key] -= total_weight
+
+        # Build ordered list: selected first, then remaining sorted by current weight (descending)
+        remaining = [c for c in candidates if c.resource_ref.key != selected_key]
+        remaining.sort(key=lambda c: current.get(c.resource_ref.key, 0.0), reverse=True)
+
+        return [selected] + remaining
+
     def select_candidates(
         self,
         route_name: str,
@@ -133,6 +165,12 @@ class RouterEngine:
         fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True, required_capabilities=required_capabilities)
         scored_primary = self._quota_rank_sync(primary)
         scored_fallback = self._quota_rank_sync(fallback)
+
+        # Check strategy before applying smart scoring
+        if route.strategy == "smooth_weighted_rr":
+            rr_primary = self._weighted_rr_select(scored_primary, route_name)
+            return list(rr_primary) + list(scored_fallback)
+
         return list(self._apply_smart_scoring(scored_primary, route_name, conversation_thread=conversation_thread)) + list(
             self._apply_smart_scoring(scored_fallback, route_name, conversation_thread=conversation_thread)
         )
@@ -154,6 +192,12 @@ class RouterEngine:
 
         scored_primary = await self._quota_rank(primary)
         scored_fallback = await self._quota_rank(fallback)
+
+        # Check strategy before applying smart scoring
+        if route.strategy == "smooth_weighted_rr":
+            rr_primary = self._weighted_rr_select(scored_primary, route_name)
+            return list(rr_primary) + list(scored_fallback)
+
         return list(self._apply_smart_scoring(scored_primary, route_name, conversation_thread=conversation_thread)) + list(
             self._apply_smart_scoring(scored_fallback, route_name, conversation_thread=conversation_thread)
         )

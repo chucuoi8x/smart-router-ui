@@ -483,64 +483,13 @@ class SmartRouter:
         conversation_thread: str | None = None,
         required_capabilities: dict[str, Any] | None = None,
     ) -> list[Candidate]:
-        """Route selection logic — uses RouterEngine except where legacy strategies apply."""
-        route_cfg = self.routes.get(route_name) or {}
-        strategy = route_cfg.get("strategy", "priority")
-        
-        # Legacy smooth_weighted_rr cycles locally — engine doesn't replicate this
-        if strategy == "smooth_weighted_rr":
-            return await self._legacy_candidate_order(
-                route_name, conversation_thread, required_capabilities
-            )
-        
-        # Production path: delegate to RouterEngine
+        """Delegate every routing strategy to RouterEngine."""
         resource_candidates = await self.router_engine.select_candidates_async(
             route_name,
             conversation_thread=conversation_thread,
             required_capabilities=required_capabilities,
         )
         return self._convert_resource_candidates(resource_candidates)
-
-    async def _legacy_candidate_order(
-        self,
-        route_name: str,
-        conversation_thread: str | None = None,
-        required_capabilities: dict[str, Any] | None = None,
-    ) -> list[Candidate]:
-        """Legacy routing path for smooth_weighted_rr strategy."""
-        async with self.state_lock:
-            route = self.routes.get(route_name)
-            if route is None:
-                return []
-            primary = await self._quota_available_candidates(
-                [c for c in route["candidates"] if self._is_available(c)]
-            )
-            fallback = await self._quota_available_candidates(
-                [c for c in route.get("fallback", []) if self._is_available(c)]
-            )
-        primary = self._apply_policy_constraints(
-            primary, route_name, is_fallback=False, required_capabilities=required_capabilities
-        )
-        fallback = self._apply_policy_constraints(
-            fallback, route_name, is_fallback=True, required_capabilities=required_capabilities
-        )
-        if len(primary) >= 2:
-            async with self.state_lock:
-                current = self.rr_current.setdefault(route_name, {})
-                total = sum(c.weight for c in primary)
-                for candidate in primary:
-                    current[candidate.key] = current.get(candidate.key, 0.0) + candidate.weight
-                selected = max(primary, key=lambda item: current.get(item.key, 0.0))
-                current[selected.key] -= total
-                remaining = [candidate for candidate in primary if candidate != selected]
-                remaining.sort(key=lambda item: current.get(item.key, 0.0), reverse=True)
-                ordered = [selected, *remaining]
-        else:
-            ordered = list(primary)
-        ordered = ordered + fallback
-        ordered = await self._async_apply_scoring(ordered, route_name, conversation_thread=conversation_thread)
-        return ordered
-
 
     async def _quota_available_candidates(self, candidates: list[Candidate]) -> list[Candidate]:
         if self.quota_reservations is None:

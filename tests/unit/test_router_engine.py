@@ -477,9 +477,8 @@ routes:
         quota.add_resource(QuotaResource("model:blocked", "model", "requests", 0, 60))
         quota.add_resource(QuotaResource("model:fallback", "model", "requests", 10, 60))
 
-        with patch.dict(os.environ, {"USE_ROUTER_ENGINE": "true"}):
-            router = SmartRouter(config, quota_reservations=quota)
-            candidates = asyncio.run(router._candidate_order("chat"))
+        router = SmartRouter(config, quota_reservations=quota)
+        candidates = asyncio.run(router._candidate_order("chat"))
 
         self.assertEqual(["backup:fallback"], [candidate.key for candidate in candidates])
 
@@ -529,36 +528,35 @@ routes:
         from router import Candidate, SmartRouter
         from unittest.mock import patch
 
-        with patch.dict(os.environ, {'USE_ROUTER_ENGINE': 'true'}):
-            config = {
-                'routes': {
-                    'test-route': {
-                        'strategy': 'priority',
-                        'candidates': [
-                            {'upstream': 'primary', 'model': 'model-a'},
-                            {'upstream': 'secondary', 'model': 'model-b'},
-                        ],
-                    }
-                },
-                'upstreams': {
-                    'primary': {'base_url': 'https://primary', 'auth': {'mode': 'bearer', 'token_env': 'PRIMARY_TOKEN'}},
-                    'secondary': {'base_url': 'https://secondary', 'auth': {'mode': 'bearer', 'token_env': 'SECONDARY_TOKEN'}},
-                },
-                'logging': {'level': 'CRITICAL'},
-            }
-            router = SmartRouter(config)
-            classification = {
-                'kind': 'RATE_LIMIT',
-                'scope': 'credential/model/connection',
-                'retry_after': '60',
-                'reset_at': None,
-                'consumption_uncertainty': 'unknown',
-            }
+        config = {
+            'routes': {
+                'test-route': {
+                    'strategy': 'priority',
+                    'candidates': [
+                        {'upstream': 'primary', 'model': 'model-a'},
+                        {'upstream': 'secondary', 'model': 'model-b'},
+                    ],
+                }
+            },
+            'upstreams': {
+                'primary': {'base_url': 'https://primary', 'auth': {'mode': 'bearer', 'token_env': 'PRIMARY_TOKEN'}},
+                'secondary': {'base_url': 'https://secondary', 'auth': {'mode': 'bearer', 'token_env': 'SECONDARY_TOKEN'}},
+            },
+            'logging': {'level': 'CRITICAL'},
+        }
+        router = SmartRouter(config)
+        classification = {
+            'kind': 'RATE_LIMIT',
+            'scope': 'credential/model/connection',
+            'retry_after': '60',
+            'reset_at': None,
+            'consumption_uncertainty': 'unknown',
+        }
 
-            asyncio.run(router._record_failure(Candidate('primary', 'model-a'), 429, 'rate limited', classification))
-            candidates = router.router_engine.select_candidates('test-route')
+        asyncio.run(router._record_failure(Candidate('primary', 'model-a'), 429, 'rate limited', classification))
+        candidates = router.router_engine.select_candidates('test-route')
 
-            self.assertEqual(['secondary'], [c.resource_ref.provider_connection_id for c in candidates])
+        self.assertEqual(['secondary'], [c.resource_ref.provider_connection_id for c in candidates])
 
 if __name__ == '__main__':
     unittest.main()
