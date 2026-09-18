@@ -2814,3 +2814,7 @@ Follow-up risks / TODOs:
 - Kiểm chứng `ResourceCandidate` dùng connection/model động, `LegacyConfigCompiler` không áp provider name cụ thể cho upstream tùy ý, `RouterEngine` resolve route động.
 - Kết quả: targeted `3 passed`; full `563 passed, 6 skipped, 1 warning`.
 - Push: commit `fbfadb5` trên `feature/admin-api-baseline`.
+
+## Step 179 — Usage ledger fail-safe invariant
+
+Added regression coverage proving exceptions from usage-ledger writes do not propagate into routing/data-plane callers. Test injects a failing ledger, confirms write methods are attempted, and verifies exceptions are swallowed by `SmartRouter` ledger integration. Focused test and full suite pass.
