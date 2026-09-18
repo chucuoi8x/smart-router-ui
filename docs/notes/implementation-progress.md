@@ -2740,3 +2740,18 @@ Follow-up risks / TODOs:
 - Sua: them `ADMIN_AUTH_TOKEN_FALLBACK` + `_admin_expected_authorization()` doc `SMART_ROUTER_KEY` (hoac `SMART_ROUTER_ADMIN_KEY`) tu env, fallback ve `Bearer test-admin-key` khi khong co env. Khong doi tests.
 - Van de 2 (docs drift): `CHANGELOG.md` va `docs/release-notes/1.0.md` con `508 passed`; sau Step 162 count la `528 passed, 6 skipped`.
 - Ket qua: unit `test_admin_api` ok, full `528 passed, 6 skipped, 1 warning`; live smoke `200-expected 200` cho overview voi cung token voi gateway.
+## Step 169 — HTTP integration regression for OpenAI streaming
+
+- Vấn đề: unit tests xác minh transformer nhưng chưa kiểm chứng toàn bộ FastAPI `/v1/chat/completions` path.
+- Thêm `tests/integration/test_openai_streaming_endpoint.py`: gọi endpoint qua `httpx.ASGITransport`, fake `SmartRouter.handle_messages()` trả native Messages SSE.
+- Kiểm chứng: request OpenAI được đổi thành Messages request; response trả `text/event-stream`; có role, content, finish reason; `[DONE]` xuất hiện đúng một lần.
+- Kết quả: targeted `1 passed`; full `551 passed, 6 skipped, 1 warning`.
+- Push: commit `d225d6b` trên `feature/admin-api-baseline`.
+
+## Step 170 — Verification checkpoint
+
+- Worktree sạch sau commit Step 169.
+- `git diff --check`: pass.
+- Secret scan tracked files: không phát hiện credential pattern.
+- README §38 request ID đã tồn tại; `SmartRouter` hiện đóng vai trò routing engine testable, nên không tạo lớp facade rỗng trùng logic.
+- Next: Docker runtime smoke khi có Docker Desktop; nếu chưa có Docker, tiếp tục contract hardening không phụ thuộc runtime.
