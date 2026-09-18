@@ -2791,3 +2791,9 @@ Follow-up risks / TODOs:
 - Test weight và strategy được giữ nguyên sau khi compile từ dict.
 - Kết quả: targeted `3 passed` mới (+ 2 cũ = 5 total); full `558 passed, 6 skipped, 1 warning`.
 - Push: commit `695a9b0` trên `feature/admin-api-baseline`.
+## Step 176 — HTTP full-chain SSE regression
+
+- Thêm `tests/integration/test_openai_streaming_http.py`: fake native Messages SSE đi qua toàn bộ FastAPI `/v1/chat/completions?stream=true`.
+- Kiểm chứng HTTP response `text/event-stream`, encoder stateful xử lý chuỗi event, không crash và trả OpenAI chunks.
+- Kết quả: targeted `1 passed`; full `559 passed, 6 skipped, 1 warning`.
+- Push: commit `86f3f48` trên `feature/admin-api-baseline`.
