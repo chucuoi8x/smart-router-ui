@@ -18,6 +18,7 @@ from apps.gateway.db.dependencies import get_session, get_provider_registry_repo
 from apps.gateway.quota.reservations import QuotaResource, QuotaResourceRepository
 from apps.gateway.db.models import AttemptLedger, ProviderConnection, ProviderCredential, ProviderModel, RequestLedger, UsageLedger
 from apps.gateway.db.provider_registry import ProviderRegistryRepository
+from apps.gateway.db.control_plane import ControlPlaneRepository
 from apps.gateway.providers.registry import default_driver_registry
 from apps.gateway.providers.base import DriverNotFoundError
 from apps.gateway.security.crypto import decrypt_secret, encrypt_secret
@@ -55,16 +56,86 @@ _template_registry = ProviderTemplateRegistry()
 _revision_manager = ConfigRevisionManager()
 # PR-05: provider connections, credentials and imported models are persisted in
 # the database through ProviderRegistryRepository; no in-memory registry state.
-_projects: dict[str, dict[str, Any]] = {}
-_project_keys: dict[str, list[dict[str, Any]]] = {}
-_project_budgets: dict[str, dict[str, Any]] = {}
-_policies: dict[str, dict[str, Any]] = {"paid-fallback": {"policy": "paid-fallback", "enabled": False, "requires_budget": True, "project_id": None}}
-_alerts: list[dict[str, Any]] = []
-_quota_resources: dict[str, dict[str, Any]] = {}
-_audit_events: list[dict[str, Any]] = []
-_settings: dict[str, Any] = {"log_level": "INFO"}
-_driver_registry = default_driver_registry()
 _provider_health_cache: dict[str, dict[str, Any]] = {}
+_driver_registry = default_driver_registry()
+
+
+def _serialize_datetime(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _serialize_project(project: Any) -> dict[str, Any]:
+    return {
+        "project_id": project.id,
+        "name": project.name,
+        "description": project.description,
+        "active": project.is_active,
+        "created_at": _serialize_datetime(project.created_at),
+    }
+
+
+def _serialize_key(key: Any, *, secret: str | None = None) -> dict[str, Any]:
+    result = {
+        "key_id": key.id,
+        "project_id": key.project_id,
+        "alias": key.alias,
+        "active": key.is_active,
+        "created_at": _serialize_datetime(key.created_at),
+        "revoked_at": _serialize_datetime(key.revoked_at),
+    }
+    if secret is not None:
+        result["secret"] = secret
+    return result
+
+
+def _serialize_budget(budget: Any) -> dict[str, Any]:
+    return {
+        "project_id": budget.project_id,
+        "currency": budget.currency,
+        "ceiling": budget.ceiling,
+        "used": budget.used,
+        "remaining": budget.ceiling - budget.used,
+        "allow_paid_fallback": budget.allow_paid_fallback,
+        "updated_at": _serialize_datetime(budget.updated_at),
+    }
+
+
+def _serialize_alert(alert: Any) -> dict[str, Any]:
+    return {
+        "alert_id": alert.id,
+        "severity": alert.severity,
+        "message": alert.message,
+        "source": alert.source,
+        "status": alert.status,
+        "created_at": _serialize_datetime(alert.created_at),
+    }
+
+
+def _serialize_audit_event(event: Any) -> dict[str, Any]:
+    return {
+        "action": event.action,
+        **dict(event.metadata_ or {}),
+        "created_at": _serialize_datetime(event.created_at),
+    }
+
+
+def _redact_audit_event(event: dict[str, Any]) -> dict[str, Any]:
+    safe = {k: v for k, v in event.items() if k.lower() not in {"api_key", "credential_encrypted", "credential", "secret", "token"}}
+    for k, v in list(safe.items()):
+        if isinstance(v, str) and v.startswith("sk-"):
+            safe[k] = "[REDACTED]"
+    return safe
+
+
+async def _write_audit(db: AsyncSession, action: str, **metadata: Any) -> None:
+    safe = {k: v for k, v in metadata.items() if k.lower() not in {"api_key", "secret", "token", "credential", "credential_encrypted"}}
+    await ControlPlaneRepository(db).add_audit_event(action, safe)
+
+
+def _control_repo(db: AsyncSession) -> ControlPlaneRepository:
+    return ControlPlaneRepository(db)
+
+
 def _parse_audit_since(value: str | None) -> datetime | None:
     if value is None or value == "":
         return None
@@ -165,16 +236,16 @@ async def list_providers(repo: ProviderRegistryRepository = Depends(get_provider
 @router.delete("/providers/{connection_id}")
 async def delete_provider(
     connection_id: str,
-    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
+    repo = ProviderRegistryRepository(db)
     conn = await repo.get_connection(connection_id)
     if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
     name = conn.name
     await repo.delete_connection(connection_id)
-    _audit_events.append(
-        {"action": "provider.deleted", "connection_id": connection_id, "name": name, "created_at": datetime.now(UTC).isoformat()}
-    )
+    await _write_audit(db, "provider.deleted", connection_id=connection_id, name=name)
+    await db.commit()
     return {"connection_id": connection_id, "deleted": True}
 
 
@@ -228,8 +299,9 @@ async def get_provider_health(
 async def update_provider(
     connection_id: str,
     payload: dict[str, Any] = Body(...),
-    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    repo = ProviderRegistryRepository(db)
     conn = await repo.get_connection(connection_id)
     if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
@@ -266,40 +338,40 @@ async def update_provider(
                 credential_encrypted=fields["credential_encrypted"],
             )
     timestamp = datetime.now(UTC).isoformat()
-    _audit_events.append({
-        "action": "provider.updated",
-        "connection_id": connection_id,
-        "fields": sorted([k for k in payload if k != "api_key"]) + (["credential_present"] if api_key else []),
-        "created_at": timestamp,
-    })
+    await _write_audit(db, "provider.updated", connection_id=connection_id, fields=sorted([k for k in payload if k != "api_key"]) + (["credential_present"] if api_key else []))
+    await db.commit()
     return _serialize_provider(conn, credential_present=await repo.has_credential(connection_id))
 
 
 @router.post("/providers/{connection_id}/deactivate")
 async def deactivate_provider(
     connection_id: str,
-    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    repo = ProviderRegistryRepository(db)
     conn = await repo.get_connection(connection_id)
     if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
     await repo.set_connection_active(conn, False)
     timestamp = datetime.now(UTC).isoformat()
-    _audit_events.append({"action": "provider.deactivated", "connection_id": connection_id, "created_at": timestamp})
+    await _write_audit(db, "provider.deactivated", connection_id=connection_id)
+    await db.commit()
     return {"connection_id": connection_id, "active": False, "disabled": True, "changed_at": timestamp}
 
 
 @router.post("/providers/{connection_id}/reactivate")
 async def reactivate_provider(
     connection_id: str,
-    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    repo = ProviderRegistryRepository(db)
     conn = await repo.get_connection(connection_id)
     if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
     await repo.set_connection_active(conn, True)
     timestamp = datetime.now(UTC).isoformat()
-    _audit_events.append({"action": "provider.reactivated", "connection_id": connection_id, "created_at": timestamp})
+    await _write_audit(db, "provider.reactivated", connection_id=connection_id)
+    await db.commit()
     return {"connection_id": connection_id, "active": True, "disabled": False, "changed_at": timestamp}
 
 
@@ -452,8 +524,9 @@ async def discover_provider_models(
 async def import_provider_models(
     connection_id: str,
     payload: dict[str, Any] = Body(...),
-    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    repo = ProviderRegistryRepository(db)
     conn = await repo.get_connection(connection_id)
     if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
@@ -493,7 +566,8 @@ async def import_provider_models(
     _revision_manager.activate(rev_id)
     for mdl in added:
         await repo.import_model(connection_id=conn.id, model_id=mdl)
-    _audit_events.append({"action":"route.models.imported","route_id":route_id,"provider_id":connection_id,"imported":added,"revision_id":rev_id,"created_at":datetime.now(UTC).isoformat()})
+    await _write_audit(db, "route.models.imported", route_id=route_id, provider_id=connection_id, imported=added, revision_id=rev_id)
+    await db.commit()
     return {"route_id":route_id,"revision_id":rev_id,"imported":added,"candidate_count":len(candidates)}
 
 
@@ -501,8 +575,9 @@ async def import_provider_models(
 async def add_provider_credential(
     connection_id: str,
     payload: dict[str, Any] = Body(...),
-    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    repo = ProviderRegistryRepository(db)
     conn = await repo.get_connection(connection_id)
     if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
@@ -515,7 +590,8 @@ async def add_provider_credential(
         alias=alias,
         credential_encrypted=encrypt_secret(api_key),
     )
-    _audit_events.append({"action": "credential.added", "connection_id": connection_id, "credential_id": cred.id, "alias": alias, "created_at": datetime.now(UTC).isoformat()})
+    await _write_audit(db, "credential.added", connection_id=connection_id, credential_id=cred.id, alias=alias)
+    await db.commit()
     return _serialize_credential(cred)
 
 
@@ -536,8 +612,9 @@ async def list_provider_credentials(
 async def delete_provider_credential(
     connection_id: str,
     credential_id: str,
-    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    repo = ProviderRegistryRepository(db)
     conn = await repo.get_connection(connection_id)
     if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
@@ -546,93 +623,73 @@ async def delete_provider_credential(
         raise HTTPException(status_code=404, detail="credential not found")
     alias = cred.alias
     await repo.delete_credential(credential_id)
-    _audit_events.append({"action": "credential.deleted", "connection_id": connection_id, "credential_id": credential_id, "alias": alias, "created_at": datetime.now(UTC).isoformat()})
+    await _write_audit(db, "credential.deleted", connection_id=connection_id, credential_id=credential_id, alias=alias)
+    await db.commit()
     return {"deleted": True, "credential_id": credential_id}
 
 
 @router.post("/projects", status_code=201)
-def create_project(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def create_project(payload: dict[str, Any] = Body(...), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     name = str(payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    project_id = f"proj_{uuid.uuid4().hex[:12]}"
     secret_key = f"sr_{uuid.uuid4().hex}"
-    record = {
-        "project_id": project_id,
-        "name": name,
-        "description": str(payload.get("description") or ""),
-        "key_hash": encrypt_secret(secret_key),
-        "created_at": datetime.now(UTC).isoformat(),
-        "active": True,
-    }
-    _projects[project_id] = record
-    _audit_events.append({"action":"project.created","project_id":project_id,"name":name,"created_at":datetime.now(UTC).isoformat()})
-    # Secret key returned exactly once; never persisted plaintext or returned by list/detail.
-    return {"project_id": project_id, "name": name, "description": record["description"], "secret_key": secret_key}
+    repo = _control_repo(db)
+    project = await repo.create_project(name=name, description=str(payload.get("description") or ""), secret_key_hash=encrypt_secret(secret_key))
+    await _write_audit(db, "project.created", project_id=project.id, name=name)
+    await db.commit()
+    return {"project_id": project.id, "name": name, "description": project.description, "secret_key": secret_key}
 
 
 @router.get("/projects")
-def list_projects() -> dict[str, Any]:
-    items = [
-        {"project_id": p["project_id"], "name": p["name"], "description": p["description"], "active": p["active"], "created_at": p["created_at"]}
-        for p in _projects.values()
-    ]
+async def list_projects(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    items = [_serialize_project(p) for p in await _control_repo(db).list_projects()]
     return {"items": items, "total": len(items)}
 
 
 @router.post("/projects/{project_id}/keys", status_code=201)
-def create_project_key(project_id: str, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    project = _projects.get(project_id)
-    if project is None:
+async def create_project_key(project_id: str, payload: dict[str, Any] = Body(default={}), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    repo = _control_repo(db)
+    if await repo.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
     alias = str(payload.get("alias") or "default").strip()
     if not alias:
         raise HTTPException(status_code=400, detail="alias cannot be empty")
-    key_id = f"key_{uuid.uuid4().hex[:12]}"
     secret = f"srk_{uuid.uuid4().hex}"
-    record = {
-        "key_id": key_id,
-        "project_id": project_id,
-        "alias": alias,
-        "secret_encrypted": encrypt_secret(secret),
-        "active": True,
-        "created_at": datetime.now(UTC).isoformat(),
-        "revoked_at": None,
-    }
-    _project_keys.setdefault(project_id, []).append(record)
-    _audit_events.append({"action": "project.key.created", "project_id": project_id, "key_id": key_id, "alias": alias, "created_at": record["created_at"]})
-    return {"key_id": key_id, "project_id": project_id, "alias": alias, "secret": secret, "active": True, "created_at": record["created_at"]}
+    key = await repo.create_project_key(project_id=project_id, alias=alias, secret_encrypted=encrypt_secret(secret))
+    await _write_audit(db, "project.key.created", project_id=project_id, key_id=key.id, alias=alias)
+    await db.commit()
+    return _serialize_key(key, secret=secret)
 
 
 @router.get("/projects/{project_id}/keys")
-def list_project_keys(project_id: str) -> dict[str, Any]:
-    if project_id not in _projects:
+async def list_project_keys(project_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    repo = _control_repo(db)
+    if await repo.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
-    items = [
-        {"key_id": k["key_id"], "project_id": project_id, "alias": k["alias"], "active": bool(k["active"]), "created_at": k["created_at"], "revoked_at": k.get("revoked_at")}
-        for k in _project_keys.get(project_id, [])
-    ]
+    items = [_serialize_key(k) for k in await repo.list_project_keys(project_id)]
     return {"items": items, "total": len(items)}
 
 
 @router.delete("/projects/{project_id}/keys/{key_id}", status_code=200)
-def revoke_project_key(project_id: str, key_id: str) -> dict[str, Any]:
-    if project_id not in _projects:
+async def revoke_project_key(project_id: str, key_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    repo = _control_repo(db)
+    if await repo.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
-    target = next((k for k in _project_keys.get(project_id, []) if k["key_id"] == key_id), None)
-    if target is None:
+    key = await repo.get_project_key(project_id, key_id)
+    if key is None:
         raise HTTPException(status_code=404, detail="project key not found")
-    if target["active"]:
-        target["active"] = False
-        target["revoked_at"] = datetime.now(UTC).isoformat()
-        _audit_events.append({"action": "project.key.revoked", "project_id": project_id, "key_id": key_id, "created_at": target["revoked_at"]})
-    return {"project_id": project_id, "key_id": key_id, "revoked": True, "active": False, "revoked_at": target["revoked_at"]}
+    if key.is_active:
+        await repo.revoke_project_key(key)
+        await _write_audit(db, "project.key.revoked", project_id=project_id, key_id=key_id)
+        await db.commit()
+    return {"project_id": project_id, "key_id": key_id, "revoked": True, "active": False, "revoked_at": _serialize_datetime(key.revoked_at)}
 
 
 @router.put("/projects/{project_id}/budget")
-def upsert_project_budget(project_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    project = _projects.get(project_id)
-    if project is None:
+async def upsert_project_budget(project_id: str, payload: dict[str, Any] = Body(...), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    repo = _control_repo(db)
+    if await repo.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
     ceiling_raw = payload.get("ceiling")
     if ceiling_raw is None:
@@ -644,142 +701,116 @@ def upsert_project_budget(project_id: str, payload: dict[str, Any] = Body(...)) 
         raise HTTPException(status_code=400, detail="ceiling/used must be numbers") from exc
     if ceiling < 0 or used < 0 or used > ceiling:
         raise HTTPException(status_code=400, detail="invalid budget bounds: used must be between 0 and ceiling")
-    currency = str(payload.get("currency") or "USD").strip().upper()
-    if not currency:
-        currency = "USD"
-    allow_paid = bool(payload.get("allow_paid_fallback", True)) if "allow_paid_fallback" in payload else True
-    # if explicitly passed allow_paid_fallback keep that value
-    if "allow_paid_fallback" in payload:
-        allow_paid = bool(payload["allow_paid_fallback"])
-    remaining = ceiling - used
-    record = {
-        "project_id": project_id,
-        "currency": currency,
-        "ceiling": ceiling,
-        "used": used,
-        "remaining": remaining,
-        "allow_paid_fallback": allow_paid,
-        "updated_at": datetime.now(UTC).isoformat(),
-    }
-    _project_budgets[project_id] = record
-    _audit_events.append({"action": "project.budget.updated", "project_id": project_id, "ceiling": ceiling, "used": used, "created_at": record["updated_at"]})
-    return dict(record)
+    currency = str(payload.get("currency") or "USD").strip().upper() or "USD"
+    allow_paid = bool(payload.get("allow_paid_fallback", True))
+    budget = await repo.upsert_budget(project_id=project_id, currency=currency, ceiling=ceiling, used=used, allow_paid_fallback=allow_paid)
+    await _write_audit(db, "project.budget.updated", project_id=project_id, ceiling=ceiling, used=used)
+    await db.commit()
+    return _serialize_budget(budget)
 
 
 @router.get("/projects/{project_id}/budget")
-def get_project_budget(project_id: str) -> dict[str, Any]:
-    project = _projects.get(project_id)
-    if project is None:
+async def get_project_budget(project_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    repo = _control_repo(db)
+    if await repo.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
-    record = _project_budgets.get(project_id)
-    if record is None:
+    budget = await repo.get_budget(project_id)
+    if budget is None:
         raise HTTPException(status_code=404, detail="budget not found")
-    return dict(record)
+    return _serialize_budget(budget)
 
 
 @router.get("/policies/paid-fallback")
-def get_paid_fallback_policy() -> dict[str, Any]:
-    record = _policies.get("paid-fallback", {"policy": "paid-fallback", "enabled": False, "requires_budget": True, "project_id": None})
-    return dict(record)
+async def get_paid_fallback_policy(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    return await _control_repo(db).get_policy("paid-fallback")
 
 
 @router.put("/policies/paid-fallback")
-def update_paid_fallback_policy(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def update_paid_fallback_policy(payload: dict[str, Any] = Body(...), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     if "enabled" not in payload:
         raise HTTPException(status_code=400, detail="enabled is required")
     enabled = bool(payload["enabled"])
     project_id = payload.get("project_id")
+    repo = _control_repo(db)
     if enabled:
-        # Enabling requires budget approval when a project_id is supplied, or global gate when not.
         if project_id is not None:
             project_id = str(project_id)
-            if project_id not in _projects:
+            if await repo.get_project(project_id) is None:
                 raise HTTPException(status_code=404, detail="project not found")
-            budget = _project_budgets.get(project_id)
-            if budget is None or not bool(budget.get("allow_paid_fallback")):
+            budget = await repo.get_budget(project_id)
+            if budget is None or not budget.allow_paid_fallback:
                 raise HTTPException(status_code=400, detail="paid fallback requires budget with allow_paid_fallback=true")
-            remaining = float(budget.get("remaining", budget.get("ceiling", 0)) )
-            if remaining <= 0 and float(budget.get("ceiling", 0)) > 0:
+            if budget.ceiling > 0 and budget.ceiling - budget.used <= 0:
                 raise HTTPException(status_code=400, detail="budget exhausted: cannot enable paid fallback")
-        else:
-            # Global enable without project: require at least one budget with allow_paid_fallback=true
-            if not any(bool(b.get("allow_paid_fallback")) for b in _project_budgets.values()):
-                raise HTTPException(status_code=400, detail="paid fallback requires at least one budget with allow_paid_fallback=true")
-    record = {"policy": "paid-fallback", "enabled": enabled, "requires_budget": True, "project_id": project_id}
-    _policies["paid-fallback"] = record
-    _audit_events.append({"action": "policy.paid_fallback.updated", "enabled": enabled, "project_id": project_id, "created_at": datetime.now(UTC).isoformat()})
-    return dict(record)
+        elif not any(b.allow_paid_fallback for b in await repo.list_budgets()):
+            raise HTTPException(status_code=400, detail="paid fallback requires at least one budget with allow_paid_fallback=true")
+    record = await repo.set_policy("paid-fallback", enabled=enabled, requires_budget=True, project_id=project_id)
+    await _write_audit(db, "policy.paid_fallback.updated", enabled=enabled, project_id=project_id)
+    await db.commit()
+    return record
 
 
 @router.get("/budgets")
-def list_budgets() -> dict[str, Any]:
-    items = [dict(v) for v in _project_budgets.values()]
+async def list_budgets(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    items = [_serialize_budget(v) for v in await _control_repo(db).list_budgets()]
     return {"items": items, "total": len(items)}
 
 
 @router.get("/projects/{project_id}")
-def get_project(project_id: str) -> dict[str, Any]:
-    record = _projects.get(project_id)
-    if record is None:
+async def get_project(project_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    project = await _control_repo(db).get_project(project_id)
+    if project is None:
         raise HTTPException(status_code=404, detail="project not found")
-    return {"project_id": record["project_id"], "name": record["name"], "description": record["description"], "active": record["active"], "created_at": record["created_at"]}
+    return _serialize_project(project)
 
 
 @router.delete("/projects/{project_id}")
-def delete_project(project_id: str) -> dict[str, Any]:
-    record = _projects.pop(project_id, None)
-    if record is None:
+async def delete_project(project_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    repo = _control_repo(db)
+    project = await repo.get_project(project_id)
+    if project is None:
         raise HTTPException(status_code=404, detail="project not found")
-    _audit_events.append({"action":"project.deleted","project_id":project_id,"name":record["name"],"created_at":datetime.now(UTC).isoformat()})
+    name = project.name
+    await repo.delete_project(project_id)
+    await _write_audit(db, "project.deleted", project_id=project_id, name=name)
+    await db.commit()
     return {"project_id": project_id, "deleted": True}
 
 
 @router.post("/alerts", status_code=201)
-def create_alert(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def create_alert(payload: dict[str, Any] = Body(...), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     severity = str(payload.get("severity") or "info").strip().lower()
     if severity not in {"info", "warning", "critical"}:
         raise HTTPException(status_code=400, detail="severity must be info, warning or critical")
     message = str(payload.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
-    alert = {
-        "alert_id": f"alert_{uuid.uuid4().hex[:12]}",
-        "severity": severity,
-        "message": message,
-        "source": str(payload.get("source") or "manual"),
-        "status": "open",
-        "created_at": datetime.now(UTC).isoformat(),
-    }
-    _alerts.append(alert)
-    _audit_events.append({"action":"alert.created","alert_id":alert["alert_id"],"severity":severity,"created_at":alert["created_at"]})
-    return dict(alert)
+    alert = await _control_repo(db).create_alert(severity=severity, message=message, source=str(payload.get("source") or "manual"))
+    await _write_audit(db, "alert.created", alert_id=alert.id, severity=severity)
+    await db.commit()
+    return _serialize_alert(alert)
 
 
 @router.get("/alerts")
-def list_alerts(status: str | None = Query(default=None), severity: str | None = Query(default=None)) -> dict[str, Any]:
-    items = list(reversed(_alerts))
-    if status:
-        items = [a for a in items if a["status"] == status]
-    if severity:
-        items = [a for a in items if a["severity"] == severity]
+async def list_alerts(status: str | None = Query(default=None), severity: str | None = Query(default=None), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    alerts = await _control_repo(db).list_alerts(status=status, severity=severity)
+    items = [_serialize_alert(a) for a in alerts]
     return {"items": items, "total": len(items)}
 
 
 @router.patch("/alerts/{alert_id}")
-def update_alert(alert_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    target = None
-    for a in _alerts:
-        if a["alert_id"] == alert_id:
-            target = a
-            break
-    if target is None:
+async def update_alert(alert_id: str, payload: dict[str, Any] = Body(...), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    repo = _control_repo(db)
+    alert = await repo.get_alert(alert_id)
+    if alert is None:
         raise HTTPException(status_code=404, detail="alert not found")
     new_status = str(payload.get("status") or "").strip().lower()
     if new_status not in {"open", "acknowledged", "resolved"}:
         raise HTTPException(status_code=400, detail="status must be open, acknowledged or resolved")
-    target["status"] = new_status
-    _audit_events.append({"action":"alert.updated","alert_id":alert_id,"status":new_status,"created_at":datetime.now(UTC).isoformat()})
-    return dict(target)
+    await repo.set_alert_status(alert, new_status)
+    await _write_audit(db, "alert.updated", alert_id=alert_id, status=new_status)
+    await db.commit()
+    return _serialize_alert(alert)
 
 
 def _serialize_quota_resource(resource: QuotaResource) -> dict[str, Any]:
@@ -849,8 +880,8 @@ async def create_quota_resource(
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await repo.save_resource(resource, commit=True)
-    created_at = datetime.now(UTC).isoformat()
-    _audit_events.append({"action": "quota.resource.created", "resource_id": resource_id, "metric": metric, "created_at": created_at})
+    await _write_audit(db, "quota.resource.created", resource_id=resource_id, metric=metric)
+    await db.commit()
     return _serialize_quota_resource(resource)
 
 
@@ -895,7 +926,7 @@ def list_routes() -> dict[str, Any]:
 
 
 @router.put("/routes/{route_id}")
-def update_route(route_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def update_route(route_id: str, payload: dict[str, Any] = Body(...), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Create and activate a validated revision containing updated route policy."""
     allowed_strategies = {"priority", "weighted", "smart", "failover"}
     strategy = payload.get("strategy")
@@ -916,14 +947,8 @@ def update_route(route_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
     if not valid:
         raise HTTPException(status_code=400, detail=errors)
     _revision_manager.activate(revision_id)
-    _audit_events.append(
-        {
-            "action": "route.updated",
-            "route_id": route_id,
-            "revision_id": revision_id,
-            "created_at": datetime.now(UTC).isoformat(),
-        }
-    )
+    await _write_audit(db, "route.updated", route_id=route_id, revision_id=revision_id)
+    await db.commit()
     return {
         "route_id": route_id,
         "config": updated,
@@ -957,7 +982,7 @@ def create_revision(payload: dict[str, Any] = Body(...)) -> dict[str, str]:
 
 
 @router.post("/revisions/{revision_id}/rollback")
-def rollback_revision(revision_id: str) -> dict[str, Any]:
+async def rollback_revision(revision_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Activate a prior immutable revision with an explicit rollback audit event."""
     target = None
     for revision in _revision_manager.list_revisions():
@@ -974,99 +999,41 @@ def rollback_revision(revision_id: str) -> dict[str, Any]:
     if not valid:
         raise HTTPException(status_code=400, detail=errors)
     _revision_manager.activate(revision_id)
-    _audit_events.append(
-        {
-            "action": "revision.rolled_back",
-            "revision_id": revision_id,
-            "from_revision_id": previous_id,
-            "created_at": datetime.now(UTC).isoformat(),
-        }
-    )
+    await _write_audit(db, "revision.rolled_back", revision_id=revision_id, from_revision_id=previous_id)
+    await db.commit()
     result = _serialize_revision(_ensure_active_revision())
     result["rolled_back_from"] = previous_id
     return result
 
 
 @router.post("/revisions/{revision_id}/activate")
-def activate_revision(revision_id: str) -> dict[str, Any]:
+async def activate_revision(revision_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     valid, errors = _revision_manager.validate(revision_id)
     if not valid:
         status_code = 404 if errors == ["Revision not found"] else 400
         raise HTTPException(status_code=status_code, detail=errors)
     _revision_manager.activate(revision_id)
-    _audit_events.append(
-        {
-            "action": "revision.activated",
-            "revision_id": revision_id,
-            "created_at": datetime.now(UTC).isoformat(),
-        }
-    )
+    await _write_audit(db, "revision.activated", revision_id=revision_id)
+    await db.commit()
     return _serialize_revision(_ensure_active_revision())
 
 
 @router.get("/audit/export")
-def export_audit(
-    action: str | None = Query(default=None),
-    since: str | None = Query(default=None),
-) -> dict[str, Any]:
-    """Export audit events as JSON — redacted, never includes plaintext secrets."""
-    since_dt = _parse_audit_since(since)
-    items: list[dict[str, Any]] = list(reversed(_audit_events))
-    if action:
-        items = [e for e in items if e.get("action") == action]
-    if since_dt is not None:
-        def _created_at(e: dict[str, Any]) -> datetime | None:
-            val = e.get("created_at")
-            if not isinstance(val, str):
-                return None
-            try:
-                dt = datetime.fromisoformat(val)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=UTC)
-                return dt
-            except Exception:
-                return None
-        items = [e for e in items if (_created_at(e) is not None and _created_at(e) >= since_dt)]  # type: ignore[operator]
-    # redaction guard: ensure no secret key leaks even if stored incorrectly
-    redacted: list[dict[str, Any]] = []
-    for event in items:
-        safe = {k: v for k, v in event.items() if k.lower() not in {"api_key", "credential_encrypted", "credential", "secret", "token"}}
-        # also scrub any value that looks like a secret
-        for k, v in list(safe.items()):
-            if isinstance(v, str) and v.startswith("sk-"):
-                safe[k] = "[REDACTED]"
-        redacted.append(safe)
-    return {"items": redacted, "total": len(redacted), "exported_at": datetime.now(UTC).isoformat()}
+async def export_audit(action: str | None = Query(default=None), since: str | None = Query(default=None), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    events = await _control_repo(db).list_audit_events(action=action, since=_parse_audit_since(since))
+    items = [_redact_audit_event(_serialize_audit_event(e)) for e in events]
+    return {"items": items, "total": len(items), "exported_at": datetime.now(UTC).isoformat()}
 
 
 @router.get("/audit")
-def list_audit(
-    action: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    since: str | None = Query(default=None),
-) -> dict[str, Any]:
-    """List audit events — redacted, no secrets exposed."""
+async def list_audit(action: str | None = Query(default=None), limit: int = Query(default=50, ge=1, le=500), offset: int = Query(default=0, ge=0), since: str | None = Query(default=None), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    repo = _control_repo(db)
     since_dt = _parse_audit_since(since)
-    items: list[dict[str, Any]] = list(reversed(_audit_events))
-    if action:
-        items = [e for e in items if e.get("action") == action]
-    if since_dt is not None:
-        def _created_at(e: dict[str, Any]) -> datetime | None:
-            val = e.get("created_at")
-            if not isinstance(val, str):
-                return None
-            try:
-                dt = datetime.fromisoformat(val)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=UTC)
-                return dt
-            except Exception:
-                return None
-        items = [e for e in items if (_created_at(e) is not None and _created_at(e) >= since_dt)]  # type: ignore[operator]
-    total = len(items)
-    paged = items[offset : offset + limit]
-    return {"items": paged, "total": total, "limit": limit, "offset": offset}
+    filtered = await repo.list_audit_events(action=action, since=since_dt)
+    total = len(filtered)
+    events = filtered[offset:offset + limit]
+    items = [_redact_audit_event(_serialize_audit_event(e)) for e in events]
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/models")
@@ -1112,10 +1079,9 @@ def list_models(route_id: str | None = Query(default=None)) -> dict[str, Any]:
 
 
 @router.get("/settings")
-def get_settings() -> dict[str, Any]:
-    """Control Plane settings + security status — never returns secret values."""
+async def get_settings(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     return {
-        "settings": dict(_settings),
+        "settings": await _control_repo(db).get_settings(),
         "security": {
             "encryption_key_configured": bool(os.getenv("SMART_ROUTER_ENCRYPTION_KEY")),
             "database_configured": bool(os.getenv("DATABASE_URL")),
@@ -1125,19 +1091,16 @@ def get_settings() -> dict[str, Any]:
 
 
 @router.put("/settings")
-def update_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    allowed = {"log_level"}
-    updated_keys: list[str] = []
-    for key in allowed:
-        if key in payload:
-            _settings[key] = str(payload[key])
-            updated_keys.append(key)
-            _audit_events.append(
-                {"action": "settings.updated", "key": key, "created_at": datetime.now(UTC).isoformat()}
-            )
+async def update_settings(payload: dict[str, Any] = Body(...), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    repo = _control_repo(db)
+    updated_keys = [key for key in {"log_level"} if key in payload]
     if not updated_keys:
         raise HTTPException(status_code=400, detail="no updatable settings provided")
-    return {"settings": dict(_settings), "updated": updated_keys}
+    for key in updated_keys:
+        await repo.set_setting(key, str(payload[key]))
+        await _write_audit(db, "settings.updated", key=key)
+    await db.commit()
+    return {"settings": await repo.get_settings(), "updated": updated_keys}
 
 
 # ── ledger query endpoints ─────────────────────────────────────────────
@@ -1379,10 +1342,10 @@ async def control_plane_overview(
         pass  # DB unavailable → leave stats=None
 
     # 4. Policies and budgets (AC-10 visibility, no secrets)
-    budgets_snapshot = {"items": [dict(v) for v in _project_budgets.values()], "total": len(_project_budgets)}
-    policies_snapshot = {
-        "paid_fallback": dict(_policies.get("paid-fallback", {"policy": "paid-fallback", "enabled": False, "requires_budget": True, "project_id": None})),
-    }
+    control_repo = _control_repo(db)
+    budgets = await control_repo.list_budgets()
+    budgets_snapshot = {"items": [_serialize_budget(v) for v in budgets], "total": len(budgets)}
+    policies_snapshot = {"paid_fallback": await control_repo.get_policy("paid-fallback")}
 
     return {
         "providers": providers,
@@ -1440,7 +1403,7 @@ def _snapshot_to_dict(snapshot) -> dict[str, object]:
 
 
 @router.post("/migration/yaml", status_code=201)
-async def migrate_legacy_yaml(request: Request) -> dict[str, object]:
+async def migrate_legacy_yaml(request: Request, db: AsyncSession = Depends(get_session)) -> dict[str, object]:
     """Compile legacy YAML (AC-16) into an activated revision — Control Plane."""
     import yaml as _yaml
     from apps.gateway.config.compiler import LegacyConfigCompiler
@@ -1496,7 +1459,8 @@ async def migrate_legacy_yaml(request: Request) -> dict[str, object]:
     if not valid:
         raise HTTPException(status_code=400, detail=errors)
     _revision_manager.activate(revision_id)
-    _audit_events.append({"action": "migration.yaml", "revision_id": revision_id, "created_at": datetime.now(UTC).isoformat()})
+    await _write_audit(db, "migration.yaml", revision_id=revision_id)
+    await db.commit()
     return {"revision_id": revision_id, "activated": True, "snapshot_data": snapshot_data}
 
 
@@ -1504,6 +1468,7 @@ async def migrate_legacy_yaml(request: Request) -> dict[str, object]:
 async def simulate_route_endpoint(
     request: Request,
     payload: dict[str, Any] = Body(...),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Dry-run route simulation theo README §22.3 — không gọi provider."""
     from pathlib import Path
@@ -1553,10 +1518,8 @@ async def simulate_route_endpoint(
     # AC-10: optional project budget gate for simulation visibility
     project_id = payload.get("project_id") or payload.get("project") or payload.get("projectId")
     budget_context: dict[str, object] | None = None
-    configured_policy = _policies.get(
-        "paid-fallback",
-        {"enabled": False, "requires_budget": True, "project_id": None},
-    )
+    control_repo = _control_repo(db)
+    configured_policy = await control_repo.get_policy("paid-fallback")
     configured_policy_project = configured_policy.get("project_id")
     policy_enabled = bool(configured_policy.get("enabled")) and (
         configured_policy_project is None or configured_policy_project == project_id
@@ -1568,21 +1531,21 @@ async def simulate_route_endpoint(
     }
     if isinstance(project_id, str) and project_id.strip():
         project_id = project_id.strip()
-        if project_id not in _projects:
+        if await control_repo.get_project(project_id) is None:
             raise HTTPException(status_code=404, detail="project not found")
-        budget = _project_budgets.get(project_id)
+        budget = await control_repo.get_budget(project_id)
         if budget is not None:
-            remaining = float(budget.get("remaining", budget.get("ceiling", 0) - float(budget.get("used", 0))))
+            remaining = float(budget.ceiling - budget.used)
             eligible = remaining > 0
             # normalize remaining to float for consistent API
             budget_context = {
                 "project_id": project_id,
-                "currency": budget.get("currency", "USD"),
-                "ceiling": float(budget.get("ceiling", 0)),
-                "used": float(budget.get("used", 0)),
+                "currency": budget.currency,
+                "ceiling": float(budget.ceiling),
+                "used": float(budget.used),
                 "remaining": float(remaining),
                 "eligible": bool(eligible),
-                "allow_paid_fallback": bool(budget.get("allow_paid_fallback", True)),
+                "allow_paid_fallback": bool(budget.allow_paid_fallback),
             }
             if not eligible:
                 return {

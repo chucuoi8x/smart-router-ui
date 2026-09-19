@@ -162,6 +162,23 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
 
 
+class Alert(Base):
+    __tablename__ = "alerts"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: _new_id("alert"))
+    severity: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(String(2048), nullable=False)
+    source: Mapped[str] = mapped_column(String(128), nullable=False, default="manual")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+
+
+class ControlSetting(Base):
+    __tablename__ = "control_settings"
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str] = mapped_column(String(1024), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
+
+
 
 class QuotaResourceState(Base):
     __tablename__ = "quota_resources"
