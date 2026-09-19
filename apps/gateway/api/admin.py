@@ -14,11 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.gateway.config.revision import ConfigRevisionManager
 from apps.gateway.config.templates import ProviderTemplateRegistry
-from apps.gateway.db.dependencies import get_session
-from apps.gateway.db.models import AttemptLedger, RequestLedger, UsageLedger
+from apps.gateway.db.dependencies import get_session, get_provider_registry_repo
+from apps.gateway.db.models import AttemptLedger, ProviderConnection, ProviderCredential, ProviderModel, RequestLedger, UsageLedger
+from apps.gateway.db.provider_registry import ProviderRegistryRepository
 from apps.gateway.providers.registry import default_driver_registry
 from apps.gateway.providers.base import DriverNotFoundError
-from apps.gateway.security.crypto import encrypt_secret
+from apps.gateway.security.crypto import decrypt_secret, encrypt_secret
 
 
 ADMIN_AUTH_TOKEN_FALLBACK = "Bearer test-admin-key"
@@ -51,8 +52,8 @@ router = APIRouter(dependencies=[Depends(require_admin_auth)])
 
 _template_registry = ProviderTemplateRegistry()
 _revision_manager = ConfigRevisionManager()
-_provider_connections: dict[str, dict[str, Any]] = {}
-_provider_credentials: dict[str, list[dict[str, Any]]] = {}
+# PR-05: provider connections, credentials and imported models are persisted in
+# the database through ProviderRegistryRepository; no in-memory registry state.
 _projects: dict[str, dict[str, Any]] = {}
 _project_keys: dict[str, list[dict[str, Any]]] = {}
 _project_budgets: dict[str, dict[str, Any]] = {}
@@ -82,11 +83,11 @@ def _parse_audit_since(value: str | None) -> datetime | None:
 
 # ── helpers ────────────────────────────────────────────────────────────
 
-def _serialize_credential(record: dict[str, Any]) -> dict[str, Any]:
+def _serialize_credential(cred: ProviderCredential) -> dict[str, Any]:
     return {
-        "credential_id": record.get("credential_id"),
-        "alias": record.get("alias"),
-        "connection_id": record.get("connection_id"),
+        "credential_id": cred.id,
+        "alias": cred.alias,
+        "connection_id": cred.connection_id,
         "credential_present": True,
     }
 
@@ -113,17 +114,20 @@ def _ensure_active_revision() -> dict[str, Any]:
     return active
 
 
-def _serialize_provider(record: dict[str, Any]) -> dict[str, Any]:
+def _serialize_provider(
+    conn: ProviderConnection,
+    credential_present: bool = False,
+) -> dict[str, Any]:
     """Return provider metadata without credential ciphertext or plaintext."""
     return {
-        "connection_id": record["connection_id"],
-        "template_id": record["template_id"],
-        "name": record["name"],
-        "base_url": record["base_url"],
-        "driver": record["driver"],
-        "active": bool(record.get("active", True)),
-        "disabled": not bool(record.get("active", True)),
-        "credential_present": bool(record.get("credential_present")),
+        "connection_id": conn.id,
+        "template_id": conn.template_id,
+        "name": conn.name,
+        "base_url": conn.base_url,
+        "driver": conn.driver,
+        "active": conn.is_active,
+        "disabled": not conn.is_active,
+        "credential_present": credential_present,
     }
 
 
@@ -150,87 +154,116 @@ def admin_version(request: Request) -> dict[str, Any]:
 
 
 @router.get("/providers")
-def list_providers() -> dict[str, object]:
-    items = [_serialize_provider(record) for record in _provider_connections.values()]
+async def list_providers(repo: ProviderRegistryRepository = Depends(get_provider_registry_repo)) -> dict[str, object]:
+    connections = await repo.list_connections()
+    cred_counts = await repo.credential_counts_by_connection()
+    items = [_serialize_provider(c, credential_present=cred_counts.get(c.id, 0) > 0) for c in connections]
     return {"items": items, "total": len(items)}
 
 
 @router.delete("/providers/{connection_id}")
-def delete_provider(connection_id: str) -> dict[str, object]:
-    if connection_id not in _provider_connections:
+async def delete_provider(
+    connection_id: str,
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, object]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    removed = _provider_connections.pop(connection_id)
+    name = conn.name
+    await repo.delete_connection(connection_id)
     _audit_events.append(
-        {"action": "provider.deleted", "connection_id": connection_id, "name": removed.get("name"), "created_at": datetime.now(UTC).isoformat()}
+        {"action": "provider.deleted", "connection_id": connection_id, "name": name, "created_at": datetime.now(UTC).isoformat()}
     )
     return {"connection_id": connection_id, "deleted": True}
 
 
 @router.get("/providers/health")
-def list_providers_health() -> dict[str, Any]:
-    items: list[dict[str, Any]] = []
+async def list_providers_health(
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
+    connections = await repo.list_connections()
+    cred_counts = await repo.credential_counts_by_connection()
     now = datetime.now(UTC).isoformat()
-    for record in _provider_connections.values():
-        cached = _provider_health_cache.get(record["connection_id"], {})
+    items = []
+    for conn in connections:
+        cached = _provider_health_cache.get(conn.id, {})
         items.append({
-            "connection_id": record["connection_id"],
-            "template_id": record.get("template_id"),
-            "name": record.get("name"),
-            "base_url": record.get("base_url"),
-            "driver": record.get("driver"),
+            "connection_id": conn.id,
+            "template_id": conn.template_id,
+            "name": conn.name,
+            "base_url": conn.base_url,
+            "driver": conn.driver,
             "status": cached.get("status", "unknown"),
             "checked_at": cached.get("checked_at", now),
             "runtime_state": cached.get("runtime_state"),
-            "credential_present": bool(record.get("credential_present")),
+            "credential_present": cred_counts.get(conn.id, 0) > 0,
         })
     return {"items": items, "total": len(items)}
 
 
 @router.get("/providers/{connection_id}/health")
-def get_provider_health(connection_id: str) -> dict[str, Any]:
-    record = _provider_connections.get(connection_id)
-    if record is None:
+async def get_provider_health(
+    connection_id: str,
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
     cached = _provider_health_cache.get(connection_id, {})
     return {
-        "connection_id": record["connection_id"],
-        "template_id": record.get("template_id"),
-        "name": record.get("name"),
-        "base_url": record.get("base_url"),
-        "driver": record.get("driver"),
+        "connection_id": conn.id,
+        "template_id": conn.template_id,
+        "name": conn.name,
+        "base_url": conn.base_url,
+        "driver": conn.driver,
         "status": cached.get("status", "unknown"),
         "checked_at": cached.get("checked_at", datetime.now(UTC).isoformat()),
         "runtime_state": cached.get("runtime_state"),
-        "credential_present": bool(record.get("credential_present")),
+        "credential_present": await repo.has_credential(connection_id),
     }
 
 
 @router.put("/providers/{connection_id}")
-def update_provider(connection_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    record = _provider_connections.get(connection_id)
-    if record is None:
+async def update_provider(
+    connection_id: str,
+    payload: dict[str, Any] = Body(...),
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
+    fields: dict[str, Any] = {}
     name = payload.get("name")
     if name is not None:
         cleaned = str(name).strip()
         if not cleaned:
             raise HTTPException(status_code=400, detail="name cannot be empty")
-        record["name"] = cleaned
+        fields["name"] = cleaned
     base_url = payload.get("base_url")
     if base_url is not None:
         cleaned_url = str(base_url).strip()
         if not cleaned_url:
             raise HTTPException(status_code=400, detail="base_url cannot be empty")
-        record["base_url"] = cleaned_url
+        fields["base_url"] = cleaned_url
     driver = payload.get("driver")
     if driver is not None:
-        record["driver"] = str(driver)
+        fields["driver"] = str(driver)
+    if "active" in payload:
+        fields["is_active"] = bool(payload["active"])
     api_key = payload.get("api_key")
     if api_key:
-        record["credential_present"] = True
-        record["credential_encrypted"] = encrypt_secret(str(api_key))
-    if "active" in payload:
-        record["active"] = bool(payload["active"])
+        encrypted = encrypt_secret(str(api_key))
+        # New credential rows are the source of truth; the legacy column is kept
+        # in sync so pre-PR-05 readers still resolve a credential.
+        fields["credential_encrypted"] = encrypted
+    if fields:
+        await repo.update_connection(conn, **fields)
+        if api_key:
+            await repo.create_credential(
+                connection_id=connection_id,
+                alias="updated",
+                credential_encrypted=fields["credential_encrypted"],
+            )
     timestamp = datetime.now(UTC).isoformat()
     _audit_events.append({
         "action": "provider.updated",
@@ -238,40 +271,51 @@ def update_provider(connection_id: str, payload: dict[str, Any] = Body(...)) -> 
         "fields": sorted([k for k in payload if k != "api_key"]) + (["credential_present"] if api_key else []),
         "created_at": timestamp,
     })
-    return _serialize_provider(record)
+    return _serialize_provider(conn, credential_present=await repo.has_credential(connection_id))
 
 
 @router.post("/providers/{connection_id}/deactivate")
-def deactivate_provider(connection_id: str) -> dict[str, Any]:
-    record = _provider_connections.get(connection_id)
-    if record is None:
+async def deactivate_provider(
+    connection_id: str,
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    record["active"] = False
+    await repo.set_connection_active(conn, False)
     timestamp = datetime.now(UTC).isoformat()
     _audit_events.append({"action": "provider.deactivated", "connection_id": connection_id, "created_at": timestamp})
     return {"connection_id": connection_id, "active": False, "disabled": True, "changed_at": timestamp}
 
 
 @router.post("/providers/{connection_id}/reactivate")
-def reactivate_provider(connection_id: str) -> dict[str, Any]:
-    record = _provider_connections.get(connection_id)
-    if record is None:
+async def reactivate_provider(
+    connection_id: str,
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    record["active"] = True
+    await repo.set_connection_active(conn, True)
     timestamp = datetime.now(UTC).isoformat()
     _audit_events.append({"action": "provider.reactivated", "connection_id": connection_id, "created_at": timestamp})
     return {"connection_id": connection_id, "active": True, "disabled": False, "changed_at": timestamp}
 
 
 @router.get("/providers/{connection_id}")
-def get_provider(connection_id: str) -> dict[str, object]:
-    if connection_id not in _provider_connections:
+async def get_provider(connection_id: str, repo: ProviderRegistryRepository = Depends(get_provider_registry_repo)) -> dict[str, object]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    return _serialize_provider(_provider_connections[connection_id])
+    has_cred = await repo.has_credential(connection_id)
+    return _serialize_provider(conn, credential_present=has_cred)
 
 
 @router.post("/providers", status_code=201)
-def create_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def create_provider(
+    payload: dict[str, Any] = Body(...),
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
     template_id = str(payload.get("template_id") or "")
     if not template_id:
         raise HTTPException(status_code=400, detail="template_id is required")
@@ -286,42 +330,47 @@ def create_provider(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     if not base_url:
         raise HTTPException(status_code=400, detail="base_url is required")
 
-    connection_id = f"conn_{uuid.uuid4().hex[:12]}"
-    record = {
-        "connection_id": connection_id,
-        "template_id": template_id,
-        "name": name,
-        "base_url": base_url,
-        "driver": str(payload.get("driver") or template.get("driver") or ""),
-        "active": True,
-        "credential_present": bool(payload.get("api_key")),
-        # Stored only as Fernet ciphertext; serializers below never expose it.
-        "credential_encrypted": encrypt_secret(str(payload["api_key"])) if payload.get("api_key") else None,
-    }
-    _provider_connections[connection_id] = record
+    driver = str(payload.get("driver") or template.get("driver") or "")
+    encrypted = encrypt_secret(str(payload["api_key"])) if payload.get("api_key") else None
+    # The api_key supplied at creation time becomes the connection's own
+    # credential (legacy single-column path).  Additional credentials are added
+    # explicitly via /credentials and listed separately, so create must not
+    # duplicate it into a ProviderCredential row.
+    conn = await repo.create_connection(
+        name=name,
+        template_id=template_id,
+        driver=driver,
+        base_url=base_url,
+        credential_encrypted=encrypted,
+    )
     _ensure_active_revision()
-    return _serialize_provider(record)
+    return _serialize_provider(conn, credential_present=bool(encrypted))
 
 
 @router.post("/providers/{connection_id}/test")
-async def test_provider_connection(connection_id: str) -> dict[str, Any]:
-    record = _provider_connections.get(connection_id)
-    if record is None:
+async def test_provider_connection(
+    connection_id: str,
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo)
+) -> dict[str, Any]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    driver_id = str(record.get("driver") or record.get("template_id") or "generic-openai")
+    driver_id = str(conn.driver or conn.template_id or "generic-openai")
     try:
         driver_cls = _driver_registry.resolve(driver_id)
     except DriverNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     try:
         driver = driver_cls()
+        cred_text = await repo.resolve_credential(conn)
         ctx = {
-            "connection_id": connection_id,
-            "base_url": record.get("base_url"),
+            "connection_id": conn.id,
+            "base_url": conn.base_url,
             "driver": driver_id,
-            "template_id": record.get("template_id"),
+            "template_id": conn.template_id,
+            "credential": {"api_key": decrypt_secret(cred_text)} if cred_text else {},
         }
-        result = await driver.validate_connection(ctx)  # type: ignore[func-returns-value]
+        result = await driver.validate_connection(ctx)
     except HTTPException:
         raise
     except Exception as exc:
@@ -331,14 +380,12 @@ async def test_provider_connection(connection_id: str) -> dict[str, Any]:
     health_status = "healthy" if result_status in {"ok", "healthy", "success"} else "degraded"
     try:
         from apps.gateway.quota.runtime import describe_runtime_state as _describe_runtime_state
-
         _probe_kind = str(normalized_result.get("kind") or normalized_result.get("error_kind") or ("SUCCESS" if health_status == "healthy" else "UNKNOWN")).upper()
         _runtime_state = _describe_runtime_state(
             _probe_kind,
             reset_at=str(normalized_result.get("reset_at")) if normalized_result.get("reset_at") else None,
             retry_after=str(normalized_result.get("retry_after")) if normalized_result.get("retry_after") else None,
         )
-        # Map healthy probe to explicit healthy state (probe success ≠ rate-limited)
         if health_status == "healthy" and _probe_kind in {"SUCCESS", "UNKNOWN"}:
             _runtime_state = {"state": "healthy", "kind": "SUCCESS", "retryable": False, "is_long_term": False, "reset_at": None, "retry_after": None, "scope": None}
     except Exception:
@@ -353,11 +400,14 @@ async def test_provider_connection(connection_id: str) -> dict[str, Any]:
 
 
 @router.post("/providers/{connection_id}/discover")
-async def discover_provider_models(connection_id: str) -> dict[str, Any]:
-    record = _provider_connections.get(connection_id)
-    if record is None:
+async def discover_provider_models(
+    connection_id: str,
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    driver_id = str(record.get("driver") or record.get("template_id") or "generic-openai")
+    driver_id = conn.driver or conn.template_id or "generic-openai"
     try:
         driver_cls = _driver_registry.resolve(driver_id)
     except DriverNotFoundError as exc:
@@ -365,10 +415,10 @@ async def discover_provider_models(connection_id: str) -> dict[str, Any]:
     try:
         driver = driver_cls()
         ctx = {
-            "connection_id": connection_id,
-            "base_url": record.get("base_url"),
+            "connection_id": conn.id,
+            "base_url": conn.base_url,
             "driver": driver_id,
-            "template_id": record.get("template_id"),
+            "template_id": conn.template_id,
         }
         models = await driver.discover_models(ctx)  # type: ignore[func-returns-value]
     except HTTPException:
@@ -384,15 +434,27 @@ async def discover_provider_models(connection_id: str) -> dict[str, Any]:
         else:
             normalized.append({"id": str(m)})
 
-
+    # Persist discovered models
+    for model_entry in normalized:
+        model_id = model_entry.get("id")
+        if model_id:
+            await repo.import_model(
+                connection_id=conn.id,
+                model_id=model_id,
+                metadata_=model_entry,
+            )
 
     return {"connection_id": connection_id, "models": normalized, "count": len(normalized)}
 
 
 @router.post("/providers/{connection_id}/models/import", status_code=201)
-def import_provider_models(connection_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    record = _provider_connections.get(connection_id)
-    if record is None:
+async def import_provider_models(
+    connection_id: str,
+    payload: dict[str, Any] = Body(...),
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
     route_id = str(payload.get("route_id") or "").strip()
     if not route_id:
@@ -428,54 +490,61 @@ def import_provider_models(connection_id: str, payload: dict[str, Any] = Body(..
     if not valid:
         raise HTTPException(status_code=400, detail=errs)
     _revision_manager.activate(rev_id)
+    for mdl in added:
+        await repo.import_model(connection_id=conn.id, model_id=mdl)
     _audit_events.append({"action":"route.models.imported","route_id":route_id,"provider_id":connection_id,"imported":added,"revision_id":rev_id,"created_at":datetime.now(UTC).isoformat()})
     return {"route_id":route_id,"revision_id":rev_id,"imported":added,"candidate_count":len(candidates)}
 
 
 @router.post("/providers/{connection_id}/credentials", status_code=201)
-def add_provider_credential(connection_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    record = _provider_connections.get(connection_id)
-    if record is None:
+async def add_provider_credential(
+    connection_id: str,
+    payload: dict[str, Any] = Body(...),
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
     api_key = str(payload.get("api_key") or "").strip()
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key is required")
     alias = str(payload.get("alias") or payload.get("name") or f"cred_{uuid.uuid4().hex[:8]}").strip()
-    cred_id = f"cred_{uuid.uuid4().hex[:12]}"
-    cred = {
-        "credential_id": cred_id,
-        "connection_id": connection_id,
-        "alias": alias,
-        "credential_encrypted": encrypt_secret(api_key),
-    }
-    _provider_credentials.setdefault(connection_id, []).append(cred)
-    _audit_events.append({"action": "credential.added", "connection_id": connection_id, "credential_id": cred_id, "alias": alias, "created_at": datetime.now(UTC).isoformat()})
+    cred = await repo.create_credential(
+        connection_id=connection_id,
+        alias=alias,
+        credential_encrypted=encrypt_secret(api_key),
+    )
+    _audit_events.append({"action": "credential.added", "connection_id": connection_id, "credential_id": cred.id, "alias": alias, "created_at": datetime.now(UTC).isoformat()})
     return _serialize_credential(cred)
 
 
 @router.get("/providers/{connection_id}/credentials")
-def list_provider_credentials(connection_id: str) -> dict[str, Any]:
-    if connection_id not in _provider_connections:
+async def list_provider_credentials(
+    connection_id: str,
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    items = [_serialize_credential(c) for c in _provider_credentials.get(connection_id, [])]
+    creds = await repo.list_credentials(connection_id)
+    items = [_serialize_credential(c) for c in creds]
     return {"items": items, "total": len(items), "connection_id": connection_id}
 
 
 @router.delete("/providers/{connection_id}/credentials/{credential_id}")
-def delete_provider_credential(connection_id: str, credential_id: str) -> dict[str, Any]:
-    if connection_id not in _provider_connections:
+async def delete_provider_credential(
+    connection_id: str,
+    credential_id: str,
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+) -> dict[str, Any]:
+    conn = await repo.get_connection(connection_id)
+    if conn is None:
         raise HTTPException(status_code=404, detail="provider not found")
-    creds = _provider_credentials.get(connection_id, [])
-    target = None
-    for c in creds:
-        if c.get("credential_id") == credential_id:
-            target = c
-            break
-    if target is None:
+    cred = await repo.get_credential(credential_id)
+    if cred is None or cred.connection_id != connection_id:
         raise HTTPException(status_code=404, detail="credential not found")
-    alias = target.get("alias", "")
-    creds.remove(target)
-    _provider_credentials[connection_id] = creds
+    alias = cred.alias
+    await repo.delete_credential(credential_id)
     _audit_events.append({"action": "credential.deleted", "connection_id": connection_id, "credential_id": credential_id, "alias": alias, "created_at": datetime.now(UTC).isoformat()})
     return {"deleted": True, "credential_id": credential_id}
 
@@ -1218,19 +1287,22 @@ async def usage_stats(
 @router.get("/overview")
 async def control_plane_overview(
     db: AsyncSession = Depends(get_session),
+    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
 ) -> dict:
     """Aggregate Control Plane overview — no secrets exposed (AC-13)."""
-    # 1. Provider connections
+    # 1. Provider connections (DB-backed)
+    connections = await repo.list_connections()
+    cred_counts = await repo.credential_counts_by_connection()
     providers = {
-        "count": len(_provider_connections),
+        "count": len(connections),
         "items": [
             {
-                "connection_id": c["connection_id"],
-                "name": c["name"],
-                "template_id": c["template_id"],
-                "credential_present": c["credential_present"],
+                "connection_id": c.id,
+                "name": c.name,
+                "template_id": c.template_id,
+                "credential_present": cred_counts.get(c.id, 0) > 0,
             }
-            for c in _provider_connections.values()
+            for c in connections
         ],
     }
 

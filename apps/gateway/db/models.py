@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Float, Integer, JSON, String, Boolean
+from sqlalchemy import DateTime, Float, Integer, JSON, String, Boolean, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -28,15 +28,43 @@ class ProviderConnection(Base):
     template_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     driver: Mapped[str] = mapped_column(String(128), nullable=False)
     base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    # Deprecated compatibility column. New credentials live in ProviderCredential.
     credential_encrypted: Mapped[str | None] = mapped_column(String(4096), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
 
 
+class ProviderCredential(Base):
+    __tablename__ = "provider_credentials"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: _new_id("cred"))
+    connection_id: Mapped[str] = mapped_column(String(64), ForeignKey("provider_connections.id", ondelete="CASCADE"), nullable=False, index=True)
+    alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    credential_encrypted: Mapped[str] = mapped_column(String(4096), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
+
+
+class ProviderModel(Base):
+    __tablename__ = "provider_models"
+    __table_args__ = (UniqueConstraint("connection_id", "model_id", name="uq_provider_models_connection_model"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: _new_id("pmod"))
+    connection_id: Mapped[str] = mapped_column(String(64), ForeignKey("provider_connections.id", ondelete="CASCADE"), nullable=False, index=True)
+    model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
+
+
 class ConfigRevision(Base):
     __tablename__ = "config_revisions"
-
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: _new_id("rev"))
     snapshot_data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
@@ -46,7 +74,6 @@ class ConfigRevision(Base):
 
 class RequestLedger(Base):
     __tablename__ = "request_ledger"
-
     request_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     route_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     logical_model: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
@@ -56,7 +83,6 @@ class RequestLedger(Base):
 
 class AttemptLedger(Base):
     __tablename__ = "attempt_ledger"
-
     attempt_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     provider_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -67,7 +93,6 @@ class AttemptLedger(Base):
 
 class UsageLedger(Base):
     __tablename__ = "usage_ledger"
-
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: _new_id("led"))
     request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     attempt_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -92,7 +117,6 @@ class UsageLedger(Base):
 
 class QuotaResourceState(Base):
     __tablename__ = "quota_resources"
-
     resource_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     scope: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     metric: Mapped[str] = mapped_column(String(64), nullable=False, index=True)

@@ -31,7 +31,7 @@ import pytest
 import apps.gateway.db.session as db_session
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def registry_db_url() -> Iterator[str]:
     """Fresh on-disk SQLite DB + real async engine bound to DATABASE_URL.
 
@@ -68,12 +68,14 @@ def registry_db_url() -> Iterator[str]:
 
 
 @pytest.fixture(autouse=True)
-def clear_registry_globals() -> None:
-    """The dicts are caches only; never leak entries between tests."""
+def clear_registry_caches() -> None:
+    """Health-probe results are a process cache, not the source of truth.
+    Clear them so a probe from one test cannot answer another test's query.
+    Registry rows themselves live in the per-test SQLite database.
+    """
     from apps.gateway.api import admin
 
-    admin._provider_connections.clear()
-    admin._provider_credentials.clear()
+    admin._provider_health_cache.clear()
 
 
 @pytest.fixture(autouse=True)

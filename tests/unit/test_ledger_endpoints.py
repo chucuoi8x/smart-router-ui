@@ -59,29 +59,27 @@ async def test_ledger_stats_detail_requires_admin_auth():
 # ── graceful degradation when no DB ───────────────────────────────
 
 @pytest.mark.asyncio
-async def test_ledger_stats_returns_500_when_no_db():
-    """Without DATABASE_URL pointing to a valid PostgreSQL, the
-    session factory will create an engine that cannot connect.
-    This should surface as an HTTP 500 from the endpoint, NOT a
-    404 or unexpected crash."""
+async def test_ledger_stats_returns_ok_with_db():
+    """With SQLite fixture active, the ledger endpoint is reachable
+    and returns 200 (empty ledger). The "no DB" degradation path
+    is not exercised in this test suite because the autouse fixture
+    guarantees a working database."""
     async with _client() as client:
         resp = await client.get(
             "/api/admin/v1/ledger/stats",
             headers={"Authorization": "Bearer test-admin-key"},
         )
-    # Accept 500 (connection refused) as evidence the route exists
-    # and attempted to use the DB backend.
-    assert resp.status_code == 500
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_ledger_requests_list_returns_500_when_no_db():
+async def test_ledger_requests_list_returns_ok_with_db():
     async with _client() as client:
         resp = await client.get(
             "/api/admin/v1/ledger/requests",
             headers={"Authorization": "Bearer test-admin-key"},
         )
-    assert resp.status_code == 500
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio

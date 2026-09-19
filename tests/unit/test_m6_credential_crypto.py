@@ -30,7 +30,6 @@ def test_credential_crypto_does_not_store_plaintext():
 @pytest.mark.asyncio
 async def test_create_provider_encrypted_storage_redacted():
     from router import app
-    from apps.gateway.api.admin import _provider_connections
     from apps.gateway.security.crypto import decrypt_secret
 
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
@@ -48,11 +47,16 @@ async def test_create_provider_encrypted_storage_redacted():
         # response không lộ plaintext
         assert plaintext not in created.text
         assert "api_key" not in created.text.lower()
-        # storage không lộ plaintext, nhưng giải mã được
-        stored = _provider_connections.get(cid)
-        assert stored is not None
-        enc = stored.get("credential_encrypted") or stored.get("encrypted_credential") or ""
-        # chấp nhận cả 2 key name do quá trình triển khai có thể chọn tên khác
+        # PR-05: credential persists in the database, never in process globals.
+        # Storage must hold ciphertext that decrypts back to the plaintext.
+        from apps.gateway.db.session import get_async_session_factory
+        from apps.gateway.db.models import ProviderConnection as _PC
+        from sqlalchemy import select
+        # Use current event loop via get_running_loop/await directly
+        factory = get_async_session_factory()
+        async with factory() as session:
+            row = (await session.execute(select(_PC).where(_PC.id == cid))).scalar_one()
+            enc = row.credential_encrypted or ""
         assert enc, "credential_encrypted phải được lưu"
         assert plaintext not in enc
         assert decrypt_secret(enc) == plaintext
