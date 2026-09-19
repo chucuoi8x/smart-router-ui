@@ -35,21 +35,24 @@ def _make_router(route_name: str, candidates: list[dict], upstreams: dict[str, d
 
 
 def _build_mock_response(status_code: int, json_body: dict, content_bytes: bytes | None = None):
-    resp = AsyncMock()
-    resp.status_code = status_code
+    """Return a real httpx.Response.
+
+    P0-03: generic drivers delegate the exchange and read .text/.status_code/.headers,
+    so fakes must be wire-real for the driver path to parse usage correctly.
+    """
+    import httpx
+    import json as _json
+
     if content_bytes is None:
-        content_bytes = str(json_body).replace("'", '"').encode()
-    resp.content = content_bytes
-    # Make json() synchronous so isinstance(response.json(), dict) behaves correctly
-    from unittest.mock import Mock
-    resp.json = Mock(return_value=json_body)
-    resp.headers = {}
-    return resp
+        content_bytes = _json.dumps(json_body).encode()
+    return httpx.Response(status_code, content=content_bytes, headers={})
 
 
-def _setup_client(router: SmartRouter, name: str, response: AsyncMock):
+def _setup_client(router: SmartRouter, name: str, response):
     client = AsyncMock()
     client.post = AsyncMock(return_value=response)
+    # P0-03 driver delegation path issues the exchange through client.request().
+    client.request = AsyncMock(return_value=response)
     router.clients[name] = client
 
 
@@ -144,11 +147,7 @@ async def test_non_streaming_non_json_response_graceful_fallback():
         {"anthropic-svc": _make_upstream_config("https://api.anthropic.com", "generic-anthropic")},
     )
 
-    resp = AsyncMock()
-    resp.status_code = 200
-    resp.content = b'invalid-binary-non-json'
-    resp.json.side_effect = ValueError("Expecting value: line 1 column 1")
-    resp.headers = {}
+    resp = _build_mock_response(200, {}, content_bytes=b'invalid-binary-non-json')
     _setup_client(router, "anthropic-svc", resp)
 
     body = {"model": "sonnet", "messages": [{"role": "user", "content": "hello"}]}
@@ -245,9 +244,7 @@ async def test_non_streaming_failover_records_exactly_one_usage_event():
     )
 
     # Primary fails with 502
-    primary_resp = AsyncMock()
-    primary_resp.status_code = 502
-    primary_resp.content = b'bad gateway'
+    primary_resp = _build_mock_response(502, {}, content_bytes=b'bad gateway')
     _setup_client(router, "primary", primary_resp)
 
     # Secondary succeeds

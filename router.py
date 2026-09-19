@@ -1992,13 +1992,22 @@ class SmartRouter:
                 status="success",
             )
             await self._record_success(candidate, status_code)
-            # Record usage from driver's parsed usage
+            # Record usage from the driver exchange.  _record_usage_event
+            # re-parses through the driver's parse_usage, so it must receive
+            # the RAW provider payload, not the driver's canonical output
+            # (canonical input_tokens would not survive a second
+            # protocol-specific parse).
             usage = result.get("usage", {})
             if usage and path != "/v1/messages/count_tokens":
-                # Construct a response_json-like dict for _record_usage_event
-                # It expects a dict with usage field
-                response_json = {"usage": usage}
-                await self._record_usage_event(
+                raw_body = result.get("body")
+                if isinstance(raw_body, bytes):
+                    raw_body = raw_body.decode("utf-8", errors="replace")
+                try:
+                    response_json = json.loads(raw_body) if raw_body else None
+                except (json.JSONDecodeError, ValueError):
+                    response_json = None
+                if isinstance(response_json, dict):
+                    await self._record_usage_event(
                     request_id=request_id,
                     attempt_id=attempt_id,
                     candidate=candidate,
