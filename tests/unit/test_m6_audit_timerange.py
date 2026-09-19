@@ -29,6 +29,17 @@ async def test_audit_since_filters_future_returns_empty():
 @pytest.mark.asyncio
 async def test_audit_since_filters_past_returns_events():
     async with _client() as c:
+        draft = await c.post(
+            "/api/admin/v1/revisions",
+            json={"routes": {"audit-time-range": {"candidates": []}}},
+            headers=AUTH,
+        )
+        assert draft.status_code == 201, draft.text
+        activated = await c.post(
+            f"/api/admin/v1/revisions/{draft.json()['revision_id']}/activate",
+            headers=AUTH,
+        )
+        assert activated.status_code == 200, activated.text
         past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         r = await c.get(f"/api/admin/v1/audit?since={past}", headers=AUTH)
     assert r.status_code == 200, r.text
