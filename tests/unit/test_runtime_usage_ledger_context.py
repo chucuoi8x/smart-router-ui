@@ -56,15 +56,14 @@ class TestRuntimeUsageLedgerContext:
             router_mod._REQUEST_USAGE_EVENTS.reset(token)
 
     @pytest.mark.asyncio
-    async def test_optional_usage_ledger_dependency_disabled_by_default(self, monkeypatch):
+    async def test_optional_usage_ledger_dependency_enabled_by_default(self, monkeypatch):
         from router import get_optional_usage_ledger_repo
 
         monkeypatch.delenv("USAGE_LEDGER_DB_ENABLED", raising=False)
         dependency = get_optional_usage_ledger_repo()
         value = await anext(dependency)
-        assert value is None
-        with pytest.raises(StopAsyncIteration):
-            await anext(dependency)
+        assert value is not None
+        await dependency.aclose()
 
     @pytest.mark.asyncio
     async def test_optional_usage_ledger_dependency_falls_back_when_db_unavailable(self, monkeypatch):

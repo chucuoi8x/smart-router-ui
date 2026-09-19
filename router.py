@@ -2677,12 +2677,12 @@ async def get_authorized_service(request: Request) -> SmartRouter:
 
 
 async def get_optional_usage_ledger_repo():
-    """Yield a DB-backed usage ledger when explicitly enabled.
+    """Yield a DB-backed usage ledger unless explicitly disabled.
 
-    Runtime DB persistence is opt-in so local/test deployments without a
-    reachable DATABASE_URL keep the existing in-memory/no-ledger behavior.
+    P0 requires the Usage Ledger enabled by default. Deployments without a
+    reachable database degrade safely to no-ledger behavior.
     """
-    if os.getenv("USAGE_LEDGER_DB_ENABLED", "false").lower() != "true":
+    if os.getenv("USAGE_LEDGER_DB_ENABLED", "true").lower() != "true":
         yield None
         return
     try:

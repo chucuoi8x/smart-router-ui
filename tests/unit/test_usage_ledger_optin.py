@@ -8,11 +8,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
-def test_env_example_documents_usage_ledger_opt_in():
+def test_env_example_documents_usage_ledger_enabled_by_default():
     text = (Path(__file__).resolve().parents[2] / ".env.example").read_text(encoding="utf-8")
-    assert "USAGE_LEDGER_DB_ENABLED" in text
-    # Must be opt-in false by default, not enabled silently
-    assert "false" in text.lower()
+    assert "USAGE_LEDGER_DB_ENABLED=true" in text
+
+
+def test_usage_ledger_is_enabled_by_default_in_production_contract():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / "router.py").read_text(encoding="utf-8")
+    assert 'os.getenv("USAGE_LEDGER_DB_ENABLED", "true")' in text
 
 
 @pytest.mark.asyncio
