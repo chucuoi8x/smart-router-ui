@@ -6,12 +6,79 @@ docker-compose; exits cleanly on SIGTERM.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import signal
 import sys
 import time
 from typing import Any
+
+
+# ── P0-15 Worker baseline responsibilities ──────────────────────────────
+
+class UsagePersistenceWorker:
+    """Persist usage events from async queue without blocking request path."""
+
+    def __init__(self, persist_fn) -> None:
+        self._persist_fn = persist_fn
+
+    async def process_event(self, event) -> None:
+        """Persist a single usage event."""
+        result = self._persist_fn(event)
+        if inspect.isawaitable(result):
+            await result
+
+
+class QuotaSyncWorker:
+    """Synchronize quota resources from source of truth to runtime index."""
+
+    def __init__(self, source, target) -> None:
+        self._source = source
+        self._target = target
+
+    async def sync_once(self) -> None:
+        """Pull resources from source and publish to target."""
+        resources = await self._source.list_resources()
+        result = self._target.replace_all(resources)
+        if inspect.isawaitable(result):
+            await result
+
+
+class StaleReservationCleanupWorker:
+    """Release reservations older than TTL to prevent capacity leaks.
+
+    Note: Redis backend cannot list reservations without SCAN (violates
+    P0-08/PR-09). This worker receives reservation entries from an external
+    tracker (e.g. request ledger or an in-memory reservation registry) rather
+    than querying the quota backend directly.
+    """
+
+    def __init__(self, backend, reservation_entries_provider, ttl_seconds: int = 3600) -> None:
+        self._backend = backend
+        self._reservation_entries = reservation_entries_provider
+        self._ttl_seconds = ttl_seconds
+
+    async def cleanup_once(self) -> int:
+        """Release pending reservations past TTL; returns released count."""
+        now = time.monotonic()
+        released = 0
+        for entry in self._reservation_entries():
+            reservation_id = entry.get("reservation_id") or entry.get("id")
+            if not reservation_id or entry.get("status", "pending") != "pending":
+                continue
+            if now - entry.get("created_at", now) <= self._ttl_seconds:
+                continue
+            try:
+                result = self._backend.release(reservation_id)
+                if inspect.isawaitable(result):
+                    await result
+                released += 1
+            except Exception:
+                # Already released/expired or backend hiccup: keep scanning.
+                continue
+        return released
+
 
 logger = logging.getLogger("smart-router.worker")
 _stop = False

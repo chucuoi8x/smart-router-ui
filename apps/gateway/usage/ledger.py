@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Callable
 
 _PRIVATE_METADATA_KEYS = {
     "authorization",
@@ -174,6 +175,39 @@ class AttemptRecord:
         )
 
 
+class AsyncUsageLedger:
+    """Bounded async persistence queue. Emit never performs DB work inline."""
+
+    def __init__(self, persist: Callable[[Any], Any], *, maxsize: int = 1024) -> None:
+        self._persist = persist
+        self._queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=maxsize)
+        self._worker: asyncio.Task[None] | None = None
+
+    @property
+    def pending(self) -> int:
+        return self._queue.qsize()
+
+    async def emit(self, event: Any) -> None:
+        await self._queue.put(event)
+        if self._worker is None or self._worker.done():
+            self._worker = asyncio.create_task(self._run())
+
+    async def _run(self) -> None:
+        while not self._queue.empty():
+            event = await self._queue.get()
+            try:
+                result = self._persist(event)
+                if asyncio.iscoroutine(result):
+                    await result
+            finally:
+                self._queue.task_done()
+
+    async def drain(self) -> None:
+        await self._queue.join()
+        if self._worker is not None:
+            await self._worker
+
+
 class UsageLedgerRepository:
     def __init__(self, session) -> None:
         self._session = session
@@ -201,6 +235,15 @@ class UsageLedgerRepository:
         if commit:
             await self._session.commit()
         return row
+
+    async def record_usage_async(self, event: UsageEvent, *, commit: bool = False) -> None:
+        """Asynchronous usage event persistence via async queue."""
+        if not hasattr(self, "_async_ledger"):
+            self._async_ledger = AsyncUsageLedger(
+                lambda e: self.record_usage(e, commit=commit),
+                maxsize=2048,
+            )
+        await self._async_ledger.emit(event)
 
 
 class InMemoryUsageLedger:
