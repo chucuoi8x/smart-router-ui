@@ -434,7 +434,6 @@ async def test_provider_connection(
     except DriverNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     try:
-        driver = driver_cls()
         cred_text = await repo.resolve_credential(conn)
         ctx = {
             "connection_id": conn.id,
@@ -443,6 +442,8 @@ async def test_provider_connection(
             "template_id": conn.template_id,
             "credential": {"api_key": decrypt_secret(cred_text)} if cred_text else {},
         }
+        # Single factory for every driver instance (plan P0-03 "Driver factory").
+        driver = _driver_registry.create(driver_id, ctx)
         result = await driver.validate_connection(ctx)
     except HTTPException:
         raise
@@ -486,13 +487,14 @@ async def discover_provider_models(
     except DriverNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     try:
-        driver = driver_cls()
         ctx = {
             "connection_id": conn.id,
             "base_url": conn.base_url,
             "driver": driver_id,
             "template_id": conn.template_id,
         }
+        # Single factory for every driver instance (plan P0-03 "Driver factory").
+        driver = _driver_registry.create(driver_id, ctx)
         models = await driver.discover_models(ctx)  # type: ignore[func-returns-value]
     except HTTPException:
         raise

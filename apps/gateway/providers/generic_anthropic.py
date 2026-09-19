@@ -19,7 +19,7 @@ DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 
 class GenericAnthropicDriver(HttpExchangeMixin):
     driver_id = "generic-anthropic"
-    delegates_request_execution = False
+    delegates_request_execution = True
     default_endpoint = "v1/messages"
     discovery_endpoint = "v1/models"
 

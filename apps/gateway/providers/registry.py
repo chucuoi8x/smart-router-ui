@@ -1,5 +1,6 @@
-from typing import Type
+from typing import Any, Type
 from apps.gateway.providers.base import ProviderDriver, DriverNotFoundError
+from apps.gateway.providers.driver_context import DriverContext
 
 class DriverRegistry:
     def __init__(self) -> None:
@@ -12,6 +13,12 @@ class DriverRegistry:
         if driver_id not in self._registry:
             raise DriverNotFoundError(f"Driver not found: {driver_id}")
         return self._registry[driver_id]
+
+    def create(self, driver_id: str, context: DriverContext | dict[str, Any] | None = None) -> ProviderDriver:
+        ctx = DriverContext.from_dict(context or {}) if isinstance(context, dict) else (context or DriverContext())
+        driver_cls = self.resolve(driver_id)
+        connection = ctx.connection if isinstance(ctx.connection, dict) else {}
+        return driver_cls(base_url=ctx.base_url, headers=connection.get("headers"))
 
 
 def default_driver_registry() -> DriverRegistry:

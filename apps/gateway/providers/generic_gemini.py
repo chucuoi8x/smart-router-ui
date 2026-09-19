@@ -17,7 +17,7 @@ from apps.gateway.providers.error_classifier import classify_provider_error
 
 class GenericGeminiDriver(HttpExchangeMixin):
     driver_id = "generic-gemini"
-    delegates_request_execution = False
+    delegates_request_execution = True
     default_endpoint = "generateContent"
     discovery_endpoint = "v1beta/models"
 
