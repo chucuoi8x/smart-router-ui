@@ -77,6 +77,36 @@ def _build_quota_reservations():
         return AsyncQuotaFacade(InMemoryQuotaReservations())
 
 
+def _build_circuit_repository():
+    """P0-14: share circuit/cooldown state across gateway instances via Redis.
+
+    With REDIS_URL set, every gateway instance reads and trips the same
+    expiring ``circuit:<connection>:<credential>:<model>`` keys, so a
+    credential throttled through one instance stops being scheduled by the
+    others.  Falls back to the process-local store when Redis is unavailable.
+    """
+    url = os.getenv("REDIS_URL")
+    from apps.gateway.routing.engine import InMemoryCircuitRepository
+
+    if not url:
+        return InMemoryCircuitRepository()
+    try:
+        import redis.asyncio as aioredis  # type: ignore[import-untyped]
+
+        from apps.gateway.routing.engine import RedisCircuitRepository
+
+        client = aioredis.from_url(url, decode_responses=True)
+        logging.getLogger("smart-router").info(
+            "distributed circuit state enabled (%s)", url
+        )
+        return RedisCircuitRepository(client)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("smart-router").warning(
+            "circuit Redis unavailable (%s) - using process-local circuit state", exc
+        )
+        return InMemoryCircuitRepository()
+
+
 BASE_DIR = Path(__file__).resolve().parent
 _STARTED_AT_MONO = time.monotonic()
 _REQUEST_USAGE_LEDGER: ContextVar[Any | None] = ContextVar("request_usage_ledger", default=None)
@@ -204,7 +234,10 @@ class SmartRouter:
             from apps.gateway.quota.adapter import AsyncQuotaFacade
             engine_quota = AsyncQuotaFacade(engine_quota)
         self.router_engine = RouterEngine(
-            snapshot, quota_reservations=engine_quota, scoring_config=self._scoring_config,
+            snapshot,
+            circuit_repository=_build_circuit_repository(),
+            quota_reservations=engine_quota,
+            scoring_config=self._scoring_config,
             quota_index=self.quota_index,
         )
         # Bridge session store so remember_affinity() affects both calculators
