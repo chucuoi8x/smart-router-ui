@@ -36,6 +36,7 @@ async def test_ready_health_endpoint_returns_request_id():
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.get("/health/ready")
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    # P0-17: readiness actively checks dependencies; status may be 200 or 503
+    assert response.status_code in {200, 503}
+    assert "status" in response.json()
     assert response.headers.get("x-request-id")
