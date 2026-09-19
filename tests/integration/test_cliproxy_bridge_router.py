@@ -74,7 +74,7 @@ async def test_router_uses_cliproxy_bridge_driver_success(router):
         assert data["usage"]["input_tokens"] == 10
         assert data["usage"]["output_tokens"] == 20
         # Check circuit state: should be success (no failure)
-        candidate_key = "cliproxy:gpt-4"
+        candidate_key = "cliproxy:cliproxy:gpt-4"  # canonical connection:credential:model
         state = router.circuits.get(candidate_key)
         assert state is not None
         assert state.consecutive_failures == 0
@@ -105,7 +105,7 @@ async def test_router_uses_cliproxy_bridge_driver_rate_limit(router):
         data = json.loads(response.body)
         assert "error" in data
         # Circuit breaker should record the rate limit.
-        candidate_key = "cliproxy:gpt-4"
+        candidate_key = "cliproxy:cliproxy:gpt-4"  # canonical connection:credential:model
         state = router.circuits.get(candidate_key)
         assert state is not None
         assert state.last_kind == "RATE_LIMIT"
@@ -145,7 +145,7 @@ async def test_router_streaming_with_cliproxy_bridge(router):
         # so we can't inspect it directly. But we can check that the router attempted to record usage.
         # We can check the router's internal _REQUEST_USAGE_EVENTS? Not easily.
         # As a sanity check, we can verify that the circuit state is success.
-        candidate_key = "cliproxy:gpt-4"
+        candidate_key = "cliproxy:cliproxy:gpt-4"  # canonical connection:credential:model
         state = router.circuits.get(candidate_key)
         assert state is not None
         assert state.consecutive_failures == 0

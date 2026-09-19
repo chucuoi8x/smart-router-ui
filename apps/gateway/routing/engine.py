@@ -401,7 +401,7 @@ class RouterEngine:
             metrics: dict[str, CandidateMetrics] = {}
             prices = getattr(self.snapshot, "_prices", {}) or {}
             for candidate, key in zip(candidates, keys):
-                model_part = key.split(":", 1)[-1]
+                model_part = key.rsplit(":", 1)[-1]
                 price_info = prices.get(model_part, {})
                 eff_remaining = 0
                 lim = 0

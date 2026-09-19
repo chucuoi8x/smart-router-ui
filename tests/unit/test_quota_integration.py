@@ -658,9 +658,9 @@ async def test_upstream_rate_limit_uses_retry_after_and_uses_fallback(monkeypatc
     assert response.status_code == 200
     primary_client.post.assert_called_once()
     backup_client.post.assert_called_once()
-    remaining = router.circuits["primary:fast-model"].cooldown_until - asyncio.get_running_loop().time()
+    remaining = router.circuits["primary:primary:fast-model"].cooldown_until - asyncio.get_running_loop().time()
     assert remaining > 25
-    assert router.circuits["primary:fast-model"].last_kind == "RATE_LIMIT"
+    assert router.circuits["primary:primary:fast-model"].last_kind == "RATE_LIMIT"
 
 
 @pytest.mark.asyncio

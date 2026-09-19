@@ -133,8 +133,8 @@ class WeightedRouterTests(unittest.TestCase):
 
         for _ in range(5):
             keys = asyncio.run(order())
-            self.assertEqual(keys[-1], "aibox:z")
-            self.assertEqual(set(keys[:2]), {"proxypal:a", "proxypal:b"})
+            self.assertEqual(keys[-1], "aibox:aibox:z")
+            self.assertEqual(set(keys[:2]), {"proxypal:proxypal:a", "proxypal:proxypal:b"})
             self.assertEqual(len(keys), 3)
 
     def test_fallback_excluded_when_unavailable(self):
@@ -150,7 +150,7 @@ class WeightedRouterTests(unittest.TestCase):
                 "logging": {"level": "CRITICAL"},
             }
         )
-        router.circuits.setdefault("aibox:z", CircuitState()).cooldown_until = 10 ** 9
+        router.circuits.setdefault("aibox:aibox:z", CircuitState()).cooldown_until = 10 ** 9
         # Bridge: cũng trip engine circuit repository cho test
         from apps.gateway.routing.models import ResourceRef
         router.router_engine.circuit_repository.trip(ResourceRef("aibox", "aibox", "z"), cooldown_seconds=10**9)

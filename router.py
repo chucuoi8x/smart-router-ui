@@ -113,6 +113,15 @@ class Candidate:
 
     @property
     def key(self) -> str:
+        # Canonical schedulable identity (plan §3.3): connection:credential:model.
+        # Prefer the resource key from the authoritative engine; otherwise derive
+        # the credential from metadata so credential-scoped state (circuit,
+        # latency, failure rate, affinity) never leaks to sibling credentials.
+        if self.resource_key:
+            return self.resource_key
+        credential = self.metadata.get("credential_id") or self.metadata.get("credential_scope")
+        if credential:
+            return f"{self.upstream}:{credential}:{self.model}"
         return f"{self.upstream}:{self.model}"
 
 
@@ -281,6 +290,12 @@ class SmartRouter:
             val = item.get(key)
             if val is not None:
                 metadata[key] = val
+        # Canonical credential identity (P0/PR-06) — runtime state must be
+        # keyed per credential so sibling credentials stay isolated.
+        for key in ("credential_id", "credential_scope"):
+            val = item.get(key)
+            if val:
+                metadata[key] = str(val)
         # M5 feature metrics: giữ để scoring 4 chiều mới có dữ liệu, fail-open nếu thiếu
         for key in (
             "expiry_urgency", "scarcity", "retry_expected_cost_per_request", "uncertainty_score",
@@ -481,13 +496,10 @@ class SmartRouter:
     def _canonical_candidate_key(candidate: Candidate) -> str:
         """Canonical schedulable-resource key for runtime state.
 
-        Candidates produced by the authoritative RouterEngine carry
-        ``metadata["resource_key"]`` (connection:credential:model).  Fall back to
-        the legacy two-part key only for candidates that never passed through the
-        engine, so affinity lookups match what scoring reads.
+        ``Candidate.key`` now carries connection:credential:model (from
+        ``resource_key`` or ``metadata['credential_id']``), falling back to the
+        legacy two-part key only for candidates with no credential dimension.
         """
-        if candidate.resource_key:
-            return candidate.resource_key
         return candidate.key
 
     def _remember_session_affinity(self, conversation_thread: str | None, candidate: Candidate) -> None:
@@ -760,7 +772,14 @@ class SmartRouter:
         # If engine is authoritative, also check engine's circuit repo
         if self.router_engine is not None:
             from apps.gateway.routing.models import ResourceRef
-            ref = ResourceRef(candidate.upstream, candidate.upstream, candidate.model)
+            # Rebuild the canonical ref from candidate.key so the credential
+            # dimension survives into the engine circuit lookup (plan §3.3).
+            parts = candidate.key.split(":")
+            ref = ResourceRef(
+                provider_connection_id=parts[0],
+                credential_scope=parts[1] if len(parts) > 2 else parts[0],
+                model_id=parts[-1],
+            )
             try:
                 return self.router_engine.circuit_repository.is_available(ref)
             except Exception:
@@ -981,8 +1000,9 @@ class SmartRouter:
         prices = self.catalog.get("prices", {})
         result: dict[str, CandidateMetrics] = {}
         for key in candidate_keys:
-            parts = key.split(":", 1)
-            model_id = parts[1] if len(parts) > 1 else ""
+            # Canonical key is connection:credential:model — the model is the
+            # last segment (legacy 2-part keys keep working via rsplit).
+            model_id = key.rsplit(":", 1)[-1] if ":" in key else ""
             price_info = prices.get(model_id, {})
             fail_rate, _, _ = self._failure_tracker.failure_rate(key)
             p50, p99, mean = self._latency_tracker.percentiles(key)
@@ -1026,8 +1046,7 @@ class SmartRouter:
         resource_ids_for_key: dict[str, list[str]] = {}
         all_resource_ids: set[str] = set()
         for key in candidate_keys:
-            parts = key.split(":", 1)
-            model_id = parts[1] if len(parts) > 1 else ""
+            model_id = key.rsplit(":", 1)[-1] if ":" in key else ""
             candidate_for_key = None
             for rname, route in self.routes.items():
                 for c in route["candidates"]:
@@ -1055,8 +1074,7 @@ class SmartRouter:
 
         metrics_by_key: dict[str, CandidateMetrics] = {}
         for key in candidate_keys:
-            parts = key.split(":", 1)
-            model_id = parts[1] if len(parts) > 1 else ""
+            model_id = key.rsplit(":", 1)[-1] if ":" in key else ""
             price_info = prices.get(model_id, {})
             fail_rate, total_attempts, total_successes = self._failure_tracker.failure_rate(key)
             p50, p99, mean = self._latency_tracker.percentiles(key)
@@ -2385,13 +2403,21 @@ class SmartRouter:
             return
         # Update legacy SmartRouter circuit state
         if isinstance(cooldown_seconds, float):
+            # Canonical identity includes connection+credential+model.
+            # State is keyed by ref.key to isolate sibling credentials.
             state = self.circuits.setdefault(candidate.key, CircuitState())
             state.cooldown_until = time.monotonic() + cooldown_seconds
         # Also trip the canonical engine circuit repository
         if self.router_engine is not None:
             try:
                 from apps.gateway.routing.models import ResourceRef
-                ref = ResourceRef(candidate.upstream, candidate.upstream, candidate.model)
+                # Construct ref from the candidate's canonical resource_key or legacy parts
+                parts = candidate.key.split(":")
+                ref = ResourceRef(
+                    provider_connection_id=parts[0],
+                    credential_scope=parts[1] if len(parts) > 2 else parts[0],
+                    model_id=parts[-1]
+                )
                 self.router_engine.circuit_repository.trip(ref, cooldown_seconds)
             except Exception:
                 pass
