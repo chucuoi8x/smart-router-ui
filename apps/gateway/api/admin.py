@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.gateway.config.revision import ConfigRevisionManager
 from apps.gateway.config.templates import ProviderTemplateRegistry
 from apps.gateway.db.dependencies import get_session, get_provider_registry_repo
+from apps.gateway.db.revisions import RevisionRepository
 from apps.gateway.quota.reservations import QuotaResource, QuotaResourceRepository
 from apps.gateway.db.models import AttemptLedger, ProviderConnection, ProviderCredential, ProviderModel, RequestLedger, UsageLedger
 from apps.gateway.db.provider_registry import ProviderRegistryRepository
@@ -55,7 +56,9 @@ def require_admin_auth(authorization: str = Header(default="")) -> None:
 router = APIRouter(dependencies=[Depends(require_admin_auth)])
 
 _template_registry = ProviderTemplateRegistry()
-_revision_manager = ConfigRevisionManager()
+# P0-05: ConfigRevisionManager retained only as a pure snapshot validator; all
+# revision state is persisted through RevisionRepository(db).
+_revision_validator = ConfigRevisionManager()
 # PR-05: provider connections, credentials and imported models are persisted in
 # the database through ProviderRegistryRepository; no in-memory registry state.
 _provider_health_cache: dict[str, dict[str, Any]] = {}
@@ -166,23 +169,25 @@ def _serialize_credential(cred: ProviderCredential) -> dict[str, Any]:
     }
 
 
-def _serialize_revision(revision: dict[str, Any]) -> dict[str, Any]:
-    result = dict(revision)
-    created_at = result.get("created_at")
-    if isinstance(created_at, datetime):
-        result["created_at"] = created_at.isoformat()
-    activated_at = result.get("activated_at")
-    if isinstance(activated_at, datetime):
-        result["activated_at"] = activated_at.isoformat()
-    return result
+def _serialize_revision(revision: Any) -> dict[str, Any]:
+    """Serialize a persisted ConfigRevision ORM row into the API shape."""
+    return {
+        "revision_id": revision.id,
+        "snapshot_data": revision.snapshot_data,
+        "active": revision.is_active,
+        "created_at": _serialize_datetime(revision.created_at),
+        "activated_at": _serialize_datetime(revision.activated_at),
+    }
 
 
-def _ensure_active_revision() -> dict[str, Any]:
-    active = _revision_manager.get_active_revision()
+async def _ensure_active_revision(db: AsyncSession) -> Any:
+    """Return the DB active revision, seeding a default one when missing."""
+    repo = RevisionRepository(db)
+    active = await repo.get_active()
     if active is None:
-        revision_id = _revision_manager.create_draft({"routes": {}, "connections": {}})
-        _revision_manager.activate(revision_id)
-        active = _revision_manager.get_active_revision()
+        draft = await repo.create_draft({"routes": {}, "connections": {}})
+        active = await repo.activate(draft.id)
+        await db.commit()
     if active is None:
         raise HTTPException(status_code=500, detail="active revision unavailable")
     return active
@@ -394,8 +399,9 @@ async def get_provider(connection_id: str, repo: ProviderRegistryRepository = De
 @router.post("/providers", status_code=201)
 async def create_provider(
     payload: dict[str, Any] = Body(...),
-    repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    repo = ProviderRegistryRepository(db)
     template_id = str(payload.get("template_id") or "")
     if not template_id:
         raise HTTPException(status_code=400, detail="template_id is required")
@@ -427,7 +433,9 @@ async def create_provider(
         base_url=base_url,
         credential_encrypted=encrypted,
     )
-    _ensure_active_revision()
+    await _ensure_active_revision(db)
+    await _write_audit(db, "provider.created", connection_id=conn.id, name=name)
+    await db.commit()
     return _serialize_provider(conn, credential_present=bool(encrypted))
 
 
@@ -552,8 +560,8 @@ async def import_provider_models(
     new_models = [str(m).strip() for m in model_list if str(m).strip()]
     if not new_models:
         raise HTTPException(status_code=400, detail="models cannot be empty")
-    active = _ensure_active_revision()
-    snapshot = copy.deepcopy(active.get("snapshot_data") or {})
+    active = await _ensure_active_revision(db)
+    snapshot = copy.deepcopy(active.snapshot_data or {})
     routes = snapshot.get("routes") if isinstance(snapshot, dict) else {}
     if not isinstance(routes, dict):
         routes = {}
@@ -572,11 +580,13 @@ async def import_provider_models(
             seen.add(mdl)
     routes[route_id] = {"strategy": route_cfg.get("strategy","priority"), "candidates": candidates, "fallback": route_cfg.get("fallback",[])}
     snapshot["routes"] = routes
-    rev_id = _revision_manager.create_draft(snapshot)
-    valid, errs = _revision_manager.validate(rev_id)
-    if not valid:
+    rev_repo = RevisionRepository(db)
+    draft = await rev_repo.create_draft(snapshot)
+    errs = _revision_validator._validate_snapshot(snapshot)
+    if errs:
         raise HTTPException(status_code=400, detail=errs)
-    _revision_manager.activate(rev_id)
+    await rev_repo.activate(draft.id)
+    rev_id = draft.id
     for mdl in added:
         await repo.import_model(connection_id=conn.id, model_id=mdl)
     await _write_audit(db, "route.models.imported", route_id=route_id, provider_id=connection_id, imported=added, revision_id=rev_id)
@@ -925,17 +935,17 @@ async def get_quota_resource(
 
 
 @router.get("/routes")
-def list_routes() -> dict[str, Any]:
+async def list_routes(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """List routes from active immutable configuration revision."""
-    active = _ensure_active_revision()
-    snapshot = active.get("snapshot_data") or {}
+    active = await _ensure_active_revision(db)
+    snapshot = active.snapshot_data or {}
     routes = snapshot.get("routes") if isinstance(snapshot, dict) else {}
     routes = routes if isinstance(routes, dict) else {}
     items = [
         {"route_id": route_id, "config": copy.deepcopy(config)}
         for route_id, config in routes.items()
     ]
-    return {"items": items, "total": len(items), "revision_id": active["revision_id"]}
+    return {"items": items, "total": len(items), "revision_id": active.id}
 
 
 @router.put("/routes/{route_id}")
@@ -946,8 +956,8 @@ async def update_route(route_id: str, payload: dict[str, Any] = Body(...), db: A
     if strategy is not None and str(strategy) not in allowed_strategies:
         raise HTTPException(status_code=400, detail="unsupported route strategy")
 
-    active = _ensure_active_revision()
-    snapshot = copy.deepcopy(active.get("snapshot_data") or {})
+    active = await _ensure_active_revision(db)
+    snapshot = copy.deepcopy(active.snapshot_data or {})
     routes = snapshot.get("routes")
     if not isinstance(routes, dict) or route_id not in routes:
         raise HTTPException(status_code=404, detail="route not found")
@@ -955,11 +965,13 @@ async def update_route(route_id: str, payload: dict[str, Any] = Body(...), db: A
     updated = copy.deepcopy(payload)
     routes[route_id] = updated
     snapshot["routes"] = routes
-    revision_id = _revision_manager.create_draft(snapshot)
-    valid, errors = _revision_manager.validate(revision_id)
-    if not valid:
+    rev_repo = RevisionRepository(db)
+    draft = await rev_repo.create_draft(snapshot)
+    errors = _revision_validator._validate_snapshot(snapshot)
+    if errors:
         raise HTTPException(status_code=400, detail=errors)
-    _revision_manager.activate(revision_id)
+    await rev_repo.activate(draft.id)
+    revision_id = draft.id
     await _write_audit(db, "route.updated", route_id=route_id, revision_id=revision_id)
     await db.commit()
     return {
@@ -970,65 +982,67 @@ async def update_route(route_id: str, payload: dict[str, Any] = Body(...), db: A
 
 
 @router.get("/revisions/active")
-def get_active_revision() -> dict[str, Any]:
-    return _serialize_revision(_ensure_active_revision())
+async def get_active_revision(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    return _serialize_revision(await _ensure_active_revision(db))
 
 
 @router.get("/revisions")
-def list_revisions() -> dict[str, Any]:
-    items = [_serialize_revision(r) for r in _revision_manager.list_revisions()]
+async def list_revisions(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    revisions = await RevisionRepository(db).list_revisions()
+    items = [_serialize_revision(r) for r in revisions]
     return {"items": items, "total": len(items)}
 
 
 @router.get("/revisions/{revision_id}")
-def get_revision_detail(revision_id: str) -> dict[str, Any]:
-    for rev in _revision_manager.list_revisions():
-        if rev.get("revision_id") == revision_id:
-            return _serialize_revision(rev)
-    raise HTTPException(status_code=404, detail="revision not found")
+async def get_revision_detail(revision_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    rev = await RevisionRepository(db).get_revision(revision_id)
+    if rev is None:
+        raise HTTPException(status_code=404, detail="revision not found")
+    return _serialize_revision(rev)
 
 
 @router.post("/revisions", status_code=201)
-def create_revision(payload: dict[str, Any] = Body(...)) -> dict[str, str]:
-    revision_id = _revision_manager.create_draft(payload)
-    return {"revision_id": revision_id}
+async def create_revision(payload: dict[str, Any] = Body(...), db: AsyncSession = Depends(get_session)) -> dict[str, str]:
+    draft = await RevisionRepository(db).create_draft(payload)
+    await db.commit()
+    return {"revision_id": draft.id}
 
 
 @router.post("/revisions/{revision_id}/rollback")
 async def rollback_revision(revision_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Activate a prior immutable revision with an explicit rollback audit event."""
-    target = None
-    for revision in _revision_manager.list_revisions():
-        if revision.get("revision_id") == revision_id:
-            target = revision
-            break
+    rev_repo = RevisionRepository(db)
+    target = await rev_repo.get_revision(revision_id)
     if target is None:
         raise HTTPException(status_code=404, detail="revision not found")
-    current = _revision_manager.get_active_revision()
-    if current is not None and current.get("revision_id") == revision_id:
+    current = await rev_repo.get_active()
+    if current is not None and current.id == revision_id:
         raise HTTPException(status_code=400, detail="revision is already active")
-    previous_id = current.get("revision_id") if current else None
-    valid, errors = _revision_manager.validate(revision_id)
-    if not valid:
+    previous_id = current.id if current else None
+    errors = _revision_validator._validate_snapshot(target.snapshot_data)
+    if errors:
         raise HTTPException(status_code=400, detail=errors)
-    _revision_manager.activate(revision_id)
+    await rev_repo.activate(revision_id)
     await _write_audit(db, "revision.rolled_back", revision_id=revision_id, from_revision_id=previous_id)
     await db.commit()
-    result = _serialize_revision(_ensure_active_revision())
+    result = _serialize_revision(await _ensure_active_revision(db))
     result["rolled_back_from"] = previous_id
     return result
 
 
 @router.post("/revisions/{revision_id}/activate")
 async def activate_revision(revision_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
-    valid, errors = _revision_manager.validate(revision_id)
-    if not valid:
-        status_code = 404 if errors == ["Revision not found"] else 400
-        raise HTTPException(status_code=status_code, detail=errors)
-    _revision_manager.activate(revision_id)
+    rev_repo = RevisionRepository(db)
+    target = await rev_repo.get_revision(revision_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail=["Revision not found"])
+    errors = _revision_validator._validate_snapshot(target.snapshot_data)
+    if errors:
+        raise HTTPException(status_code=400, detail=errors)
+    await rev_repo.activate(revision_id)
     await _write_audit(db, "revision.activated", revision_id=revision_id)
     await db.commit()
-    return _serialize_revision(_ensure_active_revision())
+    return _serialize_revision(await _ensure_active_revision(db))
 
 
 @router.get("/audit/export")
@@ -1050,10 +1064,10 @@ async def list_audit(action: str | None = Query(default=None), limit: int = Quer
 
 
 @router.get("/models")
-def list_models(route_id: str | None = Query(default=None)) -> dict[str, Any]:
+async def list_models(route_id: str | None = Query(default=None), db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """List model resources from active revision — Control Plane view (AC-13)."""
-    active = _ensure_active_revision()
-    snapshot = active.get("snapshot_data") or {}
+    active = await _ensure_active_revision(db)
+    snapshot = active.snapshot_data or {}
     routes = snapshot.get("routes") if isinstance(snapshot, dict) else {}
     if not isinstance(routes, dict):
         routes = {}
@@ -1329,10 +1343,10 @@ async def control_plane_overview(
     # 2. Active revision
     active = None
     try:
-        rev = _ensure_active_revision()
+        rev = await _ensure_active_revision(db)
         active = {
-            "revision_id": rev["revision_id"],
-            "created_at": rev["created_at"].isoformat() if isinstance(rev.get("created_at"), datetime) else None,
+            "revision_id": rev.id,
+            "created_at": rev.created_at.isoformat() if rev.created_at else None,
         }
     except Exception:
         pass
@@ -1467,11 +1481,13 @@ async def migrate_legacy_yaml(request: Request, db: AsyncSession = Depends(get_s
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     snapshot_data = _snapshot_to_dict(snapshot)
-    revision_id = _revision_manager.create_draft(snapshot_data)
-    valid, errors = _revision_manager.validate(revision_id)
-    if not valid:
+    rev_repo = RevisionRepository(db)
+    draft = await rev_repo.create_draft(snapshot_data)
+    errors = _revision_validator._validate_snapshot(snapshot_data)
+    if errors:
         raise HTTPException(status_code=400, detail=errors)
-    _revision_manager.activate(revision_id)
+    await rev_repo.activate(draft.id)
+    revision_id = draft.id
     await _write_audit(db, "migration.yaml", revision_id=revision_id)
     await db.commit()
     return {"revision_id": revision_id, "activated": True, "snapshot_data": snapshot_data}
