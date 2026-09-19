@@ -25,6 +25,31 @@ class InMemoryCircuitRepository:
         key = self._key(ref)
         self._states[key] = time.monotonic() + cooldown_seconds
 
+
+class RedisCircuitRepository:
+    def __init__(self, redis_client: Any, *, prefix: str = "circuit") -> None:
+        self._redis = redis_client
+        self._prefix = prefix
+
+    def _key(self, ref: ResourceRef) -> str:
+        return f"{self._prefix}:{ref.key}"
+
+    def is_available(self, ref: ResourceRef) -> bool:
+        raw = self._redis.get(self._key(ref))
+        if raw is None:
+            return True
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        try:
+            return float(raw) <= time.time()
+        except (TypeError, ValueError):
+            return True
+
+    def trip(self, ref: ResourceRef, cooldown_seconds: float) -> None:
+        expires_at = time.time() + cooldown_seconds
+        ttl = max(1, int(cooldown_seconds))
+        self._redis.set(self._key(ref), str(expires_at), ex=ttl)
+
 class RouterEngine:
     def __init__(
         self,
