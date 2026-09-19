@@ -104,6 +104,10 @@ class Candidate:
     model: str
     weight: int = 1
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Auxiliary runtime provenance (connection:credential:model), excluded from
+    # equality so legacy (upstream, model, weight, metadata) candidate identity
+    # comparisons keep working while state keyed off the canonical resource.
+    resource_key: str = field(default="", compare=False)
 
     @property
     def key(self) -> str:
@@ -458,9 +462,23 @@ class SmartRouter:
                     return value.strip()
         return None
 
-    def _remember_session_affinity(self, conversation_thread: str | None, candidate_key: str) -> None:
+    @staticmethod
+    def _canonical_candidate_key(candidate: Candidate) -> str:
+        """Canonical schedulable-resource key for runtime state.
+
+        Candidates produced by the authoritative RouterEngine carry
+        ``metadata["resource_key"]`` (connection:credential:model).  Fall back to
+        the legacy two-part key only for candidates that never passed through the
+        engine, so affinity lookups match what scoring reads.
+        """
+        if candidate.resource_key:
+            return candidate.resource_key
+        return candidate.key
+
+    def _remember_session_affinity(self, conversation_thread: str | None, candidate: Candidate) -> None:
         if not conversation_thread:
             return
+        candidate_key = self._canonical_candidate_key(candidate)
         self._ensure_scoring()
         if self._score_calculator is None:
             return
@@ -706,11 +724,17 @@ class SmartRouter:
     def _convert_resource_candidates(self, resource_candidates: list) -> list[Candidate]:
         candidates = []
         for rc in resource_candidates:
+            # resource_key carries the canonical three-part schedulable identity
+            # (connection:credential:model).  Runtime state must be keyed by it so
+            # sibling credentials of the same connection+model never share state.
+            # Kept as a separate field so the frozen snapshot metadata is untouched
+            # and legacy equality on Candidate(upstream, model) still holds.
             candidates.append(Candidate(
                 upstream=rc.resource_ref.provider_connection_id,
                 model=rc.resource_ref.model_id,
                 weight=rc.weight,
-                metadata=rc.metadata
+                metadata=rc.metadata,
+                resource_key=rc.resource_ref.key,
             ))
         return candidates
 
@@ -1805,7 +1829,7 @@ class SmartRouter:
                 elapsed_ms = (time.monotonic() - _start) * 1000
                 if self._score_calculator:
                     self._latency_tracker.record(candidate.key, elapsed_ms)
-                self._remember_session_affinity(conversation_thread, candidate.key)
+                self._remember_session_affinity(conversation_thread, candidate)
                 return Response(
                     content=response.content,
                     status_code=response.status_code,
@@ -1947,7 +1971,7 @@ class SmartRouter:
             elapsed_ms = (time.monotonic() - _start) * 1000
             if self._score_calculator:
                 self._latency_tracker.record(candidate.key, elapsed_ms)
-            self._remember_session_affinity(conversation_thread, candidate.key)
+            self._remember_session_affinity(conversation_thread, candidate)
             # Convert body to bytes
             body_bytes = result["body"].encode("utf-8") if isinstance(result["body"], str) else result["body"]
             return Response(
@@ -2059,7 +2083,7 @@ class SmartRouter:
                         candidate=_candidate,
                         sse_buffer=_sse_buf,
                     )
-                    self._remember_session_affinity(conversation_thread, _candidate.key)
+                    self._remember_session_affinity(conversation_thread, _candidate)
                     if reservation_id is not None and resource_id is not None:
                         tokens = self._get_latest_usage_tokens(attempt_id=attempt_id)
                         total_tokens = tokens["total_tokens"]
