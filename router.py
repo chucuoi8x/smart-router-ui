@@ -1,4 +1,4 @@
-"""Local Anthropic-compatible smart router for ProxyPal and AI-BOX."""
+"""Local Anthropic-compatible smart router with provider-agnostic core."""
 
 from __future__ import annotations
 
@@ -38,7 +38,13 @@ from apps.gateway.routing.scoring import (
     RollingFailureRateTracker, LatencyTracker, SessionAffinityStore,
     CandidateMetrics,
 )
-from apps.worker.collectors.aibox_catalog import build_records, select_routes, state_from_records
+from apps.gateway.workers.catalog_sync import (
+    CatalogSyncError,
+    CatalogSyncWorker,
+    build_records,
+    select_routes,
+    state_from_records,
+)
 from apps.gateway.openai_compat import openai_request_to_router, router_response_to_openai, router_stream_to_openai
 
 # ── Quota reservation factory (Redis → InMemory fallback) ─────────────
@@ -93,10 +99,6 @@ FORWARD_EXACT_HEADERS = {"accept", "cache-control", "content-type", "user-agent"
 
 
 class RouterConfigurationError(RuntimeError):
-    pass
-
-
-class CatalogSyncError(RuntimeError):
     pass
 
 
@@ -163,9 +165,17 @@ class SmartRouter:
         self.rr_current: dict[str, dict[str, float]] = {}
         self.state_lock = asyncio.Lock()
         self.sync_task: asyncio.Task[None] | None = None
-        self.sync_running = False
-        self.catalog: dict[str, Any] = self._load_catalog()
         self.logger = logging.getLogger("smart-router")
+        self.catalog_worker = CatalogSyncWorker(
+            config=config,
+            clients=self.clients,
+            base_dir=BASE_DIR,
+            logger=self.logger,
+            timeout_fn=self._timeout,
+            upstream_config_fn=self._upstream_config,
+            upstream_headers_fn=self._upstream_headers,
+        )
+        self.catalog: dict[str, Any] = self.catalog_worker.catalog
         self._configure_logging()
         # ── Smart scoring subsystem ──────────────────────────────────────
         scoring_data = config.get("smart_scheduler", {})
@@ -310,10 +320,12 @@ class SmartRouter:
             name: httpx.AsyncClient(http2=True, follow_redirects=False, timeout=timeout)
             for name in self.config.get("upstreams", {})
         }
-        sync_config = self.config.get("aibox_catalog_sync", {})
+        # Reinitialize catalog worker with actual clients
+        self.catalog_worker.clients = self.clients
+        sync_config = self.catalog_worker._get_sync_config()
         if sync_config.get("enabled", False):
             await self.sync_catalog(initial=True)
-            self.sync_task = asyncio.create_task(self._sync_loop(), name="aibox-catalog-sync")
+            self.sync_task = asyncio.create_task(self._sync_loop(), name="catalog-sync")
         self.logger.info("router started on 127.0.0.1:8320")
         # Hydrate quota resources from the database so running routers have
         # fresh quota state on startup (covers Redis and InMemory backends).
@@ -380,7 +392,7 @@ class SmartRouter:
             self.logger.info("quota hydrated %d resource(s) from database", count)
 
     async def _sync_loop(self) -> None:
-        interval = max(60, int(self.config.get("aibox_catalog_sync", {}).get("interval_seconds", 21600)))
+        interval = max(60, int(self.catalog_worker._get_sync_config().get("interval_seconds", 21600)))
         while True:
             await asyncio.sleep(interval)
             await self.sync_catalog()
@@ -2510,161 +2522,30 @@ class SmartRouter:
         return {"routes": routes, "catalog_last_successful_sync": self.catalog.get("last_successful_sync")}
 
     async def sync_catalog(self, initial: bool = False) -> dict[str, Any]:
-        if self.sync_running:
-            return {"ok": False, "skipped": True, "reason": "sync already running", "catalog": self.catalog}
-        self.sync_running = True
-        lock_path = self._state_path("lock_file")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd: int | None = None
-        try:
-            try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(fd, str(os.getpid()).encode("ascii"))
-            except FileExistsError:
-                return {"ok": False, "skipped": True, "reason": "sync lock exists", "catalog": self.catalog}
-
-            token_env = str(self._upstream_config("aibox").get("auth", {}).get("token_env", "AIBOX_API_KEY"))
-            if not os.getenv(token_env):
-                raise CatalogSyncError(f"missing {token_env}")
-            docs_url = str(self.config["aibox_catalog_sync"]["docs_url"])
-            pricing_url = str(self.config["aibox_catalog_sync"]["pricing_url"])
-            models_url = str(self.config["aibox_catalog_sync"]["models_url"])
-            sync_args = self.config.get("aibox_catalog_sync", {})
-            pricing_api_url = str(
-                sync_args.get("pricing_api_url", "https://api.ai-box.vn/api/pricing")
-            )
-            quota_per_usd = float(sync_args.get("quota_per_usd", 500000.0))
-            client = self.clients.get("aibox")
-            if client is None:
-                raise CatalogSyncError("AI-BOX client is not initialized")
-            docs_text = await self._get_public_text(client, docs_url)
-            pricing_text = await self._get_public_text(client, pricing_url)
-            newapi_entries: list[dict[str, Any]] = []
-            try:
-                newapi_payload = json.loads(await self._get_public_text(client, pricing_api_url))
-                newapi_entries = (
-                    newapi_payload.get("data", []) if isinstance(newapi_payload, dict) else newapi_payload
-                )
-                if not isinstance(newapi_entries, list):
-                    newapi_entries = []
-            except (ValueError, json.JSONDecodeError):
-                self.logger.warning("pricing_api_url=%s did not return JSON", pricing_api_url)
-                newapi_entries = []
-            models_response = await client.get(
-                models_url,
-                headers=self._upstream_headers("aibox", {}),
-                timeout=self._timeout(catalog=True),
-            )
-            if models_response.status_code != 200:
-                raise CatalogSyncError(f"/v1/models returned {models_response.status_code}")
-            payload = models_response.json()
-            raw_models = payload.get("data", payload) if isinstance(payload, dict) else payload
-            if not isinstance(raw_models, list):
-                raise CatalogSyncError("/v1/models response has no model list")
-            runtime_models = [str(item.get("id")) for item in raw_models if isinstance(item, dict) and item.get("id")]
-            if not runtime_models:
-                raise CatalogSyncError("/v1/models returned an empty model list")
-            policy = self.config.get("aibox_auto_promotion", {})
-            records, public_names = build_records(
-                runtime_models,
-                docs_text,
-                pricing_text,
-                policy,
-                newapi_entries=newapi_entries,
-                quota_per_usd=quota_per_usd,
-            )
-            if not records:
-                raise CatalogSyncError("catalog produced no records")
-            selected = select_routes(records, policy)
-            timestamp = _now()
-            warnings = []
-            if any(r.reason == "price unknown" for r in records):
-                warnings.append("some model prices are unknown; they were not auto-promoted")
-            if selected.get("critical_candidates"):
-                warnings.append("ACTION REQUIRED: new critical-review candidate found")
-            state = state_from_records(records, runtime_models, public_names, selected, timestamp, warnings)
-            self._persist_catalog(state, selected)
-            self.catalog = state
+        """Delegate catalog sync to the provider-agnostic worker."""
+        result = await self.catalog_worker.sync_catalog(initial=initial)
+        self.catalog = self.catalog_worker.catalog
+        selected = self.catalog.get("selected_routes", {}) if isinstance(self.catalog, dict) else {}
+        if isinstance(selected, dict):
             self._apply_generated_routes(selected)
-            self.logger.info(
-                "catalog sync ok verified=%s cheap=%s engineering=%s critical_candidates=%s",
-                len(state["verified_models"]),
-                len(selected["cheap"]),
-                len(selected["engineering"]),
-                len(selected["critical_candidates"]),
-            )
-            return {"ok": True, "initial": initial, "catalog": state}
-        except (httpx.HTTPError, ValueError, CatalogSyncError, RouterConfigurationError) as exc:
-            self.logger.warning("catalog sync failed: %s; keeping last-known-good", _safe_error(exc))
-            return {"ok": False, "initial": initial, "error": _safe_error(exc), "catalog": self.catalog}
-        finally:
-            if fd is not None:
-                os.close(fd)
-                try:
-                    lock_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            self.sync_running = False
-
-    async def _get_public_text(self, client: httpx.AsyncClient, url: str) -> str:
-        response = await client.get(url, timeout=self._timeout(catalog=True))
-        if response.status_code != 200:
-            raise CatalogSyncError(f"{url} returned {response.status_code}")
-        return response.text
+        return result
 
     def _apply_generated_routes(self, selected: dict[str, list[str]]) -> None:
-        self.routes["claude-router-aibox-cheap"] = {
-            "strategy": "priority",
-            "generated": True,
-            "candidates": [Candidate("aibox", model) for model in selected.get("cheap", [])],
-        }
-        self.routes["claude-router-aibox-engineering"] = {
-            "strategy": "priority",
-            "generated": True,
-            "candidates": [Candidate("aibox", model) for model in selected.get("engineering", [])],
-        }
-        self.routes["claude-router-aibox-review"] = {
-            "strategy": "priority",
-            "generated": True,
-            "candidates": [Candidate("aibox", model) for model in selected.get("critical_review", [])],
-        }
+        """Apply worker-generated catalog routes without provider branching."""
+        self.catalog_worker.apply_generated_routes(self.routes, selected)
 
     def _state_path(self, setting: str) -> Path:
-        value = self.config.get("aibox_catalog_sync", {}).get(setting)
-        if not value:
-            raise RouterConfigurationError(f"missing catalog setting: {setting}")
-        path = Path(str(value))
-        return path if path.is_absolute() else BASE_DIR / path
+        return self.catalog_worker._state_path(setting)
 
     def _load_catalog(self) -> dict[str, Any]:
-        try:
-            path = self._state_path("state_file")
-        except RouterConfigurationError:
-            return {}
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                value = json.load(handle)
-            selected = value.get("selected_routes", {})
-            if isinstance(value, dict) and isinstance(selected, dict):
-                self._apply_generated_routes(selected)
-            return value if isinstance(value, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            return {}
+        catalog = self.catalog_worker.catalog
+        selected = catalog.get("selected_routes", {}) if isinstance(catalog, dict) else {}
+        if isinstance(selected, dict) and selected:
+            self._apply_generated_routes(selected)
+        return catalog
 
     def _persist_catalog(self, state: dict[str, Any], selected: dict[str, list[str]]) -> None:
-        state_path = self._state_path("state_file")
-        previous_path = self._state_path("previous_state_file")
-        generated_path = self._state_path("generated_routes_file")
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        if state_path.exists():
-            shutil.copyfile(state_path, previous_path)
-        _atomic_json(state_path, state)
-        generated = {
-            "claude-router-aibox-cheap": {"strategy": "priority", "candidates": selected.get("cheap", [])},
-            "claude-router-aibox-engineering": {"strategy": "priority", "candidates": selected.get("engineering", [])},
-            "claude-router-aibox-review": {"strategy": "priority", "candidates": selected.get("critical_review", [])},
-        }
-        _atomic_yaml(generated_path, generated)
+        self.catalog_worker._persist_catalog(state, selected)
 
 
 def _constant_time_equal(left: str, right: str) -> bool:
@@ -3021,14 +2902,14 @@ async def count_tokens(
         _REQUEST_USAGE_LEDGER.reset(ledger_token)
 
 
-@app.post("/router/aibox/sync")
-async def force_aibox_sync(service: SmartRouter = Depends(get_authorized_service)) -> Response:
+@app.post("/router/sync")
+async def force_catalog_sync(service: SmartRouter = Depends(get_authorized_service)) -> Response:
     result = await service.sync_catalog()
     return JSONResponse(status_code=200 if result.get("ok") else 502, content=result)
 
 
-@app.get("/router/aibox/catalog")
-async def aibox_catalog(service: SmartRouter = Depends(get_authorized_service)) -> dict[str, Any]:
+@app.get("/router/catalog")
+async def catalog_sync_state(service: SmartRouter = Depends(get_authorized_service)) -> dict[str, Any]:
     return {
         "catalog": service.catalog,
         "routes": {
