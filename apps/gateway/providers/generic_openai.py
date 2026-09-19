@@ -20,7 +20,7 @@ class GenericOpenAIDriver(HttpExchangeMixin):
     # Data plane currently reaches OpenAI-compatible upstreams through the
     # router's direct client; delegation is enabled deliberately, per driver,
     # once the Control Plane registry can hand over a resolved credential.
-    delegates_request_execution = False
+    delegates_request_execution = True
     default_endpoint = "chat/completions"
     discovery_endpoint = "models"
 

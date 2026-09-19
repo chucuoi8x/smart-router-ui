@@ -65,7 +65,8 @@ async def test_delegating_driver_routes_and_records_usage(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_non_delegating_driver_does_not_use_driver_path(monkeypatch):
+async def test_delegating_driver_uses_driver_path(monkeypatch):
+    """P0-03: generic drivers now delegate request execution."""
     monkeypatch.setenv("SMART_ROUTER_UPSTREAM_TOKEN", "test-token")
     router, ledger = _ledger_router(
         "sonnet",
@@ -74,16 +75,32 @@ async def test_non_delegating_driver_does_not_use_driver_path(monkeypatch):
     )
     from unittest.mock import AsyncMock, Mock
 
-    resp = AsyncMock()
-    resp.status_code = 200
-    resp.content = b'{"id":"ok"}'
-    resp.headers = {}
-    resp.json = Mock(return_value={"usage": {"input_tokens": 1, "output_tokens": 2}})
-    client = AsyncMock()
-    client.post = AsyncMock(return_value=resp)
-    router.clients["anthropic-svc"] = client
+    called = {}
+
+    async def fake_execute(self, ctx, request):
+        called["base_url"] = self.base_url
+        called["endpoint"] = self.endpoint
+        return {
+            "status_code": 200,
+            "headers": {},
+            "body": '{"id":"ok","usage":{"input_tokens":1,"output_tokens":2}}',
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 2,
+                "total_tokens": 3,
+                "source": "provider_api",
+                "confidence": "exact",
+            },
+            "classification": {"kind": "SUCCESS", "retryable": False, "scope": "request"},
+        }
+
+    monkeypatch.setattr("apps.gateway.providers.generic_anthropic.GenericAnthropicDriver.execute", fake_execute)
+
+    # Keep a real client dict entry so router's client lookup succeeds
+    router.clients["anthropic-svc"] = AsyncMock()
 
     r = await router.handle_messages({"model": "sonnet", "messages": []}, {}, "/v1/messages")
     assert r.status_code == 200
-    client.post.assert_awaited_once()
+    assert called["base_url"] == "https://api.anthropic.com"
+    assert called["endpoint"] == "/v1/messages"
     assert ledger._events[0].provider_connection_id == "anthropic-svc"
