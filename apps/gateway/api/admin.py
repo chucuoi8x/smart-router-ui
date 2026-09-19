@@ -22,6 +22,8 @@ from apps.gateway.db.control_plane import ControlPlaneRepository
 from apps.gateway.providers.registry import default_driver_registry
 from apps.gateway.providers.base import DriverNotFoundError
 from apps.gateway.security.crypto import decrypt_secret, encrypt_secret
+from apps.gateway.security.ssrf import validate_provider_url, ProviderURLValidationError
+from apps.gateway.security.redaction import redact_secrets
 
 
 ADMIN_AUTH_TOKEN_FALLBACK = "Bearer test-admin-key"
@@ -317,6 +319,11 @@ async def update_provider(
         cleaned_url = str(base_url).strip()
         if not cleaned_url:
             raise HTTPException(status_code=400, detail="base_url cannot be empty")
+        allow_private = bool(payload.get("allow_private_network"))
+        try:
+            validate_provider_url(cleaned_url, allow_private_network=allow_private)
+        except ProviderURLValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         fields["base_url"] = cleaned_url
     driver = payload.get("driver")
     if driver is not None:
@@ -402,6 +409,10 @@ async def create_provider(
     )
     if not base_url:
         raise HTTPException(status_code=400, detail="base_url is required")
+    try:
+        validate_provider_url(base_url, allow_private_network=bool(payload.get("allow_private_network")))
+    except ProviderURLValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     driver = str(payload.get("driver") or template.get("driver") or "")
     encrypted = encrypt_secret(str(payload["api_key"])) if payload.get("api_key") else None
