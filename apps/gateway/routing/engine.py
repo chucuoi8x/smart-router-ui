@@ -403,6 +403,7 @@ class RouterEngine:
                 lim = 0
                 sb = 0
                 burn_urgency = 0.0
+                normalized_pressure = 0.0
                 # Try quota snapshot for each candidate
                 rid = f"model:{model_part}"
                 if self.quota_reservations:
@@ -411,16 +412,19 @@ class RouterEngine:
                         eff_remaining = getattr(res, "effective_remaining", 0)
                         lim = getattr(res, "limit", 0)
                         sb = getattr(res, "safety_buffer", 0)
+                        if lim > 0:
+                            normalized_pressure = 1.0 - (eff_remaining / lim)
                     except (KeyError, TypeError, ValueError):
                         pass
                 if lim > 0 and eff_remaining >= 0:
-                    burn_urgency = 1.0 - (eff_remaining / lim)
+                    burn_urgency = normalized_pressure
                 metrics[key] = CandidateMetrics(
                     price_per_million_output=price_info.get("output_per_million"),
                     effective_remaining=eff_remaining,
                     limit=lim,
                     safety_buffer=sb,
                     burn_rate_urgency=burn_urgency,
+                    normalized_pressure=normalized_pressure,
                     expiry_urgency=float(candidate.metadata.get("expiry_urgency", 0.0)),
                     scarcity=float(candidate.metadata.get("scarcity", 0.0)),
                     retry_expected_cost=float(candidate.metadata.get("retry_expected_cost_per_request", 0.0)),

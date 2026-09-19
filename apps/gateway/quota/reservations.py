@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import timezone
 from threading import Lock
 from typing import Any
 
@@ -19,6 +20,8 @@ class QuotaResource:
     confidence: str = "high"
     shared_group_id: str | None = None
     parent_id: str | None = None
+    reset_at: Any | None = None
+    window_metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.limit < 0:
@@ -57,6 +60,9 @@ class QuotaResource:
             source=self.source,
             confidence=self.confidence,
             shared_group_id=self.shared_group_id,
+            parent_id=self.parent_id,
+            reset_at=self.reset_at,
+            window_metadata=dict(self.window_metadata or {}),
         )
 
 
@@ -100,6 +106,13 @@ class QuotaResourceRepository:
             source=row.source if row.source is not None else "configured",
             confidence=row.confidence if row.confidence is not None else "high",
             shared_group_id=row.shared_group_id,
+            parent_id=getattr(row, "parent_id", None),
+            reset_at=(
+                reset_at.replace(tzinfo=timezone.utc)
+                if (reset_at := getattr(row, "reset_at", None)) is not None and reset_at.tzinfo is None
+                else getattr(row, "reset_at", None)
+            ),
+            window_metadata=dict(getattr(row, "window_metadata", None) or {}),
         )
 
 

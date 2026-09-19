@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.gateway.config.revision import ConfigRevisionManager
 from apps.gateway.config.templates import ProviderTemplateRegistry
 from apps.gateway.db.dependencies import get_session, get_provider_registry_repo
+from apps.gateway.quota.reservations import QuotaResource, QuotaResourceRepository
 from apps.gateway.db.models import AttemptLedger, ProviderConnection, ProviderCredential, ProviderModel, RequestLedger, UsageLedger
 from apps.gateway.db.provider_registry import ProviderRegistryRepository
 from apps.gateway.providers.registry import default_driver_registry
@@ -781,59 +782,102 @@ def update_alert(alert_id: str, payload: dict[str, Any] = Body(...)) -> dict[str
     return dict(target)
 
 
-def _serialize_quota_resource(record: dict[str, Any]) -> dict[str, Any]:
-    result = dict(record)
-    result["remaining"] = max(0, int(result["limit"]) - int(result.get("used", 0)) - int(result.get("safety_buffer", 0)))
-    return result
+def _serialize_quota_resource(resource: QuotaResource) -> dict[str, Any]:
+    return {
+        "resource_id": resource.resource_id,
+        "scope": resource.scope,
+        "metric": resource.metric,
+        "limit": resource.limit,
+        "used": resource.used,
+        "window_seconds": resource.window_seconds,
+        "safety_buffer": resource.safety_buffer,
+        "hard_limit": resource.hard_limit,
+        "source": resource.source,
+        "confidence": resource.confidence,
+        "shared_group_id": resource.shared_group_id,
+        "parent_id": resource.parent_id,
+        "reset_at": resource.reset_at.isoformat() if isinstance(resource.reset_at, datetime) else resource.reset_at,
+        "window_metadata": dict(resource.window_metadata or {}),
+        "remaining": resource.effective_remaining,
+    }
+
+
+def _parse_reset_at(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="reset_at must be an ISO 8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="reset_at must be an ISO 8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 @router.post("/quota/resources", status_code=201)
-def create_quota_resource(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+async def create_quota_resource(
+    payload: dict[str, Any] = Body(...),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
     resource_id = str(payload.get("resource_id") or "").strip()
     scope = str(payload.get("scope") or "").strip()
     metric = str(payload.get("metric") or "").strip()
     if not resource_id or not scope or not metric:
         raise HTTPException(status_code=400, detail="resource_id, scope and metric are required")
-    if resource_id in _quota_resources:
+    repo = QuotaResourceRepository(db)
+    if await repo.get_resource(resource_id) is not None:
         raise HTTPException(status_code=409, detail="quota resource already exists")
     try:
-        limit = int(payload.get("limit"))
-        window_seconds = int(payload.get("window_seconds"))
-        used = int(payload.get("used", 0))
-        safety_buffer = int(payload.get("safety_buffer", 0))
+        resource = QuotaResource(
+            resource_id=resource_id,
+            scope=scope,
+            metric=metric,
+            limit=int(payload.get("limit")),
+            used=int(payload.get("used", 0)),
+            window_seconds=int(payload.get("window_seconds")),
+            safety_buffer=int(payload.get("safety_buffer", 0)),
+            hard_limit=bool(payload.get("hard_limit", True)),
+            source=str(payload.get("source") or "configured"),
+            confidence=str(payload.get("confidence") or "high"),
+            shared_group_id=payload.get("shared_group_id"),
+            parent_id=payload.get("parent_id"),
+            reset_at=_parse_reset_at(payload.get("reset_at")),
+            window_metadata=dict(payload.get("window_metadata") or {}),
+        )
     except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="limit/window_seconds/used/safety_buffer must be integers") from exc
-    if limit < 0 or window_seconds <= 0 or used < 0 or used > limit or safety_buffer < 0 or safety_buffer > limit:
-        raise HTTPException(status_code=400, detail="invalid quota resource bounds")
-    record = {
-        "resource_id": resource_id, "scope": scope, "metric": metric, "limit": limit,
-        "used": used, "window_seconds": window_seconds, "safety_buffer": safety_buffer,
-        "hard_limit": bool(payload.get("hard_limit", True)),
-        "shared_group_id": payload.get("shared_group_id"),
-        "created_at": datetime.now(UTC).isoformat(),
-    }
-    _quota_resources[resource_id] = record
-    _audit_events.append({"action":"quota.resource.created","resource_id":resource_id,"metric":metric,"created_at":record["created_at"]})
-    return _serialize_quota_resource(record)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await repo.save_resource(resource, commit=True)
+    created_at = datetime.now(UTC).isoformat()
+    _audit_events.append({"action": "quota.resource.created", "resource_id": resource_id, "metric": metric, "created_at": created_at})
+    return _serialize_quota_resource(resource)
 
 
 @router.get("/quota/resources")
-def list_quota_resources(scope: str | None = Query(default=None), metric: str | None = Query(default=None)) -> dict[str, Any]:
-    items = list(_quota_resources.values())
+async def list_quota_resources(
+    scope: str | None = Query(default=None),
+    metric: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    items = await QuotaResourceRepository(db).list_resources()
     if scope:
-        items = [r for r in items if r["scope"] == scope]
+        items = [r for r in items if r.scope == scope]
     if metric:
-        items = [r for r in items if r["metric"] == metric]
+        items = [r for r in items if r.metric == metric]
     data = [_serialize_quota_resource(r) for r in items]
     return {"items": data, "total": len(data)}
 
 
 @router.get("/quota/resources/{resource_id}")
-def get_quota_resource(resource_id: str) -> dict[str, Any]:
-    record = _quota_resources.get(resource_id)
-    if record is None:
+async def get_quota_resource(
+    resource_id: str,
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    resource = await QuotaResourceRepository(db).get_resource(resource_id)
+    if resource is None:
         raise HTTPException(status_code=404, detail="quota resource not found")
-    return _serialize_quota_resource(record)
+    return _serialize_quota_resource(resource)
 
 
 @router.get("/routes")

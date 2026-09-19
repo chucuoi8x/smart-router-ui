@@ -128,4 +128,7 @@ class QuotaResourceState(Base):
     source: Mapped[str] = mapped_column(String(64), nullable=False, default="configured")
     confidence: Mapped[str] = mapped_column(String(64), nullable=False, default="high")
     shared_group_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    parent_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    window_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)

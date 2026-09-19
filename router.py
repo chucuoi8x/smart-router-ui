@@ -1050,6 +1050,7 @@ class SmartRouter:
             limit = 0
             safety_buffer = 0
             burn_urgency = 0.0
+            normalized_pressure = 0.0
             for rid in resource_ids_for_key.get(key, []):
                 res = quota_cache.get(rid)
                 if res is not None:
@@ -1062,8 +1063,10 @@ class SmartRouter:
                         limit = lim
                     if sb > safety_buffer:
                         safety_buffer = sb
+                    if lim > 0:
+                        normalized_pressure = max(normalized_pressure, 1.0 - (eff / lim))
             if limit > 0 and effective_remaining >= 0:
-                burn_urgency = 1.0 - (effective_remaining / limit)
+                burn_urgency = normalized_pressure
             cb_state = self.circuits.get(key)
             cb_status = "closed"
             consecutive_failures = 0
@@ -1096,6 +1099,7 @@ class SmartRouter:
                 limit=limit,
                 safety_buffer=safety_buffer,
                 burn_rate_urgency=burn_urgency,
+                normalized_pressure=normalized_pressure,
                 expiry_urgency=float(cand_meta.get("expiry_urgency", 0.0) or 0.0),
                 scarcity=float(cand_meta.get("scarcity", 0.0) or 0.0),
                 retry_expected_cost=float(cand_meta.get("retry_expected_cost_per_request", 0.0) or 0.0),

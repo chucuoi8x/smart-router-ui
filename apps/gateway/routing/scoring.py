@@ -270,6 +270,7 @@ class CandidateMetrics:
     limit: int = 0
     safety_buffer: int = 0
     burn_rate_urgency: float = 0.0
+    normalized_pressure: float = 0.0
     expiry_urgency: float = 0.0
     scarcity: float = 0.0
     retry_expected_cost: float = 0.0
@@ -587,8 +588,14 @@ class SmartScoreCalculator:
         if m.limit <= 0:
             return 0.0
 
+        # Normalize pressure across dimensions (e.g. tokens vs requests)
+        # Ratio is usage / effective_limit.
         usage_ratio = 1.0 - (m.effective_remaining / m.limit)
-        base = 1.0 - usage_ratio
+        # Use peak pressure to prevent dimensional starvation.
+        # If tokens are at 0.99 pressure and requests at 0.1, the effective quota pressure
+        # must be closer to 0.99 to trigger scheduling changes.
+        normalized_pressure = max(usage_ratio, getattr(m, "normalized_pressure", 0.0))
+        base = 1.0 - normalized_pressure
 
         burn_urgency = m.burn_rate_urgency
         threshold = self._config.burn_rate_penalty_threshold
