@@ -2,14 +2,33 @@ from dataclasses import replace
 import asyncio
 import threading
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Protocol, runtime_checkable
 
 from apps.gateway.routing.models import ResourceRef, ResourceCandidate
 from apps.gateway.config.snapshot import RuntimeConfigSnapshot
 from apps.gateway.routing.scoring import ScoringConfig
 from apps.gateway.routing.presets import filter_candidates_for_policy, hard_state_eligible
 
+
+@runtime_checkable
+class CircuitRepository(Protocol):
+    """Storage contract for distributed circuit/cooldown state (P0-14).
+
+    Both the in-memory and Redis-backed implementations satisfy this protocol
+    so a credential throttled through one gateway instance is hidden from every
+    other instance sharing the same authority.
+    """
+
+    def is_available(self, ref: ResourceRef) -> bool:
+        ...
+
+    def trip(self, ref: ResourceRef, cooldown_seconds: float) -> None:
+        ...
+
+
 class InMemoryCircuitRepository:
+    """Process-local fallback used when no Redis authority is configured."""
+
     def __init__(self):
         self._states = {}
 
@@ -25,11 +44,103 @@ class InMemoryCircuitRepository:
         key = self._key(ref)
         self._states[key] = time.monotonic() + cooldown_seconds
 
+    async def is_available_async(self, ref: ResourceRef) -> bool:
+        return self.is_available(ref)
+
+    async def trip_async(self, ref: ResourceRef, cooldown_seconds: float) -> None:
+        self.trip(ref, cooldown_seconds)
+
+
+def _run_coroutine_sync(coro: Any) -> Any:
+    """Drive an awaitable to completion from synchronous circuit-check code."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    box: list[Any] = []
+    errors: list[BaseException] = []
+
+    def runner() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            box.append(loop.run_until_complete(coro))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join(timeout=10)
+    if errors:
+        raise errors[0]
+    return box[0] if box else None
+
+
+class RedisCircuitRepository:
+    """Distributed circuit state in Redis with expiring cooldown keys (P0-14).
+
+    The value is the absolute wall-clock expiry so every instance interprets the
+    same key identically, and the key also carries a TTL so a crashed gateway
+    cannot leave a credential tripped forever.  Works with sync or async redis
+    clients: when the client returns a coroutine, the sync entry points drive it
+    to completion instead of treating the un-awaited coroutine as a value.
+    """
+
+    def __init__(self, redis_client: Any, *, prefix: str = "circuit") -> None:
+        self._redis = redis_client
+        self._prefix = prefix
+
+    def _key(self, ref: ResourceRef) -> str:
+        return f"{self._prefix}:{ref.key}"
+
+    @staticmethod
+    def _resolve(value: Any) -> Any:
+        return _run_coroutine_sync(value) if asyncio.iscoroutine(value) else value
+
+    def _read_available(self, raw: Any) -> bool:
+        if raw is None:
+            return True
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        try:
+            return float(raw) <= time.time()
+        except (TypeError, ValueError):
+            # Unreadable state must not strand a resource permanently.
+            return True
+
+    def is_available(self, ref: ResourceRef) -> bool:
+        return self._read_available(
+            self._resolve(self._redis.get(self._key(ref)))
+        )
+
+    def trip(self, ref: ResourceRef, cooldown_seconds: float) -> None:
+        ttl = max(1, int(cooldown_seconds))
+        self._resolve(
+            self._redis.set(
+                self._key(ref), str(time.time() + cooldown_seconds), ex=ttl
+            )
+        )
+
+    async def is_available_async(self, ref: ResourceRef) -> bool:
+        return self._read_available(await self._redis.get(self._key(ref)))
+
+    async def trip_async(self, ref: ResourceRef, cooldown_seconds: float) -> None:
+        ttl = max(1, int(cooldown_seconds))
+        await self._redis.set(
+            self._key(ref), str(time.time() + cooldown_seconds), ex=ttl
+        )
+
 class RouterEngine:
     def __init__(
         self,
         snapshot: RuntimeConfigSnapshot,
-        circuit_repository: Optional[InMemoryCircuitRepository] = None,
+        circuit_repository: Optional[CircuitRepository] = None,
         quota_reservations: Optional[Any] = None,
         scoring_config: Optional[ScoringConfig] = None,
         quota_index: Optional[Any] = None,
@@ -152,6 +263,31 @@ class RouterEngine:
 
         return [selected] + remaining
 
+    async def _circuit_available_async(self, ref: ResourceRef) -> bool:
+        """Await shared circuit state on the async request path (P0-14).
+
+        Repositories that expose ``is_available_async`` (Redis authority) run
+        without blocking the event loop; plain sync repositories keep working.
+        A backend outage fails open so routing is never stranded by telemetry.
+        """
+        repo = self.circuit_repository
+        check = getattr(repo, "is_available_async", None)
+        try:
+            if callable(check):
+                return bool(await check(ref))
+            return bool(repo.is_available(ref))
+        except Exception:
+            self._circuit_backend_failure(ref)
+            return True
+
+    def _circuit_backend_failure(self, ref: ResourceRef) -> None:
+        import logging
+
+        logging.getLogger("smart-router").warning(
+            "circuit backend check failed for %s; failing open", ref.key,
+            exc_info=True,
+        )
+
     def select_candidates(
         self,
         route_name: str,
@@ -187,8 +323,8 @@ class RouterEngine:
         if route is None:
             return []
 
-        primary = [c for c in route.candidates if self.circuit_repository.is_available(c.resource_ref)]
-        fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
+        primary = [c for c in route.candidates if await self._circuit_available_async(c.resource_ref)]
+        fallback = [c for c in route.fallback if await self._circuit_available_async(c.resource_ref)]
         primary = self._apply_policy_constraints(primary, route_name, is_fallback=False, required_capabilities=required_capabilities)
         fallback = self._apply_policy_constraints(fallback, route_name, is_fallback=True, required_capabilities=required_capabilities)
 
@@ -254,18 +390,17 @@ class RouterEngine:
         return [candidate for _, _, _, candidate in sorted(ranked, key=lambda item: (item[0], item[1], item[2]))]
 
     async def _build_quota_graph(self) -> Any | None:
+        """Return the local runtime index for request-time admission reads.
+
+        P0-08: the request path must never rebuild a graph from
+        ``store.list_resources()`` (Redis ``SCAN quota:*``).  Index hydration
+        belongs to startup/background refresh; when the index is not loaded we
+        degrade to targeted per-request ``check_many`` on the authority, which
+        scales with the route's candidates, not with every stored resource.
+        """
         if self.quota_index is not None and getattr(self.quota_index, "loaded", False):
             return self.quota_index
-        if self.quota_reservations is None or not hasattr(self.quota_reservations, "list_resources"):
-            return None
-        try:
-            from apps.gateway.quota.graph import QuotaGraph
-
-            graph = QuotaGraph(self.quota_reservations)
-            await graph.load()
-            return graph
-        except Exception:
-            return None
+        return None
 
     async def _check_candidate_quota(self, candidate: ResourceCandidate, *, quota_graph: Any | None = None) -> ResourceCandidate | None:
         from apps.gateway.quota.reservations import QuotaReservationRequest
