@@ -43,7 +43,7 @@ async def test_affinity_recorded_by_handlers_pins_next_selection():
     router._ensure_scoring()
 
     first = await router._candidate_order("chat", conversation_thread="s1")
-    assert [c.key for c in first] == ["a:m1", "b:m2", "c:m3"]
+    assert [c.key for c in first] == ["a:a:m1", "b:b:m2", "c:c:m3"]
 
     # Production pins the last candidate exactly as the handlers do now.
     chosen = first[-1]
@@ -51,11 +51,11 @@ async def test_affinity_recorded_by_handlers_pins_next_selection():
 
     second = await router._candidate_order("chat", conversation_thread="s1")
 
-    assert second[0].key == "c:m3", (
+    assert second[0].key == "c:c:m3", (
         "session affinity lost: handler-recorded key and engine lookup key "
         f"disagree (ordered {[c.key for c in second]})"
     )
 
     # Other threads are unaffected.
     other = await router._candidate_order("chat", conversation_thread="s2")
-    assert [c.key for c in other] == ["a:m1", "b:m2", "c:m3"]
+    assert [c.key for c in other] == ["a:a:m1", "b:b:m2", "c:c:m3"]

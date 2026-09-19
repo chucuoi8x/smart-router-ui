@@ -480,7 +480,7 @@ routes:
         router = SmartRouter(config, quota_reservations=quota)
         candidates = asyncio.run(router._candidate_order("chat"))
 
-        self.assertEqual(["backup:fallback"], [candidate.key for candidate in candidates])
+        self.assertEqual(["backup:backup:fallback"], [candidate.key for candidate in candidates])
 
     def test_smart_router_always_uses_router_engine(self):
         """PR-04: RouterEngine là engine duy nhất — không còn flag USE_ROUTER_ENGINE."""

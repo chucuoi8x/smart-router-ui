@@ -31,9 +31,14 @@ class LegacyConfigCompiler:
                 upstream = item.get('upstream')
                 model = item.get('model')
                 weight = item.get('weight', 1)
+                # Canonical schedulable identity is connection+credential+model
+                # (plan §3.3).  A candidate may pin its credential via
+                # ``credential_id``; otherwise the connection's default
+                # credential scope stands.
+                credential = item.get('credential_id') or item.get('credential_scope') or upstream
                 ref = ResourceRef(
                     provider_connection_id=upstream,
-                    credential_scope=upstream,
+                    credential_scope=str(credential),
                     model_id=model
                 )
                 metadata = self._candidate_metadata(item)
@@ -43,9 +48,10 @@ class LegacyConfigCompiler:
             for item in route_data.get('fallback', []):
                 upstream = item.get('upstream')
                 model = item.get('model')
+                credential = item.get('credential_id') or item.get('credential_scope') or upstream
                 ref = ResourceRef(
                     provider_connection_id=upstream,
-                    credential_scope=upstream,
+                    credential_scope=str(credential),
                     model_id=model
                 )
                 metadata = self._candidate_metadata(item)

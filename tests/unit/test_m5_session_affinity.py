@@ -53,7 +53,7 @@ async def test_router_candidate_order_uses_session_affinity():
 
     ordered = await router._candidate_order("coding", conversation_thread="session-1")
 
-    assert ordered[0].key == "b:m2"
+    assert ordered[0].key == "b:b:m2"
 
 
 def test_session_hint_prefers_explicit_header_over_body():
