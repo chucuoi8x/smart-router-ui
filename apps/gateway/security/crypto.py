@@ -13,14 +13,24 @@ import os
 from cryptography.fernet import Fernet, InvalidToken
 
 
+def require_encryption_key() -> str:
+    key = os.getenv("SMART_ROUTER_ENCRYPTION_KEY")
+    if key:
+        return key
+    if os.getenv("SMART_ROUTER_ENV") != "development":
+        raise RuntimeError(
+            "SMART_ROUTER_ENCRYPTION_KEY is required outside explicit development mode"
+        )
+    return ""
+
+
 def _fernet() -> Fernet:
-    raw = os.getenv("SMART_ROUTER_ENCRYPTION_KEY", "")
+    raw = require_encryption_key()
     if raw:
         try:
             return Fernet(raw.encode("ascii"))
         except Exception as exc:
             raise RuntimeError("SMART_ROUTER_ENCRYPTION_KEY must be a valid Fernet key") from exc
-    # Development-only fallback. Production must configure a key explicitly.
     seed = os.getenv("SMART_ROUTER_DEV_ENCRYPTION_SEED", "smart-router-local-development-key")
     key = base64.urlsafe_b64encode(hashlib.sha256(seed.encode("utf-8")).digest())
     return Fernet(key)

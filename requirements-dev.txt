@@ -1,0 +1,7 @@
+# Development and CI dependencies (P0-20). Install over requirements.txt.
+-r requirements.txt
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+fakeredis>=2.20.0
+respx>=0.20.0
+ruff>=0.5,<1

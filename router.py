@@ -2719,13 +2719,40 @@ async def get_optional_usage_ledger_repo():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── P0-18: production startup requires an explicit encryption key ──
+    from apps.gateway.security.crypto import require_encryption_key
+
+    require_encryption_key()
     # ── Router lifecycle ─────────────────────────────────────────────
     service = SmartRouter.from_environment()
     app.state.router = service
     await service.start()
+    # ── Database engine (readiness actively checks this handle) ──────
+    from apps.gateway.db.session import init_engine
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        app.state.db = init_engine()
+    except SQLAlchemyError:
+        app.state.db = None
+    # ── Redis client for readiness ping (quota store owns its own) ───
+    redis_url = os.getenv("REDIS_URL")
+    app.state.redis = None
+    if redis_url:
+        try:
+            import redis.asyncio as aioredis
+
+            app.state.redis = aioredis.from_url(redis_url, decode_responses=True, socket_connect_timeout=2)
+        except Exception:
+            app.state.redis = None
     try:
         yield
     finally:
+        if app.state.redis is not None:
+            try:
+                await app.state.redis.aclose()
+            except Exception:
+                pass
         await service.close()
     # ── Database engine lifecycle ─────────────────────────────────────
     await dispose_engine()  # close pools; no-op if nothing was created
@@ -2773,6 +2800,67 @@ def _dependency_health_payload(
     }
 
 
+async def _readiness_payload(
+    *,
+    router: Any = None,
+    database: Any = None,
+    redis_client: Any = None,
+) -> dict[str, Any]:
+    """Actively check dependencies and return readiness status.
+
+    P0-17: Readiness must actively check PostgreSQL, Redis, runtime snapshot,
+    and encryption key. Do not report a dependency as connected merely because
+    a client object was constructed.
+    """
+    checks: dict[str, dict[str, Any]] = {}
+
+    # Database connectivity
+    if database is not None:
+        try:
+            await database.connect()
+            checks["database"] = {"status": "ok"}
+        except Exception:
+            checks["database"] = {"status": "unavailable"}
+    else:
+        checks["database"] = {"status": "unknown", "configured": bool(os.getenv("DATABASE_URL"))}
+
+    # Redis connectivity
+    if redis_client is not None:
+        try:
+            await redis_client.ping()
+            checks["redis"] = {"status": "ok"}
+        except Exception:
+            checks["redis"] = {"status": "unavailable"}
+    else:
+        checks["redis"] = {"status": "unknown", "configured": bool(os.getenv("REDIS_URL"))}
+
+    # Runtime snapshot presence
+    if router is not None and hasattr(router, "clients") and router.clients:
+        checks["runtime_snapshot"] = {"status": "ok"}
+    else:
+        checks["runtime_snapshot"] = {"status": "unavailable"}
+
+    # Encryption key configuration
+    encryption_key = os.getenv("SMART_ROUTER_ENCRYPTION_KEY")
+    checks["encryption"] = {"status": "ok" if encryption_key else "unavailable"}
+
+    # Overall status: ok only if all critical dependencies are ok
+    critical_statuses = [
+        checks["database"]["status"],
+        checks["redis"]["status"],
+        checks["runtime_snapshot"]["status"],
+        checks["encryption"]["status"],
+    ]
+    if all(status == "ok" for status in critical_statuses):
+        overall = "ok"
+    elif any(status == "unavailable" for status in critical_statuses):
+        overall = "unavailable"
+    else:
+        overall = "degraded"
+
+    return {"status": overall, "checks": checks}
+
+
 def _quota_backend_kind(service: Any | None) -> str:
     if service is not None:
         quota = getattr(service, "quota_reservations", None)
@@ -2790,10 +2878,14 @@ def _quota_backend_kind(service: Any | None) -> str:
 @app.get("/health/ready")
 async def health_ready(request: Request) -> dict[str, Any]:
     service = getattr(request.app.state, "router", None)
+    db = getattr(request.app.state, "db", None)
+    redis = getattr(request.app.state, "redis", None)
+    
+    payload = await _readiness_payload(router=service, database=db, redis_client=redis)
     upstream_count = len(service.clients) if service is not None else 0
     qkind = _quota_backend_kind(service)
     return {
-        "status": "ok",
+        "status": payload["status"],
         "service": "smart-router",
         "version": app.version,
         "uptime_seconds": int(time.monotonic() - _STARTED_AT_MONO),
@@ -2801,7 +2893,7 @@ async def health_ready(request: Request) -> dict[str, Any]:
         "checks": {
             "upstreams": {"status": "ok", "count": upstream_count},
             "quota": {"status": "ok", "backend": qkind},
-            **_dependency_health_payload(),
+            **payload["checks"],
         },
     }
 

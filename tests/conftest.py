@@ -45,6 +45,7 @@ def registry_db_url() -> Iterator[str]:
     os.close(fd)
     url = f"sqlite+aiosqlite:///{path}"
     os.environ["DATABASE_URL"] = url
+    os.environ["SMART_ROUTER_ENV"] = "development"
 
     from apps.gateway.db.models import Base
 
@@ -61,6 +62,7 @@ def registry_db_url() -> Iterator[str]:
     finally:
         asyncio.run(db_session.dispose_engine())
         os.environ.pop("DATABASE_URL", None)
+        os.environ.pop("SMART_ROUTER_ENV", None)
         try:
             os.remove(path)
         except OSError:
