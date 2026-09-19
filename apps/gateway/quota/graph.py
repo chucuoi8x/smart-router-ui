@@ -29,6 +29,15 @@ class QuotaGraph:
     async def load(self) -> None:
         """Load resources from the store and rebuild graph indexes."""
         resources = await self.store.list_resources()
+        self.build_indexes(resources)
+
+    def build_indexes(self, resources: list[QuotaResource]) -> None:
+        """Rebuild parent/group indexes from an already-loaded resource list.
+
+        Split out from ``load`` so an in-process runtime snapshot can publish a
+        graph without awaiting a store (and therefore without Redis SCAN on the
+        request path).
+        """
         resources_by_id = {resource.resource_id: resource for resource in resources}
         parents = {resource.resource_id: resource.parent_id for resource in resources}
         children: dict[str, list[str]] = {}

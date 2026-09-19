@@ -28,6 +28,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from apps.gateway.api.admin import router as admin_router
 from apps.gateway.db.session import dispose_engine
+from apps.gateway.quota.runtime_index import RuntimeQuotaIndex
+from apps.gateway.quota.runtime_index_adapter import RuntimeQuotaIndexAdapter
 from apps.gateway.routing.engine import RouterEngine
 from apps.gateway.config.compiler import LegacyConfigCompiler
 from apps.gateway.usage.ledger import AttemptRecord, RequestRecord
@@ -172,6 +174,7 @@ class SmartRouter:
         self._latency_tracker = LatencyTracker(self._scoring_config.max_latency_history)
         self._session_store = SessionAffinityStore(self._scoring_config.session_affinity_ttl_seconds)
         self._score_calculator: SmartScoreCalculator | None = None
+        self.quota_index = RuntimeQuotaIndex()
         # ── Single production RouterEngine ───────────────────────────────
         compiler = LegacyConfigCompiler()
         snapshot = compiler.compile_dict(config)
@@ -183,6 +186,7 @@ class SmartRouter:
             engine_quota = AsyncQuotaFacade(engine_quota)
         self.router_engine = RouterEngine(
             snapshot, quota_reservations=engine_quota, scoring_config=self._scoring_config,
+            quota_index=self.quota_index,
         )
         # Bridge session store so remember_affinity() affects both calculators
         if self._score_calculator is not None and getattr(self.router_engine, "_score_calculator", None) is not None:
@@ -196,6 +200,14 @@ class SmartRouter:
                 and not asyncio.iscoroutinefunction(getattr(self.quota_reservations, "check_many", None))):
             from apps.gateway.quota.adapter import AsyncQuotaFacade
             self.quota_reservations = AsyncQuotaFacade(self.quota_reservations)  # type: ignore[assignment]
+        # Publish resources already present in synchronous test/local backends.
+        # Async/Redis backends are populated during startup hydration.
+        initial_list = getattr(quota_reservations, "list_resources", None)
+        if initial_list is not None and not inspect.iscoroutinefunction(initial_list):
+            try:
+                self.quota_index.replace_all(initial_list())
+            except Exception:
+                self.logger.debug("initial quota index publish skipped", exc_info=True)
         self.driver_registry = None
 
     @classmethod
@@ -306,6 +318,8 @@ class SmartRouter:
         # Hydrate quota resources from the database so running routers have
         # fresh quota state on startup (covers Redis and InMemory backends).
         await self._hydrate_quota_from_db()
+        if self.quota_reservations is not None and not self.quota_index.loaded:
+            await RuntimeQuotaIndexAdapter(self.quota_index, self.quota_reservations).refresh_all()
 
     async def close(self) -> None:
         if self.sync_task is not None:
@@ -362,6 +376,7 @@ class SmartRouter:
             except Exception as exc:
                 self.logger.warning("quota hydrate: skipping %s (%s)", res.resource_id, exc)
         if count:
+            self.quota_index.replace_all(resources)
             self.logger.info("quota hydrated %d resource(s) from database", count)
 
     async def _sync_loop(self) -> None:

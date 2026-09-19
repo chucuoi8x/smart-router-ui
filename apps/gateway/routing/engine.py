@@ -32,9 +32,11 @@ class RouterEngine:
         circuit_repository: Optional[InMemoryCircuitRepository] = None,
         quota_reservations: Optional[Any] = None,
         scoring_config: Optional[ScoringConfig] = None,
+        quota_index: Optional[Any] = None,
     ):
         self.snapshot = snapshot
         self.circuit_repository = circuit_repository or InMemoryCircuitRepository()
+        self.quota_index = quota_index
         # Auto-wrap sync backends so async methods can await them.
         if quota_reservations is not None and not asyncio.iscoroutinefunction(
             getattr(quota_reservations, "check_many", None),
@@ -252,6 +254,8 @@ class RouterEngine:
         return [candidate for _, _, _, candidate in sorted(ranked, key=lambda item: (item[0], item[1], item[2]))]
 
     async def _build_quota_graph(self) -> Any | None:
+        if self.quota_index is not None and getattr(self.quota_index, "loaded", False):
+            return self.quota_index
         if self.quota_reservations is None or not hasattr(self.quota_reservations, "list_resources"):
             return None
         try:
