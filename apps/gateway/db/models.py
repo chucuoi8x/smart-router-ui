@@ -115,6 +115,54 @@ class UsageLedger(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
 
 
+class Project(Base):
+    __tablename__ = "projects"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: _new_id("proj"))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    secret_key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+
+
+class ProjectKey(Base):
+    __tablename__ = "project_keys"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: _new_id("key"))
+    project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
+    alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    secret_encrypted: Mapped[str] = mapped_column(String(1024), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+
+
+class ProjectBudget(Base):
+    __tablename__ = "project_budgets"
+    project_id: Mapped[str] = mapped_column(String(64), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    currency: Mapped[str] = mapped_column(String(16), nullable=False, default="USD")
+    ceiling: Mapped[float] = mapped_column(Float, nullable=False)
+    used: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    allow_paid_fallback: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now, onupdate=_utc_now)
+
+
+class Policy(Base):
+    __tablename__ = "policies"
+    policy_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    requires_budget: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    project_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("projects.id"), nullable=True)
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    action: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+
+
+
 class QuotaResourceState(Base):
     __tablename__ = "quota_resources"
     resource_id: Mapped[str] = mapped_column(String(128), primary_key=True)
