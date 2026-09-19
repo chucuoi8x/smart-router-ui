@@ -269,14 +269,14 @@ class HttpExchangeMixin:
         return self._response_dict(response)
 
     async def execute_stream(self, ctx: Any, request: Any) -> AsyncIterator[bytes]:
-        """SSE / byte passthrough, accumulating usage for ``last_stream_usage``."""
+        """SSE / byte passthrough with bounded incremental usage parsing."""
         context = normalize_ctx(ctx)
         url = self.target_url(context, getattr(request, "endpoint", None) or self.endpoint)
         extra = getattr(request, "headers", None)
         body = getattr(request, "body", None)
         payload = getattr(request, "json", None)
         method = getattr(request, "method", "POST") or "POST"
-        accumulated = bytearray()
+        usage_parser = self._new_usage_parser()
         try:
             async with self._client().stream(
                 method,
@@ -287,7 +287,10 @@ class HttpExchangeMixin:
                 timeout=self.timeout,
             ) as response:
                 if response.status_code >= 400:
-                    error = await response.aread()
+                    error = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(error) < 64 * 1024:
+                            error.extend(chunk[: 64 * 1024 - len(error)])
                     yield b""
                     self.last_stream_error = {
                         "status_code": response.status_code,
@@ -296,9 +299,9 @@ class HttpExchangeMixin:
                     return
                 async for chunk in response.aiter_bytes():
                     if chunk:
-                        accumulated.extend(chunk)
+                        usage_parser.feed(chunk)
                         yield chunk
-                self._last_stream_usage = self.parse_stream_usage(bytes(accumulated)) or {}
+                self._last_stream_usage = usage_parser.finish() or {}
         except httpx.TimeoutException:
             self._last_stream_usage = {}
             yield b""
@@ -311,6 +314,9 @@ class HttpExchangeMixin:
     @property
     def last_stream_usage(self) -> dict[str, Any]:
         return getattr(self, "_last_stream_usage", {}) or {}
+
+    def _new_usage_parser(self) -> "IncrementalSSEUsageParser":
+        return IncrementalSSEUsageParser(self.parse_usage, self._merge_stream_usage)
 
     def parse_stream_usage(self, data: bytes) -> dict[str, Any]:
         """Default: scan SSE payload for the last JSON event carrying usage."""
@@ -337,6 +343,42 @@ class HttpExchangeMixin:
     def rate_limit_metadata(self, ctx: Any, headers: Mapping[str, str] | None) -> dict[str, Any]:
         """Protocol-neutral rate-limit header extraction (subclasses may extend)."""
         return extract_rate_limit_metadata(headers)
+
+
+class IncrementalSSEUsageParser:
+    """Parse complete SSE data lines while retaining only an incomplete tail."""
+
+    def __init__(self, parse_usage: Any, merge_usage: Any) -> None:
+        self._parse_usage = parse_usage
+        self._merge_usage = merge_usage
+        self._tail = bytearray()
+        self._usage: dict[str, Any] = {}
+
+    def feed(self, chunk: bytes) -> None:
+        self._tail.extend(chunk)
+        while True:
+            newline = self._tail.find(b"\n")
+            if newline < 0:
+                break
+            line = bytes(self._tail[:newline]).rstrip(b"\r")
+            del self._tail[: newline + 1]
+            if not line.startswith(b"data:"):
+                continue
+            payload = line[5:].strip()
+            if not payload or payload == b"[DONE]":
+                continue
+            try:
+                parsed = self._parse_usage(json.loads(payload))
+            except (json.JSONDecodeError, ValueError, TypeError):
+                continue
+            if parsed:
+                self._usage = self._merge_usage(self._usage, parsed)
+
+    def finish(self) -> dict[str, Any]:
+        if self._tail:
+            self.feed(b"\n")
+        return self._usage
+
 
 
 def iter_sse_events(data: bytes) -> list[str]:

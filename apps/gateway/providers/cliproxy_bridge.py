@@ -176,9 +176,10 @@ class CLIProxyBridgeDriver(ProviderDriver):
         body = getattr(request, "body", None)
         json_data = getattr(request, "json", None)
 
-        # Accumulate chunks for usage parsing at the end.
-        # We buffer so we can parse usage after the stream finishes.
-        accumulated = bytearray()
+        # Bounded tail for usage parsing — retains only the last 64 KB of SSE
+        # lines, not the full response body.
+        tail_limit = 64 * 1024
+        sse_tail = bytearray()
 
         try:
             async with self._client.stream(
@@ -190,25 +191,28 @@ class CLIProxyBridgeDriver(ProviderDriver):
                 timeout=self.timeout,
             ) as response:
                 if response.status_code != 200:
-                    error_body = await response.aread()
-                    error_text = error_body.decode("utf-8", errors="replace")
+                    error = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(error) < 64 * 1024:
+                            error.extend(chunk[: 64 * 1024 - len(error)])
+                    error_text = error.decode("utf-8", errors="replace")
                     classification = classify_provider_error(
                         status_code=response.status_code,
                         body=error_text,
                         headers=response.headers,
                     )
-                    # Yield nothing on error; caller can inspect classification via the returned dict?
-                    # For now, we yield an empty chunk to signal error.
                     yield b""
                     return
 
                 async for chunk in response.aiter_bytes():
                     if chunk:
-                        accumulated.extend(chunk)
+                        sse_tail.extend(chunk)
+                        if len(sse_tail) > tail_limit:
+                            del sse_tail[:-tail_limit]
                         yield chunk
 
-                # After stream ends, parse usage from accumulated body and headers.
-                usage = self._parse_usage_from_body(bytes(accumulated))
+                # After stream ends, parse usage from bounded tail and headers.
+                usage = self._parse_usage_from_body(bytes(sse_tail))
                 header_usage = self._parse_usage_from_headers(dict(response.headers))
                 usage.update(header_usage)
                 self._last_stream_usage = usage
