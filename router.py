@@ -2103,16 +2103,23 @@ class SmartRouter:
             response_headers = _response_headers(stream.response.headers)
             # Capture candidate info for closure
             _candidate = candidate
-            # Accumulate raw SSE bytes so we can parse usage at end-of-stream
+            # Keep only bounded SSE tail for best-effort usage parsing. The
+            # response body itself is yielded immediately and never retained.
             _sse_buf: bytearray = bytearray()
+            _sse_tail_limit = 64 * 1024
+
+            def _retain_sse_tail(chunk: bytes) -> None:
+                _sse_buf.extend(chunk)
+                if len(_sse_buf) > _sse_tail_limit:
+                    del _sse_buf[:-_sse_tail_limit]
 
             async def iterator() -> AsyncIterator[bytes]:
                 try:
                     if stream.first_chunk:
                         yield stream.first_chunk
-                        _sse_buf.extend(stream.first_chunk)
+                        _retain_sse_tail(stream.first_chunk)
                     async for chunk in stream.iterator:
-                        _sse_buf.extend(chunk)
+                        _retain_sse_tail(chunk)
                         yield chunk
                     # Stream completed successfully — record attempt first,
                     # parse usage, then reconcile with actual token counts.
