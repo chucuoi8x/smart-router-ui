@@ -489,6 +489,13 @@ async def test_provider_connection(
         "runtime_state": _runtime_state,
         "result": {k: v for k, v in normalized_result.items() if k not in {"api_key", "credential", "token", "secret"}},
     }
+    if health_status != "healthy":
+        from fastapi.responses import JSONResponse
+        kind = str(normalized_result.get("kind") or normalized_result.get("error_kind") or "INVALID_RESPONSE").upper()
+        status = {"AUTH_EXPIRED": 401, "AUTH_FAILED": 401, "AUTH_REVOKED": 403,
+                  "CONFIG_INVALID": 400, "TIMEOUT": 504}.get(kind, 502)
+        return JSONResponse(status_code=status, content={"ok": False, "connection_id": connection_id,
+            "error_kind": kind, "message": normalized_result.get("detail") or "Provider validation failed"})
     return {"ok": True, "connection_id": connection_id, "result": normalized_result}
 
 
