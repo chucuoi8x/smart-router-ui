@@ -95,14 +95,26 @@ routes:
         transport = httpx.ASGITransport(app=router_module.app, raise_app_exceptions=False)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             ready = await client.get("/health/ready")
-        assert ready.status_code in {200, 503}
-        body = ready.json()
-        assert body["checks"]["runtime_snapshot"]["status"] == "ok"
-        assert body["runtime_revision_id"] == rev.id
-        assert body["checks"]["revision_convergence"] == {
-            "status": "ok",
-            "runtime_revision_id": rev.id,
-            "db_revision_id": rev.id,
-        }
+            assert ready.status_code in {200, 503}
+            body = ready.json()
+            assert body["checks"]["runtime_snapshot"]["status"] == "ok"
+            assert body["runtime_revision_id"] == rev.id
+            assert body["checks"]["revision_convergence"] == {
+                "status": "ok",
+                "runtime_revision_id": rev.id,
+                "db_revision_id": rev.id,
+            }
+
+            # Simulate control-plane/data-plane divergence: the live runtime is
+            # pinned to a revision that is not the durable active one.  Readiness
+            # must report the divergence and name both IDs (status body carries
+            # it; the endpoint keeps the repo's 200+structured-body contract).
+            manager._active_revision_id = "rev_stale_000000000"
+            diverged = await client.get("/health/ready")
+            dbody = diverged.json()
+            assert dbody["status"] == "unavailable"
+            assert dbody["checks"]["revision_convergence"]["status"] == "unavailable"
+            assert dbody["checks"]["revision_convergence"]["db_revision_id"] == rev.id
+            assert dbody["runtime_revision_id"] == "rev_stale_000000000"
 
     await engine.dispose()

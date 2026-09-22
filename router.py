@@ -3072,7 +3072,7 @@ async def health_ready(request: Request) -> dict[str, Any]:
     )
     upstream_count = len(service.clients) if service is not None else 0
     qkind = _quota_backend_kind(service)
-    return {
+    body = {
         "status": payload["status"],
         "service": "smart-router",
         "version": app.version,
@@ -3085,6 +3085,7 @@ async def health_ready(request: Request) -> dict[str, Any]:
             **payload["checks"],
         },
     }
+    return body
 
 
 @app.get("/healthz")
