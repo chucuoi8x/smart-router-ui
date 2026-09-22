@@ -2816,7 +2816,7 @@ async def lifespan(app: FastAPI):
         app.state.db = None
 
     # ── P0-20: RuntimeConfigManager authoritative control ────────────
-    from apps.gateway.runtime.manager import RuntimeConfigManager, snapshot_to_dict
+    from apps.gateway.runtime.manager import RuntimeConfigManager
 
     mgr = RuntimeConfigManager()
     app.state.config_manager = mgr
@@ -2826,11 +2826,11 @@ async def lifespan(app: FastAPI):
         factory = get_async_session_factory()
         async with factory() as session:
             snapshot = await mgr.load_initial(session)
-            # Build router from the loaded snapshot
-            config = snapshot_to_dict(snapshot)
-            # Sync key to expected legacy name for router engine ingestion
-            if "connections" in config:
-                config["upstreams"] = config.pop("connections")
+            # Build router from the loaded snapshot using the authority-side
+            # legacy projection so SmartRouter gets the nested auth shape.
+            from apps.gateway.runtime.manager import snapshot_to_legacy_config
+
+            config = snapshot_to_legacy_config(snapshot)
             quota_reservations = _build_quota_reservations()
             service = SmartRouter(config=config, quota_reservations=quota_reservations)
             app.state.router = service

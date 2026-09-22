@@ -128,6 +128,40 @@ class RuntimeConfigManager:
         return await self.activate(revision_id, session)
 
 
+def snapshot_to_legacy_config(snapshot: RuntimeConfigSnapshot) -> dict[str, Any]:
+    """Project a snapshot into the SmartRouter legacy runtime dict shape.
+
+    ``SmartRouter`` reads ``config['upstreams'][name]['auth']`` (nested) and
+    ``config['routes']``; the compiler DB shape uses flat ``auth_mode``/
+    ``token_env`` under ``connections``.  This is the single authority-side
+    mapper so bootstrap and activation never hand SmartRouter a half-shaped
+    config that would raise ``missing credential`` on the first data-plane
+    request.  Must stay structurally identical to ``SmartRouter.update_snapshot``.
+    """
+    upstreams: dict[str, Any] = {}
+    for conn_id, conn in snapshot.connections.items():
+        upstreams[conn_id] = {
+            "base_url": conn.base_url,
+            "auth": {"mode": conn.auth_mode, "token_env": conn.token_env},
+        }
+    routes: dict[str, Any] = {}
+    for route_name, route in snapshot.routes.items():
+        def _cand(c: Any) -> dict[str, Any]:
+            return {
+                "upstream": c.resource_ref.provider_connection_id,
+                "model": c.resource_ref.model_id,
+                "weight": c.weight,
+                **dict(c.metadata),
+            }
+        routes[route_name] = {
+            "strategy": route.strategy,
+            "candidates": [_cand(c) for c in route.candidates],
+            "fallback": [_cand(c) for c in route.fallback],
+            "generated": route.generated,
+        }
+    return {"upstreams": upstreams, "routes": routes}
+
+
 def snapshot_to_dict(snapshot: RuntimeConfigSnapshot) -> dict[str, Any]:
     """Serialize a RuntimeConfigSnapshot into a plain dict for DB storage."""
     connections: dict[str, Any] = {}

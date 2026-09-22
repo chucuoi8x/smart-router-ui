@@ -92,6 +92,16 @@ routes:
         assert "db-conn" in service.router_engine.snapshot.connections
         assert "db-route" in service.router_engine.snapshot.routes
 
+        # Data-plane proof: the live SmartRouter must be able to serve requests
+        # using the DB revision — correct base_url and a credential header built
+        # from the revision's token_env (not the YAML bootstrap).
+        cfg = service._upstream_config("db-conn")
+        assert cfg["base_url"] == "https://db-revision.test"
+        assert cfg["auth"]["token_env"] == "DB_REVISION_TOKEN"
+        headers = service._upstream_headers("db-conn", {"accept": "application/json"})
+        assert headers["authorization"] == "Bearer x"
+        assert service.routes["db-route"]["candidates"][0].upstream == "db-conn"
+
         transport = httpx.ASGITransport(app=router_module.app, raise_app_exceptions=False)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             ready = await client.get("/health/ready")
@@ -116,5 +126,83 @@ routes:
             assert dbody["checks"]["revision_convergence"]["status"] == "unavailable"
             assert dbody["checks"]["revision_convergence"]["db_revision_id"] == rev.id
             assert dbody["runtime_revision_id"] == "rev_stale_000000000"
+            manager._active_revision_id = rev.id  # restore for activation slice
+
+        # ── activation without restart (real admin HTTP endpoint) ──────────
+        # A fresh manager swap must re-point the LIVE SmartRouter + data-plane
+        # helpers to the newly active revision, proving §20 "activation requires
+        # no restart" and "invalid config cannot replace last-known-good".
+        async with factory() as session:
+            repo2 = RevisionRepository(session)
+            rev2 = await repo2.create_draft(
+                {
+                    "connections": {
+                        "db-conn-2": {
+                            "connection_id": "db-conn-2",
+                            "base_url": "https://db-revision-2.test",
+                            "auth_mode": "x-api-key",
+                            "token_env": "DB_REVISION2_TOKEN",
+                        }
+                    },
+                    "routes": {
+                        "db-route-2": {
+                            "route_name": "db-route-2",
+                            "strategy": "priority",
+                            "candidates": [
+                                {"upstream": "db-conn-2", "model": "m2", "weight": 1}
+                            ],
+                            "fallback": [],
+                            "generated": False,
+                        }
+                    },
+                }
+            )
+            await session.commit()
+        monkeypatch.setenv("DB_REVISION2_TOKEN", "z")
+
+        os.environ["SMART_ROUTER_KEY"] = "test-admin-key"
+        admin_headers = {"Authorization": "Bearer test-admin-key"}
+        transport2 = httpx.ASGITransport(app=router_module.app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport2, base_url="http://testserver", headers=admin_headers
+        ) as admin_client:
+            activate = await admin_client.post(f"/api/admin/v1/revisions/{rev2.id}/activate")
+            assert activate.status_code == 200, activate.text
+
+        # Same live service object — no lifespan restart happened.
+        assert router_module.app.state.router is service
+        assert manager.active_revision_id == rev2.id
+        assert set(service.clients) == {"db-conn-2"}
+        assert "db-route-2" in service.routes
+        assert "db-route" not in service.routes
+        cfg2 = service._upstream_config("db-conn-2")
+        assert cfg2["base_url"] == "https://db-revision-2.test"
+        headers2 = service._upstream_headers("db-conn-2", {})
+        assert headers2.get("x-api-key") == "z"
+
+        # Invalid activation must NOT replace last-known-good.
+        async with factory() as session:
+            bad = await RevisionRepository(session).create_draft(
+                {
+                    "connections": {},
+                    "routes": {
+                        "broken": {
+                            "route_name": "broken",
+                            "strategy": "priority",
+                            "candidates": [{"upstream": "ghost", "model": "x", "weight": 1}],
+                            "fallback": [],
+                            "generated": False,
+                        }
+                    },
+                }
+            )
+            await session.commit()
+        async with httpx.AsyncClient(
+            transport=transport2, base_url="http://testserver", headers=admin_headers
+        ) as admin_client:
+            rejected = await admin_client.post(f"/api/admin/v1/revisions/{bad.id}/activate")
+        assert rejected.status_code == 400, rejected.text
+        assert manager.active_revision_id == rev2.id
+        assert set(service.clients) == {"db-conn-2"}
 
     await engine.dispose()
