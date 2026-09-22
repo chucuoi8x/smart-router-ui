@@ -1016,7 +1016,7 @@ async def create_revision(payload: dict[str, Any] = Body(...), db: AsyncSession 
 
 
 @router.post("/revisions/{revision_id}/rollback")
-async def rollback_revision(revision_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+async def rollback_revision(request: Request, revision_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     """Activate a prior immutable revision with an explicit rollback audit event."""
     rev_repo = RevisionRepository(db)
     target = await rev_repo.get_revision(revision_id)
@@ -1029,16 +1029,30 @@ async def rollback_revision(revision_id: str, db: AsyncSession = Depends(get_ses
     errors = _revision_validator._validate_snapshot(target.snapshot_data)
     if errors:
         raise HTTPException(status_code=400, detail=errors)
-    await rev_repo.activate(revision_id)
-    await _write_audit(db, "revision.rolled_back", revision_id=revision_id, from_revision_id=previous_id)
-    await db.commit()
+    manager = getattr(request.app.state, "config_manager", None)
+    if manager is not None:
+        # P0-20 authority: compile+validate first (raises → last-known-good
+        # runtime and DB active pointer both untouched), then flip DB + audit +
+        # runtime together in one durable transaction.
+        try:
+            snapshot = await manager.validate_revision(revision_id, db)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=[str(exc)]) from exc
+        await rev_repo.activate(revision_id)
+        await _write_audit(db, "revision.rolled_back", revision_id=revision_id, from_revision_id=previous_id)
+        await db.commit()
+        manager.set_active_runtime(snapshot, revision_id)
+    else:
+        await rev_repo.activate(revision_id)
+        await _write_audit(db, "revision.rolled_back", revision_id=revision_id, from_revision_id=previous_id)
+        await db.commit()
     result = _serialize_revision(await _ensure_active_revision(db))
     result["rolled_back_from"] = previous_id
     return result
 
 
 @router.post("/revisions/{revision_id}/activate")
-async def activate_revision(revision_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+async def activate_revision(request: Request, revision_id: str, db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
     rev_repo = RevisionRepository(db)
     target = await rev_repo.get_revision(revision_id)
     if target is None:
@@ -1046,9 +1060,20 @@ async def activate_revision(revision_id: str, db: AsyncSession = Depends(get_ses
     errors = _revision_validator._validate_snapshot(target.snapshot_data)
     if errors:
         raise HTTPException(status_code=400, detail=errors)
-    await rev_repo.activate(revision_id)
-    await _write_audit(db, "revision.activated", revision_id=revision_id)
-    await db.commit()
+    manager = getattr(request.app.state, "config_manager", None)
+    if manager is not None:
+        try:
+            snapshot = await manager.validate_revision(revision_id, db)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=[str(exc)]) from exc
+        await rev_repo.activate(revision_id)
+        await _write_audit(db, "revision.activated", revision_id=revision_id)
+        await db.commit()
+        manager.set_active_runtime(snapshot, revision_id)
+    else:
+        await rev_repo.activate(revision_id)
+        await _write_audit(db, "revision.activated", revision_id=revision_id)
+        await db.commit()
     return _serialize_revision(await _ensure_active_revision(db))
 
 

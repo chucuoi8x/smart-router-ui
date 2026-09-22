@@ -55,9 +55,19 @@ def test_provider_url_allows_private_target_only_with_explicit_opt_in():
 def test_readiness_checks_real_dependencies_and_runtime_state(monkeypatch):
     from router import _readiness_payload
 
+    class Connection:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
     class Database:
+        def __init__(self):
+            self.connection = Connection()
+
         async def connect(self):
-            return None
+            return self.connection
 
     class Redis:
         async def ping(self):
@@ -68,8 +78,10 @@ def test_readiness_checks_real_dependencies_and_runtime_state(monkeypatch):
         config = {"routes": {"default": {}}}
 
     monkeypatch.setenv("SMART_ROUTER_ENCRYPTION_KEY", "configured")
-    payload = asyncio.run(_readiness_payload(router=Router(), database=Database(), redis_client=Redis()))
+    database = Database()
+    payload = asyncio.run(_readiness_payload(router=Router(), database=database, redis_client=Redis()))
     assert payload["status"] == "ok"
+    assert database.connection.closed is True
     assert payload["checks"]["database"]["status"] == "ok"
     assert payload["checks"]["redis"]["status"] == "ok"
     assert payload["checks"]["runtime_snapshot"]["status"] == "ok"

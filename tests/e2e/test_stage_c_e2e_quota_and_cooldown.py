@@ -98,13 +98,22 @@ def _circuit_snapshot() -> RuntimeConfigSnapshot:
 
 @pytest.mark.asyncio
 async def test_e2e05_cross_instance_cooldown_propagates_over_shared_redis():
-    """Plan E2E-05 / P0-14: two gateway instances share one Redis circuit state."""
-    authority = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    """Plan E2E-05 / P0-14: two gateway instances share one Redis circuit state.
+
+    P0-convergence: each gateway gets its OWN Redis client/connection over a
+    shared server — reusing one client object for both engines would not prove
+    the state is distributed rather than process-local.
+    """
+    from fakeredis import FakeServer
+
+    server = FakeServer()
+    client_a = fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
+    client_b = fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
     gateway_a = RouterEngine(
-        _circuit_snapshot(), circuit_repository=RedisCircuitRepository(authority)
+        _circuit_snapshot(), circuit_repository=RedisCircuitRepository(client_a)
     )
     gateway_b = RouterEngine(
-        _circuit_snapshot(), circuit_repository=RedisCircuitRepository(authority)
+        _circuit_snapshot(), circuit_repository=RedisCircuitRepository(client_b)
     )
     throttled = ResourceRef("conn", "cred-a", "model")
 
@@ -166,7 +175,12 @@ def _router_config() -> dict:
                 ]
             }
         },
-        "upstreams": {},
+        "upstreams": {
+            "conn": {
+                "base_url": "https://conn.test",
+                "auth": {"mode": "bearer", "token_env": "CONN_TOKEN"},
+            }
+        },
         "logging": {"level": "CRITICAL"},
     }
 

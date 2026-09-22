@@ -6,3 +6,4 @@ aiosqlite>=0.20.0
 fakeredis[lua]>=2.20.0
 respx>=0.20.0
 ruff>=0.5,<1
+asgi-lifespan>=2.0.0

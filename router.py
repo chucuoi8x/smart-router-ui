@@ -280,6 +280,88 @@ class SmartRouter:
         instance.config_path = path
         return instance
 
+    def update_snapshot(self, snapshot: RuntimeConfigSnapshot) -> None:
+        """Atomically swap the routing engine and data-plane view to a new revision.
+
+        P0-20: activation must change the *live* routing — engine, routes,
+        upstream configs and HTTP clients — while preserving circuit state,
+        quota reservations, scoring and affinity across the swap.
+        """
+        # Legacy data-plane shape: clients/_upstream_config read config["upstreams"]
+        upstreams_cfg: dict[str, Any] = {}
+        for conn_id, conn in snapshot.connections.items():
+            upstreams_cfg[conn_id] = {
+                "base_url": conn.base_url,
+                "auth": {"mode": conn.auth_mode, "token_env": conn.token_env},
+            }
+        new_config = dict(self.config)
+        new_config["upstreams"] = upstreams_cfg
+        new_config["routes"] = {
+            name: {
+                "strategy": route.strategy,
+                "candidates": [
+                    {
+                        "upstream": c.resource_ref.provider_connection_id,
+                        "model": c.resource_ref.model_id,
+                        "weight": c.weight,
+                        **dict(c.metadata),
+                    }
+                    for c in route.candidates
+                ],
+                "fallback": [
+                    {
+                        "upstream": c.resource_ref.provider_connection_id,
+                        "model": c.resource_ref.model_id,
+                        "weight": c.weight,
+                        **dict(c.metadata),
+                    }
+                    for c in route.fallback
+                ],
+                "generated": route.generated,
+            }
+            for name, route in snapshot.routes.items()
+        }
+        self.engine_snapshot = snapshot
+        self.config = new_config
+        self.routes = {name: self._parse_route(route) for name, route in new_config["routes"].items()}
+        self.router_engine = RouterEngine(
+            snapshot,
+            circuit_repository=self.router_engine.circuit_repository,
+            quota_reservations=self.router_engine.quota_reservations,
+            scoring_config=self._scoring_config,
+            quota_index=self.router_engine.quota_index,
+        )
+        # Bridge session store so remember_affinity() affects both calculators
+        if self._score_calculator is not None and getattr(self.router_engine, "_score_calculator", None) is not None:
+            eng_calc = self.router_engine._score_calculator  # type: ignore[union-attr]
+            try:
+                eng_calc._session_store = self._score_calculator._session_store  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        # Reconcile per-connection HTTP clients (sync close() is safe, async
+        # aclose() is scheduled so the swap itself never blocks the request path).
+        timeout = self._timeout()
+        for conn_id in upstreams_cfg:
+            if conn_id not in self.clients:
+                self.clients[conn_id] = httpx.AsyncClient(
+                    http2=True, follow_redirects=False, timeout=timeout
+                )
+        for conn_id in [c for c in self.clients if c not in upstreams_cfg]:
+            client = self.clients.pop(conn_id)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                loop.create_task(client.aclose())
+            else:
+                client.close()
+        self.catalog_worker.clients = self.clients
+        self.logger.info(
+            "runtime snapshot swapped: %d connection(s), %d route(s)",
+            len(self.clients), len(self.routes),
+        )
+
     def _configure_logging(self) -> None:
         level_name = str(self.config.get("logging", {}).get("level", "INFO")).upper()
         self.logger.setLevel(getattr(logging, level_name, logging.INFO))
@@ -2723,11 +2805,8 @@ async def lifespan(app: FastAPI):
     from apps.gateway.security.crypto import require_encryption_key
 
     require_encryption_key()
-    # ── Router lifecycle ─────────────────────────────────────────────
-    service = SmartRouter.from_environment()
-    app.state.router = service
-    await service.start()
-    # ── Database engine (readiness actively checks this handle) ──────
+
+    # ── Database engine first (needed for RuntimeConfigManager) ──────
     from apps.gateway.db.session import init_engine
     from sqlalchemy.exc import SQLAlchemyError
 
@@ -2735,6 +2814,35 @@ async def lifespan(app: FastAPI):
         app.state.db = init_engine()
     except SQLAlchemyError:
         app.state.db = None
+
+    # ── P0-20: RuntimeConfigManager authoritative control ────────────
+    from apps.gateway.runtime.manager import RuntimeConfigManager, snapshot_to_dict
+
+    mgr = RuntimeConfigManager()
+    app.state.config_manager = mgr
+
+    try:
+        from apps.gateway.db.session import get_async_session_factory
+        factory = get_async_session_factory()
+        async with factory() as session:
+            snapshot = await mgr.load_initial(session)
+            # Build router from the loaded snapshot
+            config = snapshot_to_dict(snapshot)
+            # Sync key to expected legacy name for router engine ingestion
+            if "connections" in config:
+                config["upstreams"] = config.pop("connections")
+            quota_reservations = _build_quota_reservations()
+            service = SmartRouter(config=config, quota_reservations=quota_reservations)
+            app.state.router = service
+            # Inject router into manager for future updates
+            mgr._router = service
+            await service.start()
+    except Exception as exc:
+        logging.getLogger("smart-router").error("Failed to load initial runtime config: %s", exc, exc_info=True)
+        # Fallback: build router from environment (legacy path)
+        service = SmartRouter.from_environment()
+        app.state.router = service
+        await service.start()
     # ── Redis client for readiness ping (quota store owns its own) ───
     redis_url = os.getenv("REDIS_URL")
     app.state.redis = None
@@ -2800,27 +2908,68 @@ def _dependency_health_payload(
     }
 
 
+async def _close_readiness_connection(connection: Any) -> None:
+    """Release a readiness-owned DB connection on every outcome (P0 no-leak gate).
+
+    SQLAlchemy ``AsyncConnection.close`` is a coroutine; test doubles and legacy
+    sync handles may expose a plain ``close`` or none at all.  Never let a probe
+    leave an acquired handle to the garbage collector.
+    """
+    closer = getattr(connection, "close", None)
+    if closer is None:
+        return
+    result = closer()
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _readiness_active_revision(database: Any) -> str | None:
+    """Return the durable active revision ID read from the app's engine handle.
+
+    ``database`` is the ``AsyncEngine`` stored on ``app.state.db``.  A short-lived
+    session is opened and closed here so the probe cannot leak a connection even
+    when the lookup fails.  Non-engine handles (test doubles) raise and are
+    treated as "unknown" by the caller.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from apps.gateway.db.revisions import RevisionRepository
+
+    factory = async_sessionmaker(database, expire_on_commit=False)
+    async with factory() as session:
+        active = await RevisionRepository(session).get_active()
+        return active.id if active is not None else None
+
+
 async def _readiness_payload(
     *,
     router: Any = None,
     database: Any = None,
     redis_client: Any = None,
+    config_manager: Any = None,
 ) -> dict[str, Any]:
     """Actively check dependencies and return readiness status.
 
     P0-17: Readiness must actively check PostgreSQL, Redis, runtime snapshot,
     and encryption key. Do not report a dependency as connected merely because
     a client object was constructed.
+
+    P0-20: when a RuntimeConfigManager is wired, readiness must also prove that
+    the live runtime revision equals the durable active revision.  A mismatch is
+    a critical failure: the control plane and the data plane have diverged.
     """
     checks: dict[str, dict[str, Any]] = {}
 
-    # Database connectivity
+    # Database connectivity — actively acquire and release a connection so a
+    # reachable DB proves out without leaking the handle (P0-17 / no-leak gate).
     if database is not None:
         try:
-            await database.connect()
-            checks["database"] = {"status": "ok"}
+            connection = await database.connect()
         except Exception:
-            checks["database"] = {"status": "unavailable"}
+            checks["database"] = {"status": "unavailable", "configured": True}
+        else:
+            checks["database"] = {"status": "ok", "configured": True}
+            await _close_readiness_connection(connection)
     else:
         checks["database"] = {"status": "unknown", "configured": bool(os.getenv("DATABASE_URL"))}
 
@@ -2828,9 +2977,9 @@ async def _readiness_payload(
     if redis_client is not None:
         try:
             await redis_client.ping()
-            checks["redis"] = {"status": "ok"}
+            checks["redis"] = {"status": "ok", "configured": True}
         except Exception:
-            checks["redis"] = {"status": "unavailable"}
+            checks["redis"] = {"status": "unavailable", "configured": True}
     else:
         checks["redis"] = {"status": "unknown", "configured": bool(os.getenv("REDIS_URL"))}
 
@@ -2840,17 +2989,49 @@ async def _readiness_payload(
     else:
         checks["runtime_snapshot"] = {"status": "unavailable"}
 
+    # Revision convergence: the live runtime revision must equal the durable
+    # active revision.  Either side being unknown is not a mismatch, but a
+    # concrete divergence (or a runtime that never loaded the active revision)
+    # is a critical readiness failure.
+    runtime_revision_id = getattr(config_manager, "active_revision_id", None)
+    db_revision_id = None
+    if database is not None:
+        try:
+            db_revision_id = await _readiness_active_revision(database)
+        except Exception:
+            db_revision_id = None
+    if db_revision_id is None and runtime_revision_id is None:
+        checks["revision_convergence"] = {"status": "unknown"}
+    elif db_revision_id is not None and runtime_revision_id == db_revision_id:
+        checks["revision_convergence"] = {
+            "status": "ok",
+            "runtime_revision_id": runtime_revision_id,
+            "db_revision_id": db_revision_id,
+        }
+    else:
+        checks["revision_convergence"] = {
+            "status": "unavailable",
+            "runtime_revision_id": runtime_revision_id,
+            "db_revision_id": db_revision_id,
+        }
+
     # Encryption key configuration
     encryption_key = os.getenv("SMART_ROUTER_ENCRYPTION_KEY")
     checks["encryption"] = {"status": "ok" if encryption_key else "unavailable"}
 
-    # Overall status: ok only if all critical dependencies are ok
+    # Overall status: ok only if all critical dependencies are ok.  A revision
+    # convergence probe that found no authority on either side (no DB, or a DB
+    # with no active revision yet) is reported as unknown but does not block
+    # readiness; a concrete divergence does.
     critical_statuses = [
         checks["database"]["status"],
         checks["redis"]["status"],
         checks["runtime_snapshot"]["status"],
         checks["encryption"]["status"],
     ]
+    convergence_status = checks["revision_convergence"]["status"]
+    if convergence_status in {"ok", "unavailable"}:
+        critical_statuses.append(convergence_status)
     if all(status == "ok" for status in critical_statuses):
         overall = "ok"
     elif any(status == "unavailable" for status in critical_statuses):
@@ -2858,7 +3039,11 @@ async def _readiness_payload(
     else:
         overall = "degraded"
 
-    return {"status": overall, "checks": checks}
+    return {
+        "status": overall,
+        "runtime_revision_id": runtime_revision_id,
+        "checks": checks,
+    }
 
 
 def _quota_backend_kind(service: Any | None) -> str:
@@ -2880,14 +3065,18 @@ async def health_ready(request: Request) -> dict[str, Any]:
     service = getattr(request.app.state, "router", None)
     db = getattr(request.app.state, "db", None)
     redis = getattr(request.app.state, "redis", None)
-    
-    payload = await _readiness_payload(router=service, database=db, redis_client=redis)
+    manager = getattr(request.app.state, "config_manager", None)
+
+    payload = await _readiness_payload(
+        router=service, database=db, redis_client=redis, config_manager=manager
+    )
     upstream_count = len(service.clients) if service is not None else 0
     qkind = _quota_backend_kind(service)
     return {
         "status": payload["status"],
         "service": "smart-router",
         "version": app.version,
+        "runtime_revision_id": payload["runtime_revision_id"],
         "uptime_seconds": int(time.monotonic() - _STARTED_AT_MONO),
         "upstream_count": upstream_count,
         "checks": {

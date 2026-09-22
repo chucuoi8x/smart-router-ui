@@ -15,10 +15,18 @@ class LegacyConfigCompiler:
     def compile_dict(self, config_dict: dict) -> RuntimeConfigSnapshot:
         config = config_dict or {}
         connections: Dict[str, ConnectionConfig] = {}
-        for conn_name, conn_data in config.get('upstreams', {}).items():
+        # Legacy YAML uses 'upstreams'; DB snapshots use 'connections'
+        raw_connections = config.get('connections') or config.get('upstreams', {})
+        for conn_name, conn_data in raw_connections.items():
+            if not isinstance(conn_data, dict):
+                continue
+            # Handle both formats: YAML (auth nested) and DB (flat auth_mode/token_env)
             auth = conn_data.get('auth', {})
+            if not auth:
+                # DB snapshot format: auth_mode, token_env directly on connection
+                auth = {'mode': conn_data.get('auth_mode', 'bearer'), 'token_env': conn_data.get('token_env', '')}
             connections[conn_name] = ConnectionConfig(
-                connection_id=conn_name,
+                connection_id=conn_data.get('connection_id', conn_name),
                 base_url=conn_data.get('base_url', ''),
                 auth_mode=auth.get('mode', 'bearer'),
                 token_env=auth.get('token_env', '')
