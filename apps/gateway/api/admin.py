@@ -1042,6 +1042,7 @@ async def rollback_revision(request: Request, revision_id: str, db: AsyncSession
         await _write_audit(db, "revision.rolled_back", revision_id=revision_id, from_revision_id=previous_id)
         await db.commit()
         manager.set_active_runtime(snapshot, revision_id)
+        await manager.publish_activation(revision_id)
     else:
         await rev_repo.activate(revision_id)
         await _write_audit(db, "revision.rolled_back", revision_id=revision_id, from_revision_id=previous_id)
@@ -1070,6 +1071,7 @@ async def activate_revision(request: Request, revision_id: str, db: AsyncSession
         await _write_audit(db, "revision.activated", revision_id=revision_id)
         await db.commit()
         manager.set_active_runtime(snapshot, revision_id)
+        await manager.publish_activation(revision_id)
     else:
         await rev_repo.activate(revision_id)
         await _write_audit(db, "revision.activated", revision_id=revision_id)

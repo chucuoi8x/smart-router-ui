@@ -26,9 +26,10 @@ REVISION_ACTIVATION_CHANNEL = "smart-router:revision:activated"
 class RuntimeConfigManager:
     """Owns the live runtime snapshot and swaps it atomically on revision activation."""
 
-    def __init__(self, router: Any = None, redis_client: Any = None):
+    def __init__(self, router: Any = None, redis_client: Any = None, session_factory: Any = None):
         self._router = router
         self._redis = redis_client
+        self._session_factory = session_factory
         self._snapshot: Optional[RuntimeConfigSnapshot] = None
         self._active_revision_id: Optional[str] = None
         self._listener_task: Optional[asyncio.Task] = None
@@ -161,9 +162,13 @@ class RuntimeConfigManager:
         """
         from apps.gateway.db.session import get_async_session_factory
 
-        factory = get_async_session_factory()
+        factory = self._session_factory or get_async_session_factory()
         async with factory() as session:
             try:
+                repo = RevisionRepository(session)
+                active = await repo.get_active()
+                if active is None or active.id != revision_id:
+                    return
                 snapshot = await self.validate_revision(revision_id, session)
             except (KeyError, ValueError):
                 return

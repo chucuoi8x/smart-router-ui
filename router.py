@@ -2815,10 +2815,21 @@ async def lifespan(app: FastAPI):
     except SQLAlchemyError:
         app.state.db = None
 
+    # ── Redis client for readiness + P0-20 revision propagation ───────
+    redis_url = os.getenv("REDIS_URL")
+    app.state.redis = None
+    if redis_url:
+        try:
+            import redis.asyncio as aioredis
+
+            app.state.redis = aioredis.from_url(redis_url, decode_responses=True, socket_connect_timeout=2)
+        except Exception:
+            app.state.redis = None
+
     # ── P0-20: RuntimeConfigManager authoritative control ────────────
     from apps.gateway.runtime.manager import RuntimeConfigManager
 
-    mgr = RuntimeConfigManager()
+    mgr = RuntimeConfigManager(redis_client=app.state.redis)
     app.state.config_manager = mgr
 
     try:
@@ -2837,31 +2848,33 @@ async def lifespan(app: FastAPI):
             # Inject router into manager for future updates
             mgr._router = service
             await service.start()
+            mgr.start_listener()
     except Exception as exc:
         logging.getLogger("smart-router").error("Failed to load initial runtime config: %s", exc, exc_info=True)
         # Fallback: build router from environment (legacy path)
         service = SmartRouter.from_environment()
         app.state.router = service
         await service.start()
-    # ── Redis client for readiness ping (quota store owns its own) ───
-    redis_url = os.getenv("REDIS_URL")
-    app.state.redis = None
-    if redis_url:
-        try:
-            import redis.asyncio as aioredis
-
-            app.state.redis = aioredis.from_url(redis_url, decode_responses=True, socket_connect_timeout=2)
-        except Exception:
-            app.state.redis = None
     try:
         yield
     finally:
+        try:
+            await mgr.stop_listener()
+        except Exception:
+            pass
         if app.state.redis is not None:
             try:
                 await app.state.redis.aclose()
             except Exception:
                 pass
         await service.close()
+        # A completed lifespan owns no usable runtime handles.  Clearing these
+        # prevents an ASGI host/test reusing a stopped app object from routing
+        # control-plane activations through a disposed DB-backed manager.
+        app.state.router = None
+        app.state.config_manager = None
+        app.state.db = None
+        app.state.redis = None
     # ── Database engine lifecycle ─────────────────────────────────────
     await dispose_engine()  # close pools; no-op if nothing was created
 
