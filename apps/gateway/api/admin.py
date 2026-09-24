@@ -503,6 +503,7 @@ async def test_provider_connection(
 async def discover_provider_models(
     connection_id: str,
     repo: ProviderRegistryRepository = Depends(get_provider_registry_repo),
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     conn = await repo.get_connection(connection_id)
     if conn is None:
@@ -513,11 +514,13 @@ async def discover_provider_models(
     except DriverNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     try:
+        cred_text = await repo.resolve_credential(conn)
         ctx = {
             "connection_id": conn.id,
             "base_url": conn.base_url,
             "driver": driver_id,
             "template_id": conn.template_id,
+            "credential": {"api_key": decrypt_secret(cred_text)} if cred_text else {},
         }
         # Single factory for every driver instance (plan P0-03 "Driver factory").
         driver = _driver_registry.create(driver_id, ctx)

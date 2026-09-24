@@ -29,6 +29,7 @@ class FakeTestDriver:
         return {"status": "ok", "checked": ctx.get("base_url")}
 
     async def discover_models(self, ctx):
+        assert ctx.get("credential", {}).get("api_key") == "***"
         return [{"id": "fake-model-1"}, {"id": "fake-model-2"}]
 
 
