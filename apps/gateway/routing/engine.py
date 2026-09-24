@@ -162,47 +162,6 @@ class RouterEngine:
             from apps.gateway.routing.scoring import SmartScoreCalculator
             self._score_calculator = SmartScoreCalculator(config=scoring_config)
 
-    def _run_coro_sync(self, coro: Any) -> Any:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(coro)
-            finally:
-                loop.close()
-
-        result: list[Any] = []
-        error: list[BaseException] = []
-
-        def runner():
-            loop = asyncio.new_event_loop()
-            try:
-                result.append(loop.run_until_complete(coro))
-            except BaseException as exc:
-                error.append(exc)
-            finally:
-                loop.close()
-
-        thread = threading.Thread(target=runner, daemon=True)
-        thread.start()
-        thread.join(timeout=10)
-        if error:
-            raise error[0]
-        return result[0] if result else None
-
-    def _quota_snap(self, resource_id: str) -> Any:
-        """Sync-friendly snapshot that works with both sync and async backends.
-
-        When inside a running event loop (pytest-asyncio), spawns a helper
-        thread with its own event loop so we can ``await`` coroutine snapshots
-        without triggering *RuntimeError: This event loop is already running*.
-        """
-        snap = self.quota_reservations.snapshot  # type: ignore[union-attr]
-        if asyncio.iscoroutinefunction(snap):
-            return self._run_coro_sync(snap(resource_id))
-        return snap(resource_id)
-
     def _apply_policy_constraints(
         self,
         candidates: list[ResourceCandidate],
@@ -343,29 +302,72 @@ class RouterEngine:
     def resolve_route(self, route_name: str) -> List[ResourceCandidate]:
         """Return candidates matching criteria (even fallbacks).
 
-        When running under an event loop (Redis-backed quotas), creates a new
-        loop so sync callers still work. Falls back to pure-sync path otherwise.
+        P0-convergence: the sync entry point must not drive an async authority
+        via a thread bridge. When no event loop is running, quota reads are
+        served from the local runtime index only; callers that need Redis-backed
+        admission must use ``select_candidates_async``.
         """
-        import asyncio
-
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            # No event loop — run sync subset only (no Redis quotas)
-            route = self.snapshot.routes.get(route_name)
-            if route is None:
-                return []
-            primary = [c for c in route.candidates if self.circuit_repository.is_available(c.resource_ref)]
-            fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
-            return list(self._apply_smart_scoring(primary, route_name)) + list(self._apply_smart_scoring(fallback, route_name))
-
-        return self._run_coro_sync(self.select_candidates_async(route_name))
+        route = self.snapshot.routes.get(route_name)
+        if route is None:
+            return []
+        primary = [c for c in route.candidates if self.circuit_repository.is_available(c.resource_ref)]
+        fallback = [c for c in route.fallback if self.circuit_repository.is_available(c.resource_ref)]
+        return list(self._quota_rank_sync(primary)) + list(self._quota_rank_sync(fallback))
 
     def _quota_rank_sync(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
-        """Sync entry-point that delegates to async ``_quota_rank`` via a short-lived loop."""
+        """Sync quota ranking that never touches the async authority."""
         if self.quota_reservations is None:
             return candidates
-        return list(self._run_coro_sync(self._quota_rank(candidates)))
+        return list(self._quota_rank_sync_local(candidates))
+
+    def _quota_rank_sync_local(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
+        if self.quota_index is None or not getattr(self.quota_index, "loaded", False):
+            return candidates
+        ranked: list[tuple[int, int, int, ResourceCandidate]] = []
+        for index, candidate in enumerate(candidates):
+            quota_candidate = self._check_candidate_quota_sync(candidate)
+            if quota_candidate is None:
+                continue
+            pressure = sum(
+                quota_candidate.metadata.get("quota_soft_pressure_by_resource", {}).values()
+            )
+            remaining_values = list(
+                quota_candidate.metadata.get("quota_remaining_by_resource", {}).values()
+            )
+            min_remaining = min(remaining_values) if remaining_values else None
+            low_quota_pressure = 1 if min_remaining is not None and min_remaining <= 1 else 0
+            ranked.append((pressure, low_quota_pressure, index, quota_candidate))
+        return [candidate for _, _, _, candidate in sorted(ranked, key=lambda item: (item[0], item[1], item[2]))]
+
+    def _check_candidate_quota_sync(self, candidate: ResourceCandidate) -> ResourceCandidate | None:
+        from apps.gateway.quota.reservations import QuotaReservationRequest
+
+        resource_ids = self._known_quota_resource_ids(
+            self._quota_resource_ids(candidate),
+            quota_graph=self.quota_index,
+        )
+        if not resource_ids:
+            return candidate
+        requests = [
+            QuotaReservationRequest(resource_id, amount=1)
+            for resource_id in resource_ids
+        ]
+        admission = self.quota_index.check_many(requests)
+        if not admission.accepted:
+            return None
+        metadata = {
+            **candidate.metadata,
+            "quota_remaining_by_resource": admission.remaining_by_resource,
+        }
+        if self._has_valid_quota_resource_ids(candidate):
+            metadata["quota_resource_ids"] = self._preserved_quota_resource_ids(
+                candidate, resource_ids, quota_graph=self.quota_index
+            )
+        else:
+            metadata["quota_resource_id"] = resource_ids[0]
+        if admission.soft_pressure_by_resource:
+            metadata["quota_soft_pressure_by_resource"] = admission.soft_pressure_by_resource
+        return replace(candidate, metadata=metadata)
 
     async def _quota_rank(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
         if self.quota_reservations is None:
@@ -460,15 +462,13 @@ class RouterEngine:
         duplicate request-metric IDs that were collapsed during admission.
         """
         preserved = list(admission_ids)
+        if quota_graph is None:
+            return preserved
         for resource_id in candidate.metadata["quota_resource_ids"]:
             if resource_id in preserved:
                 continue
             try:
-                resource = (
-                    quota_graph.get_resource(resource_id)
-                    if quota_graph is not None
-                    else self._quota_snap(resource_id)
-                )
+                resource = quota_graph.get_resource(resource_id)
             except (KeyError, TypeError, ValueError):
                 continue
             if resource.metric != "requests":
@@ -476,11 +476,13 @@ class RouterEngine:
         return preserved
 
     def _known_quota_resource_ids(self, resource_ids: list[str], *, quota_graph: Any | None = None) -> list[str]:
+        if quota_graph is None:
+            return list(resource_ids)
         known: list[str] = []
         seen_groups: set[str] = set()
         for resource_id in resource_ids:
             try:
-                resource = quota_graph.get_resource(resource_id) if quota_graph is not None else self._quota_snap(resource_id)
+                resource = quota_graph.get_resource(resource_id)
             except (KeyError, TypeError, ValueError):
                 continue
             if resource.metric != "requests":
@@ -547,7 +549,11 @@ class RouterEngine:
                 rid = f"model:{model_part}"
                 if self.quota_reservations:
                     try:
-                        res = self._quota_snap(rid)
+                        # Prefer local index over per-candidate Redis fetch
+                        if self.quota_index is not None and getattr(self.quota_index, "loaded", False):
+                            res = self.quota_index.get_resource(rid)
+                        else:
+                            res = self._quota_snap(rid)
                         eff_remaining = getattr(res, "effective_remaining", 0)
                         lim = getattr(res, "limit", 0)
                         sb = getattr(res, "safety_buffer", 0)
