@@ -201,19 +201,28 @@ class HttpExchangeMixin:
         return {"status": "ok", "detail": f"discovery probe {url} returned {response.status_code}"}
 
     async def discover_models(self, ctx: Any) -> list[Any]:
-        """List models from the provider; [] only when the API truly has none."""
+        """List models from the provider; raises ProviderDiscoveryError on failure."""
         context = normalize_ctx(ctx)
         url = self.target_url(context, self.discovery_endpoint)
         if not url:
-            return []
+            raise ProviderDiscoveryError("CONFIG_INVALID", "base_url is required", 400)
         try:
             response = await self._client().get(url, headers=self.request_headers(context), timeout=self.timeout)
-        except httpx.HTTPError:
-            return []
+        except httpx.TimeoutException:
+            raise ProviderDiscoveryError("TIMEOUT", f"discovery timeout after {self.timeout}s", 504)
+        except httpx.HTTPError as exc:
+            raise ProviderDiscoveryError("TRANSIENT_NETWORK", type(exc).__name__, 502)
         finally:
             await self._close_owned_client()
         if response.status_code >= 400:
-            return []
+            classification = classify_provider_error(
+                status_code=response.status_code, body=response.text, headers=response.headers
+            )
+            raise ProviderDiscoveryError(
+                classification.get("kind", "UNKNOWN"),
+                f"discovery probe {url} returned {response.status_code}",
+                response.status_code,
+            )
         return self.parse_discovery(response)
 
     def parse_discovery(self, response: httpx.Response) -> list[Any]:

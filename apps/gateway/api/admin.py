@@ -21,7 +21,7 @@ from apps.gateway.db.models import AttemptLedger, ProviderConnection, ProviderCr
 from apps.gateway.db.provider_registry import ProviderRegistryRepository
 from apps.gateway.db.control_plane import ControlPlaneRepository
 from apps.gateway.providers.registry import default_driver_registry
-from apps.gateway.providers.base import DriverNotFoundError
+from apps.gateway.providers.base import DriverNotFoundError, ProviderDiscoveryError
 from apps.gateway.security.crypto import decrypt_secret, encrypt_secret
 from apps.gateway.security.ssrf import validate_provider_url, ProviderURLValidationError
 from apps.gateway.security.redaction import redact_secrets
@@ -525,6 +525,15 @@ async def discover_provider_models(
         # Single factory for every driver instance (plan P0-03 "Driver factory").
         driver = _driver_registry.create(driver_id, ctx)
         models = await driver.discover_models(ctx)  # type: ignore[func-returns-value]
+    except ProviderDiscoveryError as exc:
+        status = exc.status_code or {"AUTH_EXPIRED": 401, "AUTH_FAILED": 401,
+                                     "AUTH_REVOKED": 403, "CONFIG_INVALID": 400,
+                                     "TIMEOUT": 504}.get(exc.kind, 502)
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=status, content={
+            "ok": False, "connection_id": connection_id,
+            "error_kind": exc.kind, "message": exc.detail,
+        })
     except HTTPException:
         raise
     except Exception as exc:

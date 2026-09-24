@@ -518,25 +518,33 @@ class TestCapabilitiesAndStubs:
 
     @pytest.mark.asyncio
     async def test_discover_models_handles_error(self, driver: CLIProxyBridgeDriver, base_url: str):
-        """When /models returns error, discover_models returns empty list."""
+        """When /models returns error, discover_models raises structured ProviderDiscoveryError."""
+        from apps.gateway.providers.base import ProviderDiscoveryError
+
         with respx.mock:
             route = respx.get(f"{base_url}/models")
             route.mock(return_value=Response(500, text="Internal Server Error"))
 
-            result = await driver.discover_models(None)
+            with pytest.raises(ProviderDiscoveryError) as excinfo:
+                await driver.discover_models(None)
 
-        assert result == []
+        assert excinfo.value.status_code == 500
+        assert excinfo.value.kind
 
     @pytest.mark.asyncio
     async def test_discover_models_handles_timeout(self, driver: CLIProxyBridgeDriver, base_url: str):
-        """When /models times out, discover_models returns empty list."""
+        """When /models times out, discover_models raises structured TIMEOUT error."""
+        from apps.gateway.providers.base import ProviderDiscoveryError
+
         with respx.mock:
             route = respx.get(f"{base_url}/models")
             route.mock(side_effect=TimeoutException("Timeout"))
 
-            result = await driver.discover_models(None)
+            with pytest.raises(ProviderDiscoveryError) as excinfo:
+                await driver.discover_models(None)
 
-        assert result == []
+        assert excinfo.value.kind == "TIMEOUT"
+        assert excinfo.value.status_code == 504
 
     @pytest.mark.asyncio
     async def test_fetch_quota_success(self, driver: CLIProxyBridgeDriver, base_url: str):

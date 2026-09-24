@@ -2,7 +2,28 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from enum import StrEnum
+
+
+class FailureScope(StrEnum):
+    REQUEST = "request"
+    CREDENTIAL = "credential"
+    MODEL = "model"
+    CONNECTION = "connection"
+    PROVIDER = "provider"
+    ACCOUNT = "account"
+    ATTEMPT = "attempt"
+
+
+class FailureDecision(StrEnum):
+    RETRY = "retry"
+    FAILOVER = "failover"
+    REJECT = "reject"
+
+
+def _explicit_scope(scope: str) -> FailureScope:
+    return FailureScope(scope.split("/", 1)[0])
+
 
 _QUOTA_TERMS = (
     "quota_exhausted",
@@ -115,6 +136,8 @@ def _result(
     return {
         "kind": kind,
         "retryable": retryable,
+        "decision": FailureDecision.RETRY if retryable else FailureDecision.REJECT,
+        "failure_scope": _explicit_scope(scope),
         "scope": scope,
         "retry_after": _retry_after(headers),
         "reset_at": _reset_at(headers),

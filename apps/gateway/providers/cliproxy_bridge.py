@@ -2,7 +2,7 @@ from typing import Any, AsyncIterator, Dict, Optional
 import json
 import httpx
 
-from apps.gateway.providers.base import ProviderDriver
+from apps.gateway.providers.base import ProviderDriver, ProviderDiscoveryError
 from apps.gateway.providers.error_classifier import classify_provider_error
 
 
@@ -317,10 +317,16 @@ class CLIProxyBridgeDriver(ProviderDriver):
                     return data
                 else:
                     return []
-            else:
-                return []
-        except Exception:
-            return []
+            classification = classify_provider_error(
+                status_code=response.status_code, body=response.text, headers=dict(response.headers)
+            )
+            raise ProviderDiscoveryError(classification["kind"], f"discovery returned {response.status_code}", response.status_code)
+        except ProviderDiscoveryError:
+            raise
+        except httpx.TimeoutException:
+            raise ProviderDiscoveryError("TIMEOUT", "discovery timeout", 504)
+        except httpx.HTTPError as exc:
+            raise ProviderDiscoveryError("TRANSIENT_NETWORK", type(exc).__name__, 502) from exc
 
     async def _fetch_pool_status(self) -> Dict[str, Any]:
         """Fetch pool-level health and status from CLIProxy management API."""
