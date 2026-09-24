@@ -2541,29 +2541,30 @@ class SmartRouter:
                 )
         return observed
 
-    def _trip_router_engine_circuit(self, candidate: Candidate, cooldown_seconds: float | None) -> None:
+    async def _trip_router_engine_circuit(self, candidate: Candidate, cooldown_seconds: float | None) -> None:
         if cooldown_seconds is None or cooldown_seconds <= 0:
             return
         # Update legacy SmartRouter circuit state
         if isinstance(cooldown_seconds, float):
-            # Canonical identity includes connection+credential+model.
-            # State is keyed by ref.key to isolate sibling credentials.
             state = self.circuits.setdefault(candidate.key, CircuitState())
             state.cooldown_until = time.monotonic() + cooldown_seconds
-        # Also trip the canonical engine circuit repository
         if self.router_engine is not None:
             try:
                 from apps.gateway.routing.models import ResourceRef
-                # Construct ref from the candidate's canonical resource_key or legacy parts
                 parts = candidate.key.split(":")
                 ref = ResourceRef(
                     provider_connection_id=parts[0],
                     credential_scope=parts[1] if len(parts) > 2 else parts[0],
                     model_id=parts[-1]
                 )
-                self.router_engine.circuit_repository.trip(ref, cooldown_seconds)
+                repository = self.router_engine.circuit_repository
+                trip_async = getattr(repository, "trip_async", None)
+                if trip_async is not None:
+                    await trip_async(ref, cooldown_seconds)
+                else:
+                    repository.trip(ref, cooldown_seconds)
             except Exception:
-                pass
+                self.logger.warning("router engine circuit trip skipped", exc_info=True)
 
     async def _finalize_error_reservation(
         self,
@@ -2635,7 +2636,7 @@ class SmartRouter:
                 state.cooldown_until = time.monotonic() + cooldown
             else:
                 state.cooldown_until = max(state.cooldown_until, 0.0)
-        self._trip_router_engine_circuit(candidate, cooldown)
+        await self._trip_router_engine_circuit(candidate, cooldown)
         self.logger.warning(
             "upstream=%s model=%s status=%s kind=%s cooldown=%ss failover=%s",
             candidate.upstream,
