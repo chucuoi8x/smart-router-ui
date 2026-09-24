@@ -32,6 +32,7 @@ class ScoringWeights:
     reliability_factor: float = 0.30
     latency_factor: float = 0.10
     quota_pressure_factor: float = 0.15
+    quality_factor: float = 0.0
     capability_factor: float = 0.10
     session_affinity_factor: float = 0.10
     # Chiều mở rộng theo README §18.3. Mặc định 0 để giữ tương thích hành vi cũ;
@@ -50,6 +51,7 @@ class ScoringWeights:
             reliability_factor=float(data.get("reliability_factor", cls.reliability_factor)),
             latency_factor=float(data.get("latency_factor", cls.latency_factor)),
             quota_pressure_factor=float(data.get("quota_pressure_factor", cls.quota_pressure_factor)),
+            quality_factor=float(data.get("quality_factor", cls.quality_factor)),
             capability_factor=float(data.get("capability_factor", cls.capability_factor)),
             session_affinity_factor=float(data.get("session_affinity_factor", cls.session_affinity_factor)),
             expiry_urgency_factor=float(data.get("expiry_urgency_factor", cls.expiry_urgency_factor)),
@@ -65,6 +67,7 @@ class ScoringWeights:
             + self.reliability_factor
             + self.latency_factor
             + self.quota_pressure_factor
+            + self.quality_factor
             + self.capability_factor
             + self.session_affinity_factor
             + self.expiry_urgency_factor
@@ -84,6 +87,7 @@ class ScoringWeights:
             reliability_factor=self.reliability_factor * inv,
             latency_factor=self.latency_factor * inv,
             quota_pressure_factor=self.quota_pressure_factor * inv,
+            quality_factor=self.quality_factor * inv,
             capability_factor=self.capability_factor * inv,
             session_affinity_factor=self.session_affinity_factor * inv,
             expiry_urgency_factor=self.expiry_urgency_factor * inv,
@@ -99,6 +103,7 @@ class ScoringWeights:
             "reliability_factor": round(self.reliability_factor, 4),
             "latency_factor": round(self.latency_factor, 4),
             "quota_pressure_factor": round(self.quota_pressure_factor, 4),
+            "quality_factor": round(self.quality_factor, 4),
             "capability_factor": round(self.capability_factor, 4),
             "session_affinity_factor": round(self.session_affinity_factor, 4),
             "expiry_urgency_factor": round(self.expiry_urgency_factor, 4),
@@ -183,6 +188,7 @@ class ScoringConfig:
                     latency_factor=mapped.get("latency_factor", cfg.weights.latency_factor),
                     quota_pressure_factor=mapped.get("quota_pressure_factor", cfg.weights.quota_pressure_factor),
                     capability_factor=mapped.get("capability_factor", cfg.weights.capability_factor),
+                    quality_factor=mapped.get("quality_factor", cfg.weights.quality_factor),
                     session_affinity_factor=mapped.get("session_affinity_factor", cfg.weights.session_affinity_factor),
                     expiry_urgency_factor=mapped.get("expiry_urgency_factor", cfg.weights.expiry_urgency_factor),
                     scarcity_factor=mapped.get("scarcity_factor", cfg.weights.scarcity_factor),
@@ -229,6 +235,7 @@ class ScoringConfig:
                 latency_factor=mapped.get("latency_factor", self.weights.latency_factor),
                 quota_pressure_factor=mapped.get("quota_pressure_factor", self.weights.quota_pressure_factor),
                 capability_factor=mapped.get("capability_factor", self.weights.capability_factor),
+                quality_factor=mapped.get("quality_factor", self.weights.quality_factor),
                 session_affinity_factor=mapped.get("session_affinity_factor", self.weights.session_affinity_factor),
                 expiry_urgency_factor=mapped.get("expiry_urgency_factor", self.weights.expiry_urgency_factor),
                 scarcity_factor=mapped.get("scarcity_factor", self.weights.scarcity_factor),
@@ -275,6 +282,9 @@ class CandidateMetrics:
     scarcity: float = 0.0
     retry_expected_cost: float = 0.0
     uncertainty: float = 0.0
+
+    # Quality is workload suitability, not capability eligibility.
+    quality_score: float = 0.5
 
     # Capability
     capability_match: bool = True
@@ -522,6 +532,7 @@ class SmartScoreCalculator:
         reliability = self._score_reliability(metrics)
         latency = self._score_latency(metrics)
         quota = self._score_quota_pressure(metrics)
+        quality = self._score_quality(metrics)
         capability = self._score_capability(metrics)
         affinity = self._score_session_affinity(key, conversation_thread)
         expiry_urgency = self._score_expiry_urgency(metrics)
@@ -534,6 +545,7 @@ class SmartScoreCalculator:
             + w.reliability_factor * reliability
             + w.latency_factor * latency
             + w.quota_pressure_factor * quota
+            + w.quality_factor * quality
             + w.capability_factor * capability
             + w.session_affinity_factor * affinity
             + w.expiry_urgency_factor * expiry_urgency
@@ -547,6 +559,7 @@ class SmartScoreCalculator:
             "reliability": round(reliability, 4),
             "latency": round(latency, 4),
             "quota_pressure": round(quota, 4),
+            "quality": round(quality, 4),
             "capability": round(capability, 4),
             "session_affinity": round(affinity, 4),
             "expiry_urgency": round(expiry_urgency, 4),
@@ -606,6 +619,10 @@ class SmartScoreCalculator:
             base *= (1.0 - burn_penalty)
 
         return max(0.0, min(1.0, base))
+
+    def _score_quality(self, m: CandidateMetrics) -> float:
+        """Workload suitability. Deliberately independent of capability eligibility."""
+        return max(0.0, min(1.0, m.quality_score))
 
     def _score_capability(self, m: CandidateMetrics) -> float:
         """Binary match pass-through."""

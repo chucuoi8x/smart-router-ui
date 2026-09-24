@@ -338,16 +338,17 @@ async def update_provider(
     api_key = payload.get("api_key")
     if api_key:
         encrypted = encrypt_secret(str(api_key))
-        # New credential rows are the source of truth; the legacy column is kept
-        # in sync so pre-PR-05 readers still resolve a credential.
-        fields["credential_encrypted"] = encrypted
+        # New credential rows are the source of truth; the legacy column is
+        # read-only compatibility storage and must not receive new writes.
+        fields["credential_encrypted"] = conn.credential_encrypted
+
     if fields:
         await repo.update_connection(conn, **fields)
         if api_key:
             await repo.create_credential(
                 connection_id=connection_id,
                 alias="updated",
-                credential_encrypted=fields["credential_encrypted"],
+                credential_encrypted=encrypted,
             )
     timestamp = datetime.now(UTC).isoformat()
     await _write_audit(db, "provider.updated", connection_id=connection_id, fields=sorted([k for k in payload if k != "api_key"]) + (["credential_present"] if api_key else []))
@@ -422,17 +423,21 @@ async def create_provider(
 
     driver = str(payload.get("driver") or template.get("driver") or "")
     encrypted = encrypt_secret(str(payload["api_key"])) if payload.get("api_key") else None
-    # The api_key supplied at creation time becomes the connection's own
-    # credential (legacy single-column path).  Additional credentials are added
-    # explicitly via /credentials and listed separately, so create must not
-    # duplicate it into a ProviderCredential row.
+    # New credentials are canonical ProviderCredential rows. The legacy column
+    # stays read-only for pre-PR-05 data and is never written on new creates.
     conn = await repo.create_connection(
         name=name,
         template_id=template_id,
         driver=driver,
         base_url=base_url,
-        credential_encrypted=encrypted,
+        credential_encrypted=None,
     )
+    if encrypted:
+        await repo.create_credential(
+            connection_id=conn.id,
+            alias="default",
+            credential_encrypted=encrypted,
+        )
     await _ensure_active_revision(db)
     await _write_audit(db, "provider.created", connection_id=conn.id, name=name)
     await db.commit()

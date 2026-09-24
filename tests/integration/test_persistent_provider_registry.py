@@ -70,7 +70,10 @@ async def test_provider_credential_and_imported_model_survive_process_restart(re
     assert provider.json()["credential_present"] is True
     assert "test-secret-not-returned" not in provider.text
     assert credentials.status_code == 200
-    assert credentials.json()["total"] == 1
+    # §5.5: provider create now writes a canonical ProviderCredential row
+    # ("primary") in addition to the explicitly added "secondary" credential.
+    # Both rows must survive the engine restart.
+    assert credentials.json()["total"] == 2
     assert "second-secret-not-returned" not in credentials.text
 
 
