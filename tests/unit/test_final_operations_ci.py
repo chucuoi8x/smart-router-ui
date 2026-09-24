@@ -94,3 +94,33 @@ def test_ci_static_checks_include_tests_and_dependency_validation():
 
     assert "ruff check apps router.py tests" in lint_commands
     assert "pip check" in schema_commands
+
+
+def test_ci_p0_e2e_covers_runtime_and_provider_authority():
+    workflow = yaml.safe_load(CI.read_text(encoding="utf-8"))
+    job = workflow["jobs"]["p0-e2e"]
+    commands = "\n".join(
+        str(step.get("run", "")) for step in job["steps"] if isinstance(step, dict)
+    )
+
+    assert "tests/integration/test_p0_20_runtime_authority.py" in commands
+    assert "tests/integration/test_p0_20_revision_propagation.py" in commands
+    assert "tests/integration/test_stage_b_provider_reality.py" in commands
+
+
+def test_ci_has_clean_checkout_verification_gate():
+    workflow = yaml.safe_load(CI.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    assert "clean-checkout-verification" in jobs
+    assert "clean-checkout-verification" in jobs["p0-e2e"]["needs"]
+
+    job = jobs["clean-checkout-verification"]
+    uses = [step.get("uses", "") for step in job["steps"] if isinstance(step, dict)]
+    commands = "\n".join(
+        str(step.get("run", "")) for step in job["steps"] if isinstance(step, dict)
+    )
+    assert "actions/checkout@v4" in uses
+    assert "pip install -r requirements-dev.txt" in commands
+    assert "python -m pip check" in commands
+    assert "python -m pytest tests/unit/test_final_operations_ci.py -q" in commands
+    assert "docker" not in commands.lower()
