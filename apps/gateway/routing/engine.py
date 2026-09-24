@@ -316,9 +316,13 @@ class RouterEngine:
 
     def _quota_rank_sync(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
         """Sync quota ranking that never touches the async authority."""
+        if self.quota_index is not None and getattr(self.quota_index, "loaded", False):
+            return list(self._quota_rank_sync_local(candidates))
         if self.quota_reservations is None:
             return candidates
-        return list(self._quota_rank_sync_local(candidates))
+        # No thread bridge: sync callers cannot await an async quota authority.
+        # They must rely on the runtime-local index; without one, fail open.
+        return candidates
 
     def _quota_rank_sync_local(self, candidates: list[ResourceCandidate]) -> list[ResourceCandidate]:
         if self.quota_index is None or not getattr(self.quota_index, "loaded", False):
