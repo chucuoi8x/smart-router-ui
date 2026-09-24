@@ -113,7 +113,7 @@ async def test_engine_circuit_trip_is_credential_scoped():
     router = _router()
     assert router.router_engine is not None
     c1, c2 = _pair()
-    router._trip_router_engine_circuit(c1, 30.0)
+    await router._trip_router_engine_circuit(c1, 30.0)
     repo = router.router_engine.circuit_repository
     assert repo.is_available(c2) is True
     assert repo.is_available(c1) is False

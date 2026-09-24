@@ -50,13 +50,16 @@ async def test_create_provider_encrypted_storage_redacted():
         # PR-05: credential persists in the database, never in process globals.
         # Storage must hold ciphertext that decrypts back to the plaintext.
         from apps.gateway.db.session import get_async_session_factory
-        from apps.gateway.db.models import ProviderConnection as _PC
+        from apps.gateway.db.models import ProviderConnection as _PC, ProviderCredential as _Cred
         from sqlalchemy import select
         # Use current event loop via get_running_loop/await directly
         factory = get_async_session_factory()
         async with factory() as session:
             row = (await session.execute(select(_PC).where(_PC.id == cid))).scalar_one()
-            enc = row.credential_encrypted or ""
+            cred = (await session.execute(select(_Cred).where(_Cred.connection_id == cid))).scalar_one()
+            # Legacy connection column is read-only; new writes use ProviderCredential.
+            assert row.credential_encrypted is None
+            enc = cred.credential_encrypted or ""
         assert enc, "credential_encrypted phải được lưu"
         assert plaintext not in enc
         assert decrypt_secret(enc) == plaintext

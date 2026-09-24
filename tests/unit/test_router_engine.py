@@ -4,6 +4,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from apps.gateway.quota.runtime_index import RuntimeQuotaIndex
+from apps.gateway.routing.engine import RouterEngine
+
+
+def _engine_with_local_quota(snapshot, quota):
+    index = RuntimeQuotaIndex()
+    index.replace_all(quota.list_resources())
+    return RouterEngine(snapshot, quota_reservations=quota, quota_index=index)
+
+
 class RouterEngineTests(unittest.TestCase):
     def test_legacy_compiler_parses_yaml_correctly(self):
         from apps.gateway.config.compiler import LegacyConfigCompiler
@@ -176,7 +186,7 @@ routes:
             )
         )
 
-        engine = RouterEngine(snapshot, quota_reservations=quota)
+        engine = _engine_with_local_quota(snapshot, quota)
         candidates = engine.select_candidates("chat")
 
         self.assertEqual([available.resource_ref], [candidate.resource_ref for candidate in candidates])
@@ -213,7 +223,7 @@ routes:
             )
         )
 
-        engine = RouterEngine(snapshot, quota_reservations=quota)
+        engine = _engine_with_local_quota(snapshot, quota)
 
         self.assertEqual([], engine.select_candidates("chat"))
 
@@ -262,7 +272,7 @@ routes:
             )
         )
 
-        engine = RouterEngine(snapshot, quota_reservations=quota)
+        engine = _engine_with_local_quota(snapshot, quota)
         candidates = engine.select_candidates("chat")
 
         self.assertEqual([healthy.resource_ref, pressured.resource_ref], [candidate.resource_ref for candidate in candidates])
@@ -298,7 +308,7 @@ routes:
         quota.add_resource(QuotaResource("model:multi-model", "model", "requests", 0, 60))
         quota.add_resource(QuotaResource("model:fallback-model", "model", "requests", 10, 60))
 
-        engine = RouterEngine(snapshot, quota_reservations=quota)
+        engine = _engine_with_local_quota(snapshot, quota)
         candidates = engine.select_candidates("chat")
 
         self.assertEqual([fallback.resource_ref], [candidate.resource_ref for candidate in candidates])
@@ -326,7 +336,7 @@ routes:
         quota = InMemoryQuotaReservations()
         quota.add_resource(QuotaResource("model:multi-model", "model", "requests", 0, 60))
 
-        engine = RouterEngine(snapshot, quota_reservations=quota)
+        engine = _engine_with_local_quota(snapshot, quota)
 
         self.assertEqual([], engine.select_candidates("chat"))
 
@@ -354,7 +364,7 @@ routes:
         quota.add_resource(QuotaResource("model:a", "model", "requests", 1, 60, shared_group_id="account:shared"))
         quota.add_resource(QuotaResource("model:b", "model", "requests", 1, 60, shared_group_id="account:shared"))
 
-        engine = RouterEngine(snapshot, quota_reservations=quota)
+        engine = _engine_with_local_quota(snapshot, quota)
         candidates = engine.select_candidates("chat")
 
         self.assertEqual([candidate.resource_ref], [selected.resource_ref for selected in candidates])
@@ -388,7 +398,7 @@ routes:
         quota.add_resource(QuotaResource("account:primary", "account", "requests", 10, 60))
         quota.add_resource(QuotaResource("model:multi-model", "model", "requests", 10, 60))
 
-        engine = RouterEngine(snapshot, quota_reservations=quota)
+        engine = _engine_with_local_quota(snapshot, quota)
         candidates = engine.select_candidates("chat")
 
         self.assertEqual([candidate.resource_ref], [selected.resource_ref for selected in candidates])
@@ -446,7 +456,7 @@ routes:
         quota.add_resource(QuotaResource("model:near-limit", "model", "requests", 10, 60, used=9))
         quota.add_resource(QuotaResource("model:healthy", "model", "requests", 10, 60, used=1))
 
-        engine = RouterEngine(snapshot, quota_reservations=quota)
+        engine = _engine_with_local_quota(snapshot, quota)
         candidates = engine.select_candidates("chat")
 
         self.assertEqual([healthy.resource_ref, nearly_exhausted.resource_ref], [candidate.resource_ref for candidate in candidates])

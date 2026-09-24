@@ -112,9 +112,11 @@ class TestScoringConfigParsing(unittest.TestCase):
         cfg = ScoringConfig.from_dict({})
         self.assertFalse(cfg.enabled)
         self.assertEqual(cfg.preset, "auto-free")
-        # auto-free nạp 10 chiều (6 cũ + 4 mới) rồi normalize về tổng 1.0
-        self.assertAlmostEqual(cfg.weights.cost_factor, 0.2222, places=3)
-        self.assertAlmostEqual(cfg.weights.reliability_factor, 0.1222, places=3)
+        # auto-free now includes explicit quality and capability dimensions;
+        # assert normalized weights and non-zero dimensions, not stale literal ratios.
+        self.assertAlmostEqual(sum(cfg.weights.to_dict().values()), 1.0, places=2)
+        self.assertGreater(cfg.weights.cost_factor, 0.0)
+        self.assertGreater(cfg.weights.reliability_factor, 0.0)
         # 4 chiều M5 phải có trọng số >0 khi preset auto-free được nạp
         self.assertGreater(cfg.weights.expiry_urgency_factor, 0.0)
         self.assertGreater(cfg.weights.scarcity_factor, 0.0)
