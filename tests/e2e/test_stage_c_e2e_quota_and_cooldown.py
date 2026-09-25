@@ -135,13 +135,13 @@ async def test_e2e05_cooldown_expires_and_key_is_ttl_bound():
     ref = ResourceRef("conn", "cred-a", "model")
 
     await repo.trip_async(ref, cooldown_seconds=2)
-    assert repo.is_available(ref) is False
+    assert await repo.is_available_async(ref) is False
     ttl = await authority.ttl(f"circuit:{ref.key}")
     assert 0 < ttl <= 2, "cooldown key must carry a bounded Redis TTL"
 
     # Simulate expiry without sleeping on wall-clock TTL.
     await authority.delete(f"circuit:{ref.key}")
-    assert repo.is_available(ref) is True
+    assert await repo.is_available_async(ref) is True
 
 
 @pytest.mark.asyncio

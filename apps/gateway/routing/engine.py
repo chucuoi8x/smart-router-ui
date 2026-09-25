@@ -1,6 +1,5 @@
 from dataclasses import replace
 import asyncio
-import threading
 import time
 from typing import Any, List, Optional, Protocol, runtime_checkable
 
@@ -51,45 +50,18 @@ class InMemoryCircuitRepository:
         self.trip(ref, cooldown_seconds)
 
 
-def _run_coroutine_sync(coro: Any) -> Any:
-    """Drive an awaitable to completion from synchronous circuit-check code."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-
-    box: list[Any] = []
-    errors: list[BaseException] = []
-
-    def runner() -> None:
-        loop = asyncio.new_event_loop()
-        try:
-            box.append(loop.run_until_complete(coro))
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
-        finally:
-            loop.close()
-
-    thread = threading.Thread(target=runner, daemon=True)
-    thread.start()
-    thread.join(timeout=10)
-    if errors:
-        raise errors[0]
-    return box[0] if box else None
-
-
 class RedisCircuitRepository:
     """Distributed circuit state in Redis with expiring cooldown keys (P0-14).
 
     The value is the absolute wall-clock expiry so every instance interprets the
     same key identically, and the key also carries a TTL so a crashed gateway
-    cannot leave a credential tripped forever.  Works with sync or async redis
-    clients: when the client returns a coroutine, the sync entry points drive it
-    to completion instead of treating the un-awaited coroutine as a value.
+    cannot leave a credential tripped forever.
+
+    P0-20 §7.1: the request path is async end-to-end.  With an async client the
+    sync entry points are a hard error — they must never hop to a worker thread
+    and drive a second event loop.  Callers holding an ``redis.asyncio`` client
+    use ``is_available_async``/``trip_async``; sync clients (e.g. blocking test
+    fixtures) keep the sync API.
     """
 
     def __init__(self, redis_client: Any, *, prefix: str = "circuit") -> None:
@@ -101,7 +73,15 @@ class RedisCircuitRepository:
 
     @staticmethod
     def _resolve(value: Any) -> Any:
-        return _run_coroutine_sync(value) if asyncio.iscoroutine(value) else value
+        if asyncio.iscoroutine(value):
+            # Never thread-hop an async client: drop the coroutine and fail
+            # loudly so the caller moves to the async entry point.
+            value.close()
+            raise RuntimeError(
+                "RedisCircuitRepository sync API cannot drive an async Redis "
+                "client; use is_available_async/trip_async on the request path"
+            )
+        return value
 
     def _read_available(self, raw: Any) -> bool:
         if raw is None:

@@ -19,6 +19,39 @@ def test_router_engine_contains_no_thread_join_sync_bridge():
     assert "_run_coro_sync" not in source
 
 
+def test_routing_module_has_no_thread_bridge_anywhere():
+    """P0-20 §7.1: the whole routing module must stay free of sync thread hops.
+
+    The RouterEngine class-source check alone hid a module-level
+    ``_run_coro_sync`` helper that ``RedisCircuitRepository`` still used to
+    drive async clients from sync code — a thread join reachable from any
+    sync admission call.
+    """
+    import apps.gateway.routing.engine as engine_module
+
+    source = inspect.getsource(engine_module)
+    assert "thread.join" not in source
+    assert "threading.Thread" not in source
+    assert "_run_coro_sync" not in source
+
+
+@pytest.mark.asyncio
+async def test_sync_circuit_entry_points_reject_async_clients_without_threads():
+    """An async Redis client must be used via the async API, never thread-hopped."""
+    import fakeredis
+
+    from apps.gateway.routing.engine import RedisCircuitRepository
+
+    authority = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    repo = RedisCircuitRepository(authority)
+    ref = ResourceRef("conn", "cred-a", "model")
+    await repo.trip_async(ref, cooldown_seconds=30)
+    with pytest.raises(RuntimeError, match="async"):
+        repo.is_available(ref)
+    with pytest.raises(RuntimeError, match="async"):
+        repo.trip(ref, cooldown_seconds=30)
+
+
 @pytest.mark.asyncio
 async def test_scoring_reads_index_not_async_authority(monkeypatch):
     resource = QuotaResource("model:m", "credential:c", "requests", 100, 60)
