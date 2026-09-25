@@ -50,7 +50,15 @@ class LegacyConfigCompiler:
                     model_id=model
                 )
                 metadata = self._candidate_metadata(item)
-                candidates.append(ResourceCandidate(ref, driver_id='anthropic-compatible', weight=weight, metadata=metadata))
+                # A compiled resource already knows its driver (plan §4.6: the
+                # router must execute the resource exactly as compiled).  Legacy
+                # YAML declares none, so it keeps the historical default.
+                driver_id = str(
+                    item.get("driver_id")
+                    or (item.get("metadata") or {}).get("driver_id")
+                    or "anthropic-compatible"
+                )
+                candidates.append(ResourceCandidate(ref, driver_id=driver_id, weight=weight, metadata=metadata))
 
             fallback = []
             for item in route_data.get('fallback', []):
@@ -63,7 +71,12 @@ class LegacyConfigCompiler:
                     model_id=model
                 )
                 metadata = self._candidate_metadata(item)
-                fallback.append(ResourceCandidate(ref, driver_id='anthropic-compatible', weight=1, metadata=metadata))
+                driver_id = str(
+                    item.get("driver_id")
+                    or (item.get("metadata") or {}).get("driver_id")
+                    or "anthropic-compatible"
+                )
+                fallback.append(ResourceCandidate(ref, driver_id=driver_id, weight=1, metadata=metadata))
 
             routes[route_name] = RouteConfig(
                 route_name=route_name,

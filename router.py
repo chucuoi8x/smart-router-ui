@@ -200,6 +200,11 @@ class SmartRouter:
         for name, route in config.get("routes", {}).items():
             self.routes[name] = self._parse_route(route)
         self.clients: dict[str, httpx.AsyncClient] = {}
+        # Canonical runtime credential material (P0-20 §5.3): credential_id →
+        # decrypted secret resolved from ProviderCredential by the authority
+        # (RuntimeConfigManager) on every load/activation.  Candidates whose
+        # metadata pins a credential_id must never fall back to token_env.
+        self._credential_values: dict[str, str] = {}
         self.circuits: dict[str, CircuitState] = {}
         self.rr_current: dict[str, dict[str, float]] = {}
         self.state_lock = asyncio.Lock()
@@ -543,13 +548,34 @@ class SmartRouter:
             raise RouterConfigurationError(f"unknown upstream: {name}")
         return upstream
 
-    def _upstream_headers(self, name: str, incoming: Any) -> dict[str, str]:
-        upstream = self._upstream_config(name)
-        auth = upstream.get("auth", {})
+    def _upstream_token(self, name: str, auth: dict[str, Any], candidate: Any = None) -> str:
+        """Resolve the upstream secret for one request.
+
+        P0-20 §5.3/§20: a candidate that pins a canonical ``credential_id``
+        (materialized from ``ProviderCredential`` by the runtime authority)
+        MUST use that credential and MUST NOT fall back to ``token_env``.
+        Only candidates without canonical identity keep the legacy env path.
+        """
+        credential_id: str | None = None
+        metadata = getattr(candidate, "metadata", None) or {}
+        credential_id = metadata.get("credential_id") or metadata.get("credential_scope")
+        if credential_id:
+            token = self._credential_values.get(str(credential_id), "")
+            if not token:
+                raise RouterConfigurationError(
+                    f"missing canonical credential for {credential_id} (upstream {name})"
+                )
+            return token
         token_env = str(auth.get("token_env", ""))
         token = os.getenv(token_env, "") if token_env else ""
         if not token:
             raise RouterConfigurationError(f"missing credential environment variable: {token_env}")
+        return token
+
+    def _upstream_headers(self, name: str, incoming: Any, candidate: Any = None) -> dict[str, str]:
+        upstream = self._upstream_config(name)
+        auth = upstream.get("auth", {})
+        token = self._upstream_token(name, auth, candidate)
         forwarded: dict[str, str] = {}
         for key, value in incoming.items():
             lower = key.lower()
@@ -1885,7 +1911,7 @@ class SmartRouter:
             if driver_cls is None or not delegates_execution:
                 # Fallback: use direct HTTP client (old behavior)
                 try:
-                    headers = self._upstream_headers(candidate.upstream, incoming_headers)
+                    headers = self._upstream_headers(candidate.upstream, incoming_headers, candidate)
                     client = self.clients[candidate.upstream]
                     response = await client.post(self._url(candidate.upstream, path), headers=headers, json=request_body)
                 except (httpx.RequestError, RouterConfigurationError) as exc:
@@ -2004,7 +2030,7 @@ class SmartRouter:
                 base_url=self._upstream_config(candidate.upstream)["base_url"],
                 endpoint=path,
                 timeout=self._timeout(),
-                headers=self._upstream_headers(candidate.upstream, incoming_headers),
+                headers=self._upstream_headers(candidate.upstream, incoming_headers, candidate),
                 client=self.clients[candidate.upstream],
             )
             # Build request object for driver
@@ -2320,7 +2346,7 @@ class SmartRouter:
 
     async def _open_stream(self, candidate: Candidate, body: dict[str, Any], incoming_headers: Any, path: str) -> OpenStream | Response:
         try:
-            headers = self._upstream_headers(candidate.upstream, incoming_headers)
+            headers = self._upstream_headers(candidate.upstream, incoming_headers, candidate)
             client = self.clients[candidate.upstream]
             context_manager = client.stream("POST", self._url(candidate.upstream, path), headers=headers, json=body)
             response = await context_manager.__aenter__()
