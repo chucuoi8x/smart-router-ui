@@ -49,33 +49,42 @@ class RuntimeConfigManager:
         session: AsyncSession,
         bootstrap_path: Optional[str] = None,
     ) -> RuntimeConfigSnapshot:
-        """Load active revision from DB; fall back to bootstrap YAML migration."""
+        """Load active revision from DB; fall back to bootstrap YAML migration.
+
+        P0-20 §5.6/§20: the active revision is always compiled through
+        ``compile_snapshot`` — no generated-route branch may bypass that
+        validation (a bad revision must leave the last-known-good runtime
+        untouched), and a restart must never rewrite historical snapshots.
+        """
         repo = RevisionRepository(session)
         active = await repo.get_active()
         if active:
-            # P0-20 §5.6: Active revision controls runtime via materialized resources.
-            # If the revision has generated routes (from ProviderResourceCompiler), use them directly.
-            # Otherwise, compile legacy snapshot.
-            routes = active.snapshot_data.get("routes", {})
-            has_generated = any(r.get("generated") for r in routes.values()) if isinstance(routes, dict) else False
-            
-            if has_generated:
-                # Directly use the materialized snapshot from DB
-                from apps.gateway.config.snapshot import RuntimeConfigSnapshot
-                from apps.gateway.config.compiler import LegacyConfigCompiler
-                snapshot = LegacyConfigCompiler().compile_dict(active.snapshot_data)
-                self._apply_snapshot(snapshot, active.id)
-                return snapshot
-            else:
-                # Legacy path: compile and activate if needed
-                snapshot = self.compile_snapshot(active.snapshot_data)
-                self._apply_snapshot(snapshot, active.id)
-                return snapshot
-
+            snapshot = self.compile_snapshot(active.snapshot_data)
+            await bind_runtime_credentials(self._router, session, snapshot)
+            self._apply_snapshot(snapshot, active.id)
+            return snapshot
         # No active DB revision → migrate config.yaml → DB → activate
         bootstrap_path = bootstrap_path or os.getenv("SMART_ROUTER_CONFIG", "config.yaml")
         snapshot = await self._bootstrap_from_yaml(bootstrap_path, session, repo)
         return snapshot
+
+    async def materialize_provider_revision(self, session: AsyncSession) -> str:
+        """Compile the live provider registry into a new immutable revision.
+
+        P0-20 §5.6/§20: the :class:`ProviderResourceCompiler` is the only
+        component that expands Connection × enabled credentials × enabled
+        models into runtime candidates.  The materialized snapshot is stored
+        as a fresh revision (history is never overwritten), validated through
+        the same ``compile_snapshot`` gate as every other revision, and then
+        activated so the data plane routes against real resources without a
+        restart.
+        """
+        from apps.gateway.config.provider_resource_compiler import ProviderResourceCompiler
+
+        materialized = await ProviderResourceCompiler().compile(session)
+        draft = await RevisionRepository(session).create_draft(snapshot_to_dict(materialized))
+        await self.activate(draft.id, session)
+        return draft.id
 
     async def _bootstrap_from_yaml(
         self,
@@ -143,6 +152,7 @@ class RuntimeConfigManager:
         repo = RevisionRepository(session)
         await repo.activate(revision_id)
         await session.commit()
+        await bind_runtime_credentials(self._router, session, snapshot)
         self._apply_snapshot(snapshot, revision_id)
         await self.publish_activation(revision_id)
         return snapshot
@@ -228,6 +238,48 @@ class RuntimeConfigManager:
                 pass
 
 
+async def bind_runtime_credentials(
+    router: Any,
+    session: AsyncSession,
+    snapshot: RuntimeConfigSnapshot,
+) -> dict[str, str]:
+    """Materialize the canonical credential secrets a snapshot references.
+
+    P0-20 §5.3/§20: the durable truth for an upstream secret is the
+    :class:`ProviderCredential` ciphertext row, selected by the candidate's
+    ``credential_id`` — never the connection's legacy ``token_env``.  The
+    runtime authority decrypts exactly the credentials referenced by the
+    snapshot (test/dev fallback inside ``decrypt_secret`` keeps fixture
+    ciphertexts usable) and hands the data plane a credential_id → secret
+    map.  A router without the map slot (pure unit harness) is left alone.
+    """
+    from apps.gateway.db.provider_registry import ProviderRegistryRepository
+    from apps.gateway.security.crypto import decrypt_secret
+
+    registry = ProviderRegistryRepository(session)
+    values: dict[str, str] = {}
+    for route in snapshot.routes.values():
+        for candidate in (*route.candidates, *route.fallback):
+            credential_id = candidate.resource_ref.credential_scope
+            if not credential_id:
+                continue
+            if credential_id in values:
+                continue
+            row = await registry.get_credential(str(credential_id))
+            if row is None or not row.enabled:
+                continue
+            try:
+                values[str(credential_id)] = decrypt_secret(row.credential_encrypted)
+            except ValueError:
+                logging.getLogger("smart-router").warning(
+                    "credential %s could not be decrypted; candidate stays unresolved",
+                    credential_id,
+                )
+    if router is not None:
+        router._credential_values = values
+    return values
+
+
 def snapshot_to_legacy_config(snapshot: RuntimeConfigSnapshot) -> dict[str, Any]:
     """Project a snapshot into the SmartRouter legacy runtime dict shape.
 
@@ -274,29 +326,23 @@ def snapshot_to_dict(snapshot: RuntimeConfigSnapshot) -> dict[str, Any]:
         }
     routes: dict[str, Any] = {}
     for route_name, route in snapshot.routes.items():
+        def _cand(c: Any) -> dict[str, Any]:
+            payload: dict[str, Any] = {
+                "upstream": c.resource_ref.provider_connection_id,
+                "model": c.resource_ref.model_id,
+                "credential_id": c.resource_ref.credential_scope,
+                "weight": c.weight,
+                # §4.6: the compiled resource already knows its driver — it must
+                # survive the dict round-trip or reload falls back to a default.
+                "driver_id": c.driver_id,
+                "metadata": dict(c.metadata) if hasattr(c.metadata, "items") else dict(c.metadata),
+            }
+            return payload
         routes[route_name] = {
             "route_name": route.route_name,
             "strategy": route.strategy,
-            "candidates": [
-                {
-                    "upstream": c.resource_ref.provider_connection_id,
-                    "model": c.resource_ref.model_id,
-                    "credential_id": c.resource_ref.credential_scope,
-                    "weight": c.weight,
-                    "metadata": dict(c.metadata) if hasattr(c.metadata, "items") else dict(c.metadata),
-                }
-                for c in route.candidates
-            ],
-            "fallback": [
-                {
-                    "upstream": c.resource_ref.provider_connection_id,
-                    "model": c.resource_ref.model_id,
-                    "credential_id": c.resource_ref.credential_scope,
-                    "weight": c.weight,
-                    "metadata": dict(c.metadata) if hasattr(c.metadata, "items") else dict(c.metadata),
-                }
-                for c in route.fallback
-            ],
+            "candidates": [_cand(c) for c in route.candidates],
+            "fallback": [_cand(c) for c in route.fallback],
             "generated": route.generated,
         }
     return {"connections": connections, "routes": routes}
