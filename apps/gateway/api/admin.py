@@ -21,8 +21,9 @@ from apps.gateway.db.models import AttemptLedger, ProviderConnection, ProviderCr
 from apps.gateway.db.provider_registry import ProviderRegistryRepository
 from apps.gateway.db.control_plane import ControlPlaneRepository
 from apps.gateway.providers.registry import default_driver_registry
+from apps.gateway.providers.driver_context import build_driver_context
 from apps.gateway.providers.base import DriverNotFoundError, ProviderDiscoveryError
-from apps.gateway.security.crypto import decrypt_secret, encrypt_secret
+from apps.gateway.security.crypto import encrypt_secret
 from apps.gateway.security.ssrf import validate_provider_url, ProviderURLValidationError
 from apps.gateway.security.redaction import redact_secrets
 
@@ -458,14 +459,7 @@ async def test_provider_connection(
     except DriverNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     try:
-        cred_text = await repo.resolve_credential(conn)
-        ctx = {
-            "connection_id": conn.id,
-            "base_url": conn.base_url,
-            "driver": driver_id,
-            "template_id": conn.template_id,
-            "credential": {"api_key": decrypt_secret(cred_text)} if cred_text else {},
-        }
+        ctx = await build_driver_context(repo, conn)
         # Single factory for every driver instance (plan P0-03 "Driver factory").
         driver = _driver_registry.create(driver_id, ctx)
         result = await driver.validate_connection(ctx)
@@ -519,14 +513,7 @@ async def discover_provider_models(
     except DriverNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     try:
-        cred_text = await repo.resolve_credential(conn)
-        ctx = {
-            "connection_id": conn.id,
-            "base_url": conn.base_url,
-            "driver": driver_id,
-            "template_id": conn.template_id,
-            "credential": {"api_key": decrypt_secret(cred_text)} if cred_text else {},
-        }
+        ctx = await build_driver_context(repo, conn)
         # Single factory for every driver instance (plan P0-03 "Driver factory").
         driver = _driver_registry.create(driver_id, ctx)
         models = await driver.discover_models(ctx)  # type: ignore[func-returns-value]
