@@ -887,7 +887,9 @@ class SmartRouter:
                 upstream=rc.resource_ref.provider_connection_id,
                 model=rc.resource_ref.model_id,
                 weight=rc.weight,
-                metadata=rc.metadata,
+                # Snapshot metadata is immutable (often mappingproxy); keep
+                # legacy Candidate equality/API semantics with a plain dict.
+                metadata=dict(rc.metadata or {}),
                 resource_key=rc.resource_ref.key,
             ))
         return candidates
