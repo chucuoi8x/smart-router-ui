@@ -53,9 +53,24 @@ class RuntimeConfigManager:
         repo = RevisionRepository(session)
         active = await repo.get_active()
         if active:
-            snapshot = self.compile_snapshot(active.snapshot_data)
-            self._apply_snapshot(snapshot, active.id)
-            return snapshot
+            # P0-20 §5.6: Active revision controls runtime via materialized resources.
+            # If the revision has generated routes (from ProviderResourceCompiler), use them directly.
+            # Otherwise, compile legacy snapshot.
+            routes = active.snapshot_data.get("routes", {})
+            has_generated = any(r.get("generated") for r in routes.values()) if isinstance(routes, dict) else False
+            
+            if has_generated:
+                # Directly use the materialized snapshot from DB
+                from apps.gateway.config.snapshot import RuntimeConfigSnapshot
+                from apps.gateway.config.compiler import LegacyConfigCompiler
+                snapshot = LegacyConfigCompiler().compile_dict(active.snapshot_data)
+                self._apply_snapshot(snapshot, active.id)
+                return snapshot
+            else:
+                # Legacy path: compile and activate if needed
+                snapshot = self.compile_snapshot(active.snapshot_data)
+                self._apply_snapshot(snapshot, active.id)
+                return snapshot
 
         # No active DB revision → migrate config.yaml → DB → activate
         bootstrap_path = bootstrap_path or os.getenv("SMART_ROUTER_CONFIG", "config.yaml")
