@@ -11,6 +11,9 @@ from apps.gateway.db.revisions import RevisionRepository
 @pytest.mark.asyncio
 async def test_dynamic_provider_onboarding_and_restart_persistence(tmp_path, monkeypatch):
     """Full lifecycle: create provider, discover models, activate route, chat, restart, chat again."""
+    # Encryption key must be set before encrypt_secret() so create and the
+    # lifespan bind/decrypt share one Fernet key (valid 32-byte urlsafe key).
+    monkeypatch.setenv("SMART_ROUTER_ENCRYPTION_KEY", "2oAwhpLBc_i_dLYkALZVphUOxhhuWjQTloNPd3lK2KA=")
     db_path = tmp_path / "onboarding.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     engine = create_async_engine(database_url, echo=False)
@@ -80,12 +83,12 @@ async def test_dynamic_provider_onboarding_and_restart_persistence(tmp_path, mon
 
     # Set env vars for lifespan
     monkeypatch.setenv("DATABASE_URL", database_url)
-    monkeypatch.setenv("SMART_ROUTER_ENCRYPTION_KEY", "test-fernet-key")
+    monkeypatch.setenv("SMART_ROUTER_ENCRYPTION_KEY", "2oAwhpLBc_i_dLYkALZVphUOxhhuWjQTloNPd3lK2KA=")
     monkeypatch.setenv("SMART_ROUTER_KEY", "test-admin-key")
     monkeypatch.setenv("TEST_ONBOARDING_TOKEN", "x")
 
     import router as router_module
-
+    
     # 3. Start app (Lifespan loads active revision)
     async with LifespanManager(router_module.app):
         service = router_module.app.state.router
