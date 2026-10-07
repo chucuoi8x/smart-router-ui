@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime
 from typing import Any
 
 from .reservations import (
@@ -803,6 +804,11 @@ class RedisQuotaStore(QuotaStore):
             confidence=raw.get("confidence", "high"),
             shared_group_id=raw.get("shared_group_id") or None,
             parent_id=raw.get("parent_id") or None,
+            reset_at=(
+                datetime.fromisoformat(raw["reset_at"].replace("Z", "+00:00"))
+                if raw.get("reset_at") else None
+            ),
+            window_metadata=json.loads(raw["window_metadata"]) if raw.get("window_metadata") else {},
         )
 
     def _raise_script_error(self, data: dict[str, Any]) -> None:
@@ -860,6 +866,8 @@ class RedisQuotaStore(QuotaStore):
                 "source": resource.source,
                 "confidence": resource.confidence,
                 "window_seconds": str(resource.window_seconds),
+                "reset_at": resource.reset_at.isoformat() if resource.reset_at is not None else "",
+                "window_metadata": json.dumps(resource.window_metadata or {}),
             },
         )
         if resource.shared_group_id:
