@@ -181,6 +181,22 @@ def _serialize_revision(revision: Any) -> dict[str, Any]:
     }
 
 
+async def _activate_revision(request: Request, revision_id: str, db: AsyncSession) -> Any:
+    """Activate revision through RuntimeConfigManager, sole live authority."""
+    manager = getattr(request.app.state, "config_manager", None)
+    if manager is None:
+        # Direct ASGI users can skip FastAPI lifespan; install the same
+        # authority rather than falling back to repository activation.
+        from apps.gateway.runtime.manager import RuntimeConfigManager
+
+        manager = RuntimeConfigManager(router=getattr(request.app.state, "router", None))
+        request.app.state.config_manager = manager
+    try:
+        return await manager.activate(revision_id, db)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=[str(exc)]) from exc
+
+
 async def _ensure_active_revision(db: AsyncSession) -> Any:
     """Return the DB active revision, seeding a default one when missing."""
     repo = RevisionRepository(db)
@@ -554,6 +570,7 @@ async def discover_provider_models(
 
 @router.post("/providers/{connection_id}/models/import", status_code=201)
 async def import_provider_models(
+    request: Request,
     connection_id: str,
     payload: dict[str, Any] = Body(...),
     db: AsyncSession = Depends(get_session),
@@ -591,12 +608,22 @@ async def import_provider_models(
             seen.add(mdl)
     routes[route_id] = {"strategy": route_cfg.get("strategy","priority"), "candidates": candidates, "fallback": route_cfg.get("fallback",[])}
     snapshot["routes"] = routes
+    connections = snapshot.get("connections")
+    if not isinstance(connections, dict):
+        connections = {}
+    connections.setdefault(connection_id, {
+        "connection_id": connection_id,
+        "base_url": conn.base_url,
+        "auth_mode": "bearer",
+        "token_env": "",
+    })
+    snapshot["connections"] = connections
     rev_repo = RevisionRepository(db)
     draft = await rev_repo.create_draft(snapshot)
     errs = _revision_validator._validate_snapshot(snapshot)
     if errs:
         raise HTTPException(status_code=400, detail=errs)
-    await rev_repo.activate(draft.id)
+    await _activate_revision(request, draft.id, db)
     rev_id = draft.id
     for mdl in added:
         await repo.import_model(connection_id=conn.id, model_id=mdl)
@@ -981,7 +1008,7 @@ async def update_route(route_id: str, payload: dict[str, Any] = Body(...), db: A
     errors = _revision_validator._validate_snapshot(snapshot)
     if errors:
         raise HTTPException(status_code=400, detail=errors)
-    await rev_repo.activate(draft.id)
+    await _activate_revision(request, draft.id, db)
     revision_id = draft.id
     await _write_audit(db, "route.updated", route_id=route_id, revision_id=revision_id)
     await db.commit()
@@ -1033,24 +1060,9 @@ async def rollback_revision(request: Request, revision_id: str, db: AsyncSession
     errors = _revision_validator._validate_snapshot(target.snapshot_data)
     if errors:
         raise HTTPException(status_code=400, detail=errors)
-    manager = getattr(request.app.state, "config_manager", None)
-    if manager is not None:
-        # P0-20 authority: compile+validate first (raises → last-known-good
-        # runtime and DB active pointer both untouched), then flip DB + audit +
-        # runtime together in one durable transaction.
-        try:
-            snapshot = await manager.validate_revision(revision_id, db)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=[str(exc)]) from exc
-        await rev_repo.activate(revision_id)
-        await _write_audit(db, "revision.rolled_back", revision_id=revision_id, from_revision_id=previous_id)
-        await db.commit()
-        manager.set_active_runtime(snapshot, revision_id)
-        await manager.publish_activation(revision_id)
-    else:
-        await rev_repo.activate(revision_id)
-        await _write_audit(db, "revision.rolled_back", revision_id=revision_id, from_revision_id=previous_id)
-        await db.commit()
+    await _activate_revision(request, revision_id, db)
+    await _write_audit(db, "revision.rolled_back", revision_id=revision_id, from_revision_id=previous_id)
+    await db.commit()
     result = _serialize_revision(await _ensure_active_revision(db))
     result["rolled_back_from"] = previous_id
     return result
@@ -1065,21 +1077,9 @@ async def activate_revision(request: Request, revision_id: str, db: AsyncSession
     errors = _revision_validator._validate_snapshot(target.snapshot_data)
     if errors:
         raise HTTPException(status_code=400, detail=errors)
-    manager = getattr(request.app.state, "config_manager", None)
-    if manager is not None:
-        try:
-            snapshot = await manager.validate_revision(revision_id, db)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=[str(exc)]) from exc
-        await rev_repo.activate(revision_id)
-        await _write_audit(db, "revision.activated", revision_id=revision_id)
-        await db.commit()
-        manager.set_active_runtime(snapshot, revision_id)
-        await manager.publish_activation(revision_id)
-    else:
-        await rev_repo.activate(revision_id)
-        await _write_audit(db, "revision.activated", revision_id=revision_id)
-        await db.commit()
+    await _activate_revision(request, revision_id, db)
+    await _write_audit(db, "revision.activated", revision_id=revision_id)
+    await db.commit()
     return _serialize_revision(await _ensure_active_revision(db))
 
 
@@ -1524,7 +1524,7 @@ async def migrate_legacy_yaml(request: Request, db: AsyncSession = Depends(get_s
     errors = _revision_validator._validate_snapshot(snapshot_data)
     if errors:
         raise HTTPException(status_code=400, detail=errors)
-    await rev_repo.activate(draft.id)
+    await _activate_revision(request, draft.id, db)
     revision_id = draft.id
     await _write_audit(db, "migration.yaml", revision_id=revision_id)
     await db.commit()

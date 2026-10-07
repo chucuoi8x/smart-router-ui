@@ -162,12 +162,21 @@ routes:
 
         os.environ["SMART_ROUTER_KEY"] = "test-admin-key"
         admin_headers = {"Authorization": "Bearer test-admin-key"}
+        activation_calls: list[str] = []
+        original_activate = manager.activate
+
+        async def record_activation(revision_id, session):
+            activation_calls.append(revision_id)
+            return await original_activate(revision_id, session)
+
+        manager.activate = record_activation
         transport2 = httpx.ASGITransport(app=router_module.app, raise_app_exceptions=False)
         async with httpx.AsyncClient(
             transport=transport2, base_url="http://testserver", headers=admin_headers
         ) as admin_client:
             activate = await admin_client.post(f"/api/admin/v1/revisions/{rev2.id}/activate")
             assert activate.status_code == 200, activate.text
+        assert activation_calls == [rev2.id]
 
         # Same live service object — no lifespan restart happened.
         assert router_module.app.state.router is service
